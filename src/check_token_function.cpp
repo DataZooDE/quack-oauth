@@ -15,12 +15,15 @@
 
 #include "audit.hpp"
 #include "audit_sink.hpp"
+#include "github_check.hpp"
 #include "http_client_duckdb.hpp"
 #include "jwt_parse.hpp"
 #include "jwt_verify.hpp"
 #include "plaintext_guard.hpp"
 #include "providers.hpp"
 #include "quack_oauth_state.hpp"
+#include "retry_http_client.hpp"
+#include "secure_scrub.hpp"
 #include "tracing.hpp"
 #include "validator.hpp"
 
@@ -115,6 +118,13 @@ ServerConfig LoadServerConfig(ClientContext &context) {
 			if (cfg.introspection_endpoint.empty())
 				cfg.introspection_endpoint = resolved.introspection_endpoint;
 		}
+		// R-S-13: GitHub is not OIDC; auto-route to the bespoke
+		// `applications/{client_id}/token` check unless the operator
+		// explicitly picked a different mode. The default `jwks` would
+		// fail (GitHub tokens are opaque).
+		if (provider_name == "github" && cfg.mode == "jwks") {
+			cfg.mode = "github_check";
+		}
 	}
 
 	if (cfg.mode == "jwks") {
@@ -139,9 +149,28 @@ ServerConfig LoadServerConfig(ClientContext &context) {
 			    "use the IdP's tokeninfo URL, e.g. https://oauth2.googleapis.com/tokeninfo)",
 			    secret_name);
 		}
+	} else if (cfg.mode == "github_check") {
+		if (cfg.introspection_endpoint.empty()) {
+			throw InvalidInputException(
+			    "quack_oauth_check_token: SECRET '%s' is missing "
+			    "`introspection_endpoint` (set to GitHub's "
+			    "`applications/{client_id}/token` URL, or rely on the "
+			    "`provider='github'` preset which fills it from tenant_or_realm).",
+			    secret_name);
+		}
+		if (cfg.introspect_client_id.empty() ||
+		    cfg.introspect_client_secret.empty()) {
+			throw InvalidInputException(
+			    "quack_oauth_check_token: SECRET '%s' is missing "
+			    "`introspect_client_id` / `introspect_client_secret` "
+			    "(GitHub App credentials, required for HTTP Basic on the "
+			    "/applications/{client_id}/token endpoint).",
+			    secret_name);
+		}
 	} else {
 		throw InvalidInputException(
-		    "quack_oauth_check_token: unknown validation_mode '%s' (expected 'jwks', 'introspect', or 'tokeninfo')",
+		    "quack_oauth_check_token: unknown validation_mode '%s' (expected 'jwks', "
+		    "'introspect', 'tokeninfo', or 'github_check')",
 		    cfg.mode);
 	}
 	return cfg;
@@ -231,7 +260,9 @@ void ValidateChunk(Vector &tokens, idx_t count, Vector &result,
 	                 .count();
 
 	auto &shared_state = GetQuackOauthState();
-	DuckdbHttpClient http;
+	// R-N-7: wrap with one retry on transient failure (5xx / transport).
+	DuckdbHttpClient base_http;
+	quack_oauth::RetryingHttpClient http(base_http);
 
 	std::lock_guard<std::mutex> guard(shared_state.mu);
 
@@ -259,7 +290,7 @@ void ValidateChunk(Vector &tokens, idx_t count, Vector &result,
 			for (idx_t i = 0; i < count; ++i) {
 				const auto tok_idx = tok_format.sel->get_index(i);
 				const auto sid_idx = sid_format.sel->get_index(i);
-				const auto token_str = tok_data[tok_idx].GetString();
+				auto token_str = tok_data[tok_idx].GetString();
 				const auto sid_str = sid_data[sid_idx].GetString();
 				quack_oauth::Principal principal_out;
 				const auto outcome = quack_oauth::ValidateTokenViaIntrospection(
@@ -271,15 +302,18 @@ void ValidateChunk(Vector &tokens, idx_t count, Vector &result,
 				}
 				EmitTokenAudit(context, token_str, outcome, opts.now_s,
 				               ok ? &principal_out : nullptr);
+				quack_oauth::SecureScrub(token_str); // R-N-3
 			}
 		} else {
 			UnaryExecutor::Execute<string_t, bool>(
 			    tokens, result, count, [&](string_t token) {
-				    const auto token_str = token.GetString();
+				    auto token_str = token.GetString();
 				    const auto outcome = quack_oauth::ValidateTokenViaIntrospection(
 				        token_str, opts, ictx);
 				    EmitTokenAudit(context, token_str, outcome, opts.now_s, nullptr);
-				    return outcome == quack_oauth::VerifyResult::Ok;
+				    const bool ok = outcome == quack_oauth::VerifyResult::Ok;
+				    quack_oauth::SecureScrub(token_str); // R-N-3
+				    return ok;
 			    });
 		}
 	} else if (cfg.mode == "tokeninfo") {
@@ -301,7 +335,7 @@ void ValidateChunk(Vector &tokens, idx_t count, Vector &result,
 			for (idx_t i = 0; i < count; ++i) {
 				const auto tok_idx = tok_format.sel->get_index(i);
 				const auto sid_idx = sid_format.sel->get_index(i);
-				const auto token_str = tok_data[tok_idx].GetString();
+				auto token_str = tok_data[tok_idx].GetString();
 				const auto sid_str = sid_data[sid_idx].GetString();
 				quack_oauth::Principal principal_out;
 				const auto outcome = quack_oauth::ValidateTokenViaTokeninfo(
@@ -313,15 +347,63 @@ void ValidateChunk(Vector &tokens, idx_t count, Vector &result,
 				}
 				EmitTokenAudit(context, token_str, outcome, opts.now_s,
 				               ok ? &principal_out : nullptr);
+				quack_oauth::SecureScrub(token_str); // R-N-3
 			}
 		} else {
 			UnaryExecutor::Execute<string_t, bool>(
 			    tokens, result, count, [&](string_t token) {
-				    const auto token_str = token.GetString();
+				    auto token_str = token.GetString();
 				    const auto outcome = quack_oauth::ValidateTokenViaTokeninfo(
 				        token_str, opts, tctx);
 				    EmitTokenAudit(context, token_str, outcome, opts.now_s, nullptr);
-				    return outcome == quack_oauth::VerifyResult::Ok;
+				    const bool ok = outcome == quack_oauth::VerifyResult::Ok;
+				    quack_oauth::SecureScrub(token_str); // R-N-3
+				    return ok;
+			    });
+		}
+	} else if (cfg.mode == "github_check") {
+		quack_oauth::GithubContext gctx{
+		    http,
+		    cfg.introspection_endpoint,
+		    cfg.introspect_client_id,
+		    cfg.introspect_client_secret,
+		};
+		if (session_ids != nullptr) {
+			UnifiedVectorFormat tok_format;
+			UnifiedVectorFormat sid_format;
+			tokens.ToUnifiedFormat(count, tok_format);
+			session_ids->ToUnifiedFormat(count, sid_format);
+			const auto *tok_data = UnifiedVectorFormat::GetData<string_t>(tok_format);
+			const auto *sid_data = UnifiedVectorFormat::GetData<string_t>(sid_format);
+			result.SetVectorType(VectorType::FLAT_VECTOR);
+			auto *out_data = FlatVector::GetData<bool>(result);
+			for (idx_t i = 0; i < count; ++i) {
+				const auto tok_idx = tok_format.sel->get_index(i);
+				const auto sid_idx = sid_format.sel->get_index(i);
+				auto token_str = tok_data[tok_idx].GetString();
+				const auto sid_str = sid_data[sid_idx].GetString();
+				quack_oauth::Principal principal_out;
+				const auto outcome = quack_oauth::ValidateTokenViaGithubCheck(
+				    token_str, gctx, &principal_out);
+				const bool ok = outcome == quack_oauth::VerifyResult::Ok;
+				out_data[i] = ok;
+				if (ok && !sid_str.empty()) {
+					shared_state.session_principals[sid_str] = principal_out;
+				}
+				EmitTokenAudit(context, token_str, outcome, opts.now_s,
+				               ok ? &principal_out : nullptr);
+				quack_oauth::SecureScrub(token_str); // R-N-3
+			}
+		} else {
+			UnaryExecutor::Execute<string_t, bool>(
+			    tokens, result, count, [&](string_t token) {
+				    auto token_str = token.GetString();
+				    const auto outcome = quack_oauth::ValidateTokenViaGithubCheck(
+				        token_str, gctx, nullptr);
+				    EmitTokenAudit(context, token_str, outcome, opts.now_s, nullptr);
+				    const bool ok = outcome == quack_oauth::VerifyResult::Ok;
+				    quack_oauth::SecureScrub(token_str); // R-N-3
+				    return ok;
 			    });
 		}
 	} else {
@@ -342,7 +424,7 @@ void ValidateChunk(Vector &tokens, idx_t count, Vector &result,
 			for (idx_t i = 0; i < count; ++i) {
 				const auto tok_idx = tok_format.sel->get_index(i);
 				const auto sid_idx = sid_format.sel->get_index(i);
-				const auto token_str = tok_data[tok_idx].GetString();
+				auto token_str = tok_data[tok_idx].GetString();
 				const auto sid_str = sid_data[sid_idx].GetString();
 				const auto outcome = quack_oauth::ValidateToken(token_str, opts, vctx);
 				const bool ok = outcome == quack_oauth::VerifyResult::Ok;
@@ -361,15 +443,18 @@ void ValidateChunk(Vector &tokens, idx_t count, Vector &result,
 				}
 				EmitTokenAudit(context, token_str, outcome, opts.now_s,
 				               have_principal ? &principal_for_audit : nullptr);
+				quack_oauth::SecureScrub(token_str); // R-N-3
 			}
 		} else {
 			UnaryExecutor::Execute<string_t, bool>(
 			    tokens, result, count, [&](string_t token) {
-				    const auto token_str = token.GetString();
+				    auto token_str = token.GetString();
 				    const auto outcome =
 				        quack_oauth::ValidateToken(token_str, opts, vctx);
 				    EmitTokenAudit(context, token_str, outcome, opts.now_s, nullptr);
-				    return outcome == quack_oauth::VerifyResult::Ok;
+				    const bool ok = outcome == quack_oauth::VerifyResult::Ok;
+				    quack_oauth::SecureScrub(token_str); // R-N-3
+				    return ok;
 			    });
 		}
 	}

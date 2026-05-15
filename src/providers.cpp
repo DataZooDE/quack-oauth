@@ -79,11 +79,23 @@ ProviderConfig GetProviderConfig(ProviderId id) {
 		    "{tenant}/protocol/openid-connect/certs",
 		    "{tenant}/protocol/openid-connect/token/introspect",
 		};
-	case ProviderId::Okta:
 	case ProviderId::Github:
-		// Reserved -- dedicated strategy entries land in a follow-up slice
-		// (architecture §8.6). Until then, fall through to Generic so the
-		// operator can still configure everything explicitly on the SECRET.
+		// R-S-13: GitHub is not OIDC. Validation goes through
+		// /applications/{tenant}/token where `tenant` is the App's
+		// client_id. Introspection / JWKS templates are unused. The
+		// {tenant} substitution naturally drops into the URL.
+		return {
+		    ProviderId::Github,
+		    "github",
+		    ProviderValidation::GithubCheck,
+		    "https://api.github.com",
+		    "", // no JWKS for opaque GitHub tokens
+		    "https://api.github.com/applications/{tenant}/token",
+		};
+	case ProviderId::Okta:
+		// Reserved -- a dedicated entry lands in a follow-up slice.
+		// Operators can still configure everything explicitly on the
+		// SECRET; this just means no auto-fill yet.
 	case ProviderId::Generic:
 	default:
 		return {

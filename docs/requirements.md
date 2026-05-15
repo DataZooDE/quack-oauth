@@ -87,10 +87,19 @@ Requirements use the convention **MUST / SHOULD / MAY** (RFC 2119).
 
 ### 5.1 Server-side (resource server)
 
-- **R-S-1** The extension MUST register replacements for
-  `quack_check_token` and `quack_nop_authorization` upon LOAD, gated
-  by a setting `quack_oauth_enabled` (default `false`; setting it to
-  `true` swaps the callbacks atomically).
+- **R-S-1** The extension MUST register replacement scalar functions
+  for the two quack auth hooks (`quack_oauth_check_token` for
+  authentication, `quack_oauth_check_authorization` for authorization)
+  upon LOAD. Quack performs the swap by name via its own settings:
+  `SET quack_authentication_function = 'quack_oauth_check_token'` and
+  `SET quack_authorization_function = 'quack_oauth_check_authorization'`.
+  An advisory `quack_oauth_enabled` setting (default `false`) is
+  registered so deployment tooling can express intent; the actual
+  callback swap is performed by the operator (or their startup script)
+  through the quack settings above. Per R-N-4, when
+  `quack_oauth_enabled = true` and a non-loopback listener is detected
+  without `quack_oauth_trust_plaintext = true`, the extension refuses
+  to validate any wire-presented token.
 - **R-S-2** The extension MUST validate access tokens by **either**
   local JWT verification against a cached JWKS, **or** RFC 7662
   introspection against the IdP, selected by the
@@ -154,7 +163,14 @@ Requirements use the convention **MUST / SHOULD / MAY** (RFC 2119).
   rejected with reason, JWKS refresh, policy denial) at INFO/WARN
   through DuckDB's logger. Tokens, JWKS private material, and client
   secrets MUST NEVER appear in logs; only `kid`, `sub`, `iss`, `jti`,
-  and a token-hash prefix.
+  and a token-hash prefix (first 8 hex chars of `sha256(token)`). In
+  addition, the extension MUST expose:
+  - `quack_oauth_audit_log()` table function -- last N decisions as
+    typed rows (timestamp, event_type, subject, issuer, kid,
+    token_hash, action, reason);
+  - optional `audit_table` field on `quack_oauth_server` SECRET --
+    when set, the extension INSERTs one row per decision into that
+    table for persistent audit (same column shape as `audit_log()`).
 - **R-S-11** Configuration MUST be settable via:
   (a) DuckDB SET statements, (b) a `CREATE SECRET ... TYPE
   quack-oauth-server` carrying issuer/audience/jwks-uri/policy-table,
@@ -318,8 +334,20 @@ defaults for issuer/JWKS/introspection/validation-mode.
 - **R-N-12** All extension settings discoverable via
   `SELECT * FROM duckdb_settings() WHERE name LIKE 'quack_oauth%'`.
 - **R-N-13** A `quack_oauth_diagnose()` table function MUST report:
-  IdP reachability, JWKS fetch success, last 16 auth decisions
-  (sub, decision, reason), cache sizes.
+  - **idp_reachability** -- live GET probe on the active SECRET's
+    `jwks_uri` (or `introspection_endpoint` for opaque-token paths);
+    status ∈ `{unconfigured, reachable, unreachable}` with the
+    HTTP status code in `detail`;
+  - **jwks_cache** -- in-memory entry count;
+  - **decision_cache** -- in-memory entry count;
+  - **session_principals** -- count of cached `(session_id → Principal)`
+    pairs;
+  - **recent_decisions** -- a tally over the in-memory audit ring
+    (`count=N/CAP accepted= rejected= allowed= denied=`); full history
+    is exposed by the companion `quack_oauth_audit_log()` table
+    function;
+  - **extension** -- current configuration snapshot
+    (`enabled` / `secret_name` / `validation_mode` / `provider`).
 
 ## 7. Out of scope (deferred)
 

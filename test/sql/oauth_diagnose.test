@@ -16,6 +16,7 @@ SELECT component FROM quack_oauth_diagnose() ORDER BY component;
 ----
 decision_cache
 extension
+idp_reachability
 jwks_cache
 recent_decisions
 session_principals

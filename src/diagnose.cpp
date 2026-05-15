@@ -5,13 +5,18 @@
 #include <string>
 #include <vector>
 
+#include "duckdb/catalog/catalog_transaction.hpp"
 #include "duckdb/common/types/data_chunk.hpp"
 #include "duckdb/function/table_function.hpp"
 #include "duckdb/main/client_context.hpp"
+#include "duckdb/main/secret/secret_manager.hpp"
 #include "duckdb/parser/parsed_data/create_table_function_info.hpp"
 
 #include "audit.hpp"
+#include "http_client_duckdb.hpp"
+#include "idp_probe.hpp"
 #include "quack_oauth_state.hpp"
+#include "retry_http_client.hpp"
 
 namespace duckdb {
 
@@ -93,6 +98,47 @@ unique_ptr<FunctionData> DiagnoseBind(ClientContext &context,
 		Append(detail, "sessions", std::to_string(entries));
 		data->rows.push_back({"session_principals",
 		                      entries == 0 ? "empty" : "active", detail.str()});
+	}
+
+	// R-N-13 IdP reachability: live GET on jwks_uri (or introspection_endpoint
+	// when there's no JWKS, e.g. GitHub). No-op when there's no configured
+	// SECRET -- emits an `unconfigured` row.
+	{
+		std::string probe_uri;
+		const auto secret_name = ReadSetting(context, "quack_oauth_server_secret_name");
+		if (!secret_name.empty()) {
+			auto &secret_manager = SecretManager::Get(context);
+			auto txn = CatalogTransaction::GetSystemCatalogTransaction(context);
+			auto entry = secret_manager.GetSecretByName(txn, secret_name);
+			if (entry) {
+				const auto *kv = dynamic_cast<const KeyValueSecret *>(entry->secret.get());
+				if (kv) {
+					const auto j = kv->secret_map.find("jwks_uri");
+					if (j != kv->secret_map.end()) probe_uri = j->second.ToString();
+					if (probe_uri.empty()) {
+						const auto i = kv->secret_map.find("introspection_endpoint");
+						if (i != kv->secret_map.end()) probe_uri = i->second.ToString();
+					}
+				}
+			}
+		}
+
+		DuckdbHttpClient base_http;
+		quack_oauth::RetryingHttpClient http(base_http, /*max_retries=*/0);
+		const auto probe = quack_oauth::ProbeIdpReachability(http, probe_uri);
+
+		std::ostringstream detail;
+		if (probe.probed_uri.empty()) {
+			Append(detail, "uri", "(none)");
+		} else {
+			Append(detail, "uri", probe.probed_uri);
+		}
+		if (probe.status != quack_oauth::IdpProbeResult::Status::Unconfigured) {
+			Append(detail, "http_status", std::to_string(probe.http_status));
+		}
+		data->rows.push_back({"idp_reachability",
+		                      quack_oauth::StatusName(probe.status),
+		                      detail.str()});
 	}
 
 	// 5. Audit ring: count + decision split

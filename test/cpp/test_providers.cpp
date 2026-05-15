@@ -84,12 +84,21 @@ TEST_CASE("Generic: all materialised URIs are empty -- operator must supply",
 	CHECK(r.introspection_endpoint.empty());
 }
 
-TEST_CASE("Okta + Github currently fall through to Generic behaviour",
+TEST_CASE("Okta currently falls through to Generic behaviour",
           "[providers][reserved]") {
-	for (auto id : {ProviderId::Okta, ProviderId::Github}) {
-		const auto r = ResolveProvider(id, "whatever");
-		CHECK(r.issuer.empty());
-		CHECK(r.jwks_uri.empty());
-		CHECK(r.introspection_endpoint.empty());
-	}
+	const auto r = ResolveProvider(ProviderId::Okta, "whatever");
+	CHECK(r.issuer.empty());
+	CHECK(r.jwks_uri.empty());
+	CHECK(r.introspection_endpoint.empty());
+}
+
+TEST_CASE("Github preset: introspection_endpoint substitutes client_id",
+          "[providers][github]") {
+	const auto r = ResolveProvider(ProviderId::Github, "Iv1.abcdef");
+	CHECK(r.id == ProviderId::Github);
+	CHECK(r.validation == quack_oauth::ProviderValidation::GithubCheck);
+	CHECK(r.issuer == "https://api.github.com");
+	CHECK(r.jwks_uri.empty()); // opaque tokens, no JWKS
+	CHECK(r.introspection_endpoint ==
+	      "https://api.github.com/applications/Iv1.abcdef/token");
 }

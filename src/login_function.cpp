@@ -2,9 +2,6 @@
 
 #include <chrono>
 #include <cstdint>
-#include <ctime>
-#include <iomanip>
-#include <sstream>
 #include <string>
 
 #include "duckdb.hpp"
@@ -17,25 +14,15 @@
 #include "duckdb/parser/parsed_data/create_scalar_function_info.hpp"
 
 #include "http_client_duckdb.hpp"
+#include "platform_time.hpp"
+#include "retry_http_client.hpp"
 #include "token_endpoint.hpp"
 
 namespace duckdb {
 
 namespace {
 
-std::string FormatUtcIso8601(std::int64_t unix_seconds) {
-	std::time_t t = static_cast<std::time_t>(unix_seconds);
-	std::tm tm_buf{};
-#ifdef _WIN32
-	// MSVC has the argument-reversed `gmtime_s`. POSIX has `gmtime_r`.
-	gmtime_s(&tm_buf, &t);
-#else
-	gmtime_r(&t, &tm_buf);
-#endif
-	std::ostringstream out;
-	out << std::put_time(&tm_buf, "%Y-%m-%dT%H:%M:%SZ");
-	return out.str();
-}
+using quack_oauth::FormatUtcIso8601;
 
 std::string GetField(const KeyValueSecret &kv, const std::string &key) {
 	const auto it = kv.secret_map.find(key);
@@ -85,7 +72,8 @@ std::string DoLogin(ClientContext &context, const std::string &secret_name) {
 		    secret_name);
 	}
 
-	DuckdbHttpClient http;
+	DuckdbHttpClient base_http;
+	quack_oauth::RetryingHttpClient http(base_http);
 	const auto tok = quack_oauth::AcquireTokenClientCredentials(
 	    http, token_endpoint, client_id, client_secret, scope);
 	if (!tok.has_value()) {

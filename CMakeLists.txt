@@ -31,15 +31,20 @@ set(PURE_SOURCES
     src/decision_cache.cpp
     src/device_code.cpp
     src/env_overrides.cpp
+    src/github_check.cpp
+    src/idp_probe.cpp
     src/introspect.cpp
     src/jwks_cache.cpp
     src/jwks_parse.cpp
     src/jwt_parse.cpp
     src/jwt_verify.cpp
     src/plaintext_guard.cpp
+    src/platform_time.cpp
     src/policy.cpp
     src/principal_expiry.cpp
     src/providers.cpp
+    src/retry_http_client.cpp
+    src/secure_scrub.cpp
     src/token_endpoint.cpp
     src/tokeninfo.cpp
     src/tracing_redact.cpp
