@@ -18,10 +18,13 @@
 #include "http_client_duckdb.hpp"
 #include "jwt_parse.hpp"
 #include "jwt_verify.hpp"
+#include "plaintext_guard.hpp"
 #include "providers.hpp"
 #include "quack_oauth_state.hpp"
 #include "tracing.hpp"
 #include "validator.hpp"
+
+#include "duckdb/main/connection.hpp"
 
 namespace duckdb {
 
@@ -376,7 +379,45 @@ void CheckTokenScalarFun1(DataChunk &args, ExpressionState &state, Vector &resul
 	ValidateChunk(args.data[0], args.size(), result, state.GetContext(), nullptr);
 }
 
+// R-N-4: refuse to validate a token over the wire when the active quack
+// listener is bound to a non-loopback host AND the operator has not
+// explicitly opted in via `quack_oauth_trust_plaintext = true`. The check
+// is best-effort: if quack isn't loaded, or the listener list query fails,
+// we assume no public surface exists and let the call through. (In the
+// real wire path, our check_token is only invoked by quack's auth thread,
+// which by construction means a listener is up.)
+void EnforcePlaintextGuard(ClientContext &context) {
+	Value v;
+	if (context.TryGetCurrentSetting("quack_oauth_trust_plaintext", v) &&
+	    !v.IsNull() && v.GetValue<bool>()) {
+		return; // operator has opted into plaintext.
+	}
+
+	Connection conn(*context.db);
+	auto result = conn.Query("SELECT listen_uri FROM quack_server_list()");
+	if (result->HasError()) {
+		return; // quack isn't loaded, or no server is running. Nothing to guard.
+	}
+	for (auto &row : result->Collection().GetRows()) {
+		const auto uri_v = row.GetValue(0);
+		if (uri_v.IsNull()) continue;
+		const auto uri = StringValue::Get(uri_v);
+		const auto host = quack_oauth::HostFromQuackUri(uri);
+		if (!quack_oauth::IsLoopbackHost(host)) {
+			throw InvalidInputException(
+			    "quack_oauth: refusing to validate a bearer token because the "
+			    "active quack listener '%s' is bound to a non-loopback host "
+			    "and `quack_oauth_trust_plaintext` is not true. Either "
+			    "terminate TLS in front of this listener and `SET "
+			    "quack_oauth_trust_plaintext = true`, or bind the listener "
+			    "to 127.0.0.1 / ::1 / localhost. (R-N-4)",
+			    uri);
+		}
+	}
+}
+
 void CheckTokenScalarFun3(DataChunk &args, ExpressionState &state, Vector &result) {
+	EnforcePlaintextGuard(state.GetContext());
 	// quack's calling convention (verified against duckdb-quack
 	// src/quack_server.cpp): SELECT <fn>(session_id, auth_string, token)
 	// where:

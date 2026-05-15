@@ -1,0 +1,74 @@
+# name: test/sql/oauth_logout.test
+# description: quack_oauth_logout(secret_name) clears tokens on the named SECRET (R-C-8).
+# group: [sql]
+
+require quack_oauth
+
+# Create a client SECRET with all three token fields populated.
+statement ok
+CREATE SECRET cli (
+    TYPE quack_oauth,
+    token_endpoint 'https://idp.example.com/token',
+    client_id      'demo',
+    access_token   'at-12345',
+    refresh_token  'rt-67890',
+    expires_at     '2026-01-01T00:00:00Z'
+);
+
+# Sanity: before logout, the SECRET reports tokens are set. The token
+# fields are redacted so we can't see the values, but the keys appear
+# in the secret_string.
+query I
+SELECT secret_string LIKE '%access_token%'
+   AND secret_string LIKE '%refresh_token%'
+   AND secret_string LIKE '%expires_at=2026-01-01T00:00:00Z%'
+FROM duckdb_secrets() WHERE name = 'cli';
+----
+true
+
+# Logout: returns true on success.
+query I
+SELECT quack_oauth_logout('cli');
+----
+true
+
+# After logout, access_token / refresh_token / expires_at are all
+# cleared. The redacted keys may still appear as empty entries; we
+# assert the *values* are gone -- specifically that expires_at no
+# longer carries our timestamp.
+query I
+SELECT secret_string NOT LIKE '%expires_at=2026-01-01T00:00:00Z%'
+FROM duckdb_secrets() WHERE name = 'cli';
+----
+true
+
+# Idempotent: logging out an already-empty SECRET still returns true.
+query I
+SELECT quack_oauth_logout('cli');
+----
+true
+
+# Unknown SECRET: raises a clear error.
+statement error
+SELECT quack_oauth_logout('does_not_exist');
+----
+SECRET 'does_not_exist' not found
+
+# Wrong SECRET type: also a clear error.
+statement ok
+CREATE SECRET srv (
+    TYPE quack_oauth_server,
+    issuer 'https://idp.example.com'
+);
+
+statement error
+SELECT quack_oauth_logout('srv');
+----
+not of TYPE quack_oauth
+
+# Cleanup.
+statement ok
+DROP SECRET cli;
+
+statement ok
+DROP SECRET srv;

@@ -12,6 +12,7 @@
 #include "check_token_function.hpp"
 #include "device_login_function.hpp"
 #include "login_function.hpp"
+#include "logout_function.hpp"
 #include "refresh_function.hpp"
 #endif
 
@@ -30,6 +31,7 @@ static void LoadInternal(ExtensionLoader &loader) {
 #ifndef EMSCRIPTEN
 	RegisterQuackOauthCheckToken(loader);
 	RegisterQuackOauthLogin(loader);
+	RegisterQuackOauthLogout(loader);
 	RegisterQuackOauthRefresh(loader);
 	RegisterQuackOauthDeviceLogin(loader);
 #endif

@@ -85,6 +85,9 @@ def start_server(
     provider: str = "keycloak",
     seed_policy: bool = True,
     seed_audit: bool = True,
+    bind_host: str = "127.0.0.1",
+    trust_plaintext: bool = False,
+    allow_other_hostname: bool = False,
 ) -> QuackServer:
     """Configure a server-side DuckDB and start the quack listener.
 
@@ -150,17 +153,28 @@ def start_server(
     conn.execute("SET quack_authentication_function = 'quack_oauth_check_token'")
     conn.execute("SET quack_authorization_function  = 'quack_oauth_check_authorization'")
 
+    # R-N-4 plaintext-guard opt-in. Defaults to false so a public-bound
+    # listener gets refused unless the caller explicitly trusts it.
+    if trust_plaintext:
+        conn.execute("SET quack_oauth_trust_plaintext = true")
+
     # 6. Listen. quack_serve() spawns a background thread for the HTTP
     # listener and returns immediately; the connection stays open while
     # the test runs.
     port = find_free_port()
-    uri = f"quack:127.0.0.1:{port}"
-    conn.execute(
-        "SELECT * FROM quack_serve(?, token => ?, disable_ssl => true)",
-        [uri, SERVER_PSK],
-    )
+    uri = f"quack:{bind_host}:{port}"
+    if allow_other_hostname:
+        conn.execute(
+            "SELECT * FROM quack_serve(?, token => ?, disable_ssl => true, allow_other_hostname => true)",
+            [uri, SERVER_PSK],
+        )
+    else:
+        conn.execute(
+            "SELECT * FROM quack_serve(?, token => ?, disable_ssl => true)",
+            [uri, SERVER_PSK],
+        )
 
-    return QuackServer(conn=conn, host="127.0.0.1", port=port)
+    return QuackServer(conn=conn, host=bind_host, port=port)
 
 
 def open_client() -> duckdb.DuckDBPyConnection:

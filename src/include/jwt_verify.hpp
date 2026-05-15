@@ -51,8 +51,10 @@ struct VerifyOptions {
 // with caller-injected `now_s`.
 //
 // Pure logic: no I/O, no globals, no `std::chrono::system_clock::now()`.
-// Currently supports `kty == "RSA"` only. EC / OKP support lands when needed
-// by the provider matrix (slice S-11).
+// Supports the algorithms in R-S-3:
+//   - RSA (kty=RSA): RS256 / RS384 / RS512
+//   - EC  (kty=EC):  ES256 (P-256) / ES384 (P-384)
+//   - OKP (kty=OKP): EdDSA (Ed25519)
 VerifyResult VerifyJwt(std::string_view token, const Jwk &jwk,
                        const VerifyOptions &opts);
 
@@ -60,5 +62,15 @@ VerifyResult VerifyJwt(std::string_view token, const Jwk &jwk,
 // SubjectPublicKeyInfo. Returns `std::nullopt` if `n` or `e` is empty or not
 // valid base64url. Exposed publicly to keep it Catch2-testable.
 std::optional<std::string> JwkRsaToPem(const Jwk &jwk);
+
+// Convert an EC JWK (`crv` ∈ {P-256, P-384}, `x`, `y` base64url-encoded) to
+// a PEM-encoded SubjectPublicKeyInfo. Returns nullopt for unsupported
+// curves or malformed fields.
+std::optional<std::string> JwkEcToPem(const Jwk &jwk);
+
+// Convert an OKP JWK (`crv == "Ed25519"`, `x` base64url-encoded) to a PEM-
+// encoded SubjectPublicKeyInfo. Returns nullopt for unsupported curves or
+// malformed fields.
+std::optional<std::string> JwkOkpToPem(const Jwk &jwk);
 
 } // namespace quack_oauth

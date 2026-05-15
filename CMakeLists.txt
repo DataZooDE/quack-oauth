@@ -30,12 +30,15 @@ set(PURE_SOURCES
     src/authz.cpp
     src/decision_cache.cpp
     src/device_code.cpp
+    src/env_overrides.cpp
     src/introspect.cpp
     src/jwks_cache.cpp
     src/jwks_parse.cpp
     src/jwt_parse.cpp
     src/jwt_verify.cpp
+    src/plaintext_guard.cpp
     src/policy.cpp
+    src/principal_expiry.cpp
     src/providers.cpp
     src/token_endpoint.cpp
     src/tokeninfo.cpp
@@ -67,6 +70,7 @@ set(DUCKDB_NATIVE_ONLY_SOURCES
     src/device_login_function.cpp
     src/http_client_duckdb.cpp
     src/login_function.cpp
+    src/logout_function.cpp
     src/refresh_function.cpp
 )
 

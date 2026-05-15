@@ -137,6 +137,70 @@ std::optional<std::string> RsaPublicKeyToPem(const std::vector<unsigned char> &n
 	return std::string(pem_data, static_cast<std::size_t>(pem_len));
 }
 
+// ---- EC public key (P-256 / P-384) -> PEM ---------------------------------
+
+std::optional<std::string> EcPublicKeyToPem(const std::string &group_name,
+                                            const std::vector<unsigned char> &x_bin,
+                                            const std::vector<unsigned char> &y_bin) {
+	BnPtr x_bn(BN_bin2bn(x_bin.data(), static_cast<int>(x_bin.size()), nullptr));
+	BnPtr y_bn(BN_bin2bn(y_bin.data(), static_cast<int>(y_bin.size()), nullptr));
+	if (!x_bn || !y_bn) return std::nullopt;
+
+	// Encode the public key as the uncompressed point form (0x04 || X || Y).
+	// OpenSSL's fromdata API expects either OSSL_PKEY_PARAM_PUB_KEY (octet
+	// string) or a curve + qx + qy. The octet-string form is the most
+	// portable across OpenSSL minor versions.
+	const auto field_bytes = x_bin.size();
+	if (y_bin.size() != field_bytes) return std::nullopt;
+	std::vector<unsigned char> point;
+	point.reserve(1 + 2 * field_bytes);
+	point.push_back(0x04);
+	point.insert(point.end(), x_bin.begin(), x_bin.end());
+	point.insert(point.end(), y_bin.begin(), y_bin.end());
+
+	ParamBldPtr bld(OSSL_PARAM_BLD_new());
+	if (!bld ||
+	    !OSSL_PARAM_BLD_push_utf8_string(bld.get(), OSSL_PKEY_PARAM_GROUP_NAME,
+	                                     group_name.c_str(), 0) ||
+	    !OSSL_PARAM_BLD_push_octet_string(bld.get(), OSSL_PKEY_PARAM_PUB_KEY,
+	                                      point.data(), point.size())) {
+		return std::nullopt;
+	}
+	ParamPtr params(OSSL_PARAM_BLD_to_param(bld.get()));
+	if (!params) return std::nullopt;
+
+	EvpPkeyCtxPtr ctx(EVP_PKEY_CTX_new_from_name(nullptr, "EC", nullptr));
+	if (!ctx || EVP_PKEY_fromdata_init(ctx.get()) <= 0) return std::nullopt;
+	EVP_PKEY *raw = nullptr;
+	if (EVP_PKEY_fromdata(ctx.get(), &raw, EVP_PKEY_PUBLIC_KEY, params.get()) <= 0) {
+		return std::nullopt;
+	}
+	EvpPkeyPtr pkey(raw);
+
+	BioPtr bio(BIO_new(BIO_s_mem()));
+	if (!bio || PEM_write_bio_PUBKEY(bio.get(), pkey.get()) == 0) return std::nullopt;
+	char *pem_data = nullptr;
+	const long pem_len = BIO_get_mem_data(bio.get(), &pem_data);
+	if (pem_len <= 0 || pem_data == nullptr) return std::nullopt;
+	return std::string(pem_data, static_cast<std::size_t>(pem_len));
+}
+
+std::optional<std::string> OkpPublicKeyToPem(const std::string &alg_name,
+                                             const std::vector<unsigned char> &x_bin) {
+	// alg_name = "ED25519" for now. raw_public_key takes the 32-byte public
+	// key directly.
+	EvpPkeyPtr pkey(EVP_PKEY_new_raw_public_key_ex(nullptr, alg_name.c_str(),
+	                                               nullptr, x_bin.data(), x_bin.size()));
+	if (!pkey) return std::nullopt;
+
+	BioPtr bio(BIO_new(BIO_s_mem()));
+	if (!bio || PEM_write_bio_PUBKEY(bio.get(), pkey.get()) == 0) return std::nullopt;
+	char *pem_data = nullptr;
+	const long pem_len = BIO_get_mem_data(bio.get(), &pem_data);
+	if (pem_len <= 0 || pem_data == nullptr) return std::nullopt;
+	return std::string(pem_data, static_cast<std::size_t>(pem_len));
+}
+
 // ---- Algorithm gating ------------------------------------------------------
 
 bool StartsWith(const std::string &s, const std::string &prefix) {
@@ -150,7 +214,9 @@ bool IsForbiddenAlgorithm(const std::string &alg) {
 }
 
 const std::vector<std::string> &DefaultAllowedAlgorithms() {
-	static const std::vector<std::string> kDefault = {"RS256", "RS384", "RS512"};
+	// R-S-3: RSA + ECDSA + EdDSA. HS* and `none` rejected unconditionally.
+	static const std::vector<std::string> kDefault = {
+	    "RS256", "RS384", "RS512", "ES256", "ES384", "EdDSA"};
 	return kDefault;
 }
 
@@ -199,15 +265,30 @@ VerifyResult VerifyWithVerifier(const jwt::decoded_jwt<TraitsT> &decoded,
 	    std::chrono::seconds(opts.now_s))};
 	auto verifier = jwt::verify<FixedClock, TraitsT>(clock);
 
-	if (alg == "RS256") {
-		verifier.allow_algorithm(jwt::algorithm::rs256(pem, "", "", ""));
-	} else if (alg == "RS384") {
-		verifier.allow_algorithm(jwt::algorithm::rs384(pem, "", "", ""));
-	} else if (alg == "RS512") {
-		verifier.allow_algorithm(jwt::algorithm::rs512(pem, "", "", ""));
-	} else {
-		// Pre-checked, but defensive.
-		return VerifyResult::DisallowedAlgorithm;
+	// jwt-cpp's algorithm constructors *throw* if the PEM doesn't match the
+	// algorithm's expected key shape (e.g. ES256 with a P-384 PEM, or RS256
+	// with an EC PEM). Treat any such throw as InvalidSignature -- the key
+	// the IdP advertised under this kid simply cannot have produced this
+	// signature, which is what the rest of the stack already assumes.
+	try {
+		if (alg == "RS256") {
+			verifier.allow_algorithm(jwt::algorithm::rs256(pem, "", "", ""));
+		} else if (alg == "RS384") {
+			verifier.allow_algorithm(jwt::algorithm::rs384(pem, "", "", ""));
+		} else if (alg == "RS512") {
+			verifier.allow_algorithm(jwt::algorithm::rs512(pem, "", "", ""));
+		} else if (alg == "ES256") {
+			verifier.allow_algorithm(jwt::algorithm::es256(pem, "", "", ""));
+		} else if (alg == "ES384") {
+			verifier.allow_algorithm(jwt::algorithm::es384(pem, "", "", ""));
+		} else if (alg == "EdDSA") {
+			verifier.allow_algorithm(jwt::algorithm::ed25519(pem, "", "", ""));
+		} else {
+			// Pre-checked, but defensive.
+			return VerifyResult::DisallowedAlgorithm;
+		}
+	} catch (...) {
+		return VerifyResult::InvalidSignature;
 	}
 
 	if (!opts.expected_issuer.empty()) {
@@ -265,6 +346,29 @@ std::optional<std::string> JwkRsaToPem(const Jwk &jwk) {
 	return RsaPublicKeyToPem(n_bin, e_bin);
 }
 
+std::optional<std::string> JwkEcToPem(const Jwk &jwk) {
+	if (jwk.x.empty() || jwk.y.empty() || jwk.crv.empty()) return std::nullopt;
+	std::string group;
+	if (jwk.crv == "P-256") group = "P-256";
+	else if (jwk.crv == "P-384") group = "P-384";
+	else return std::nullopt; // P-521 and others not supported by R-S-3
+	const auto x_dec = Base64UrlDecode(jwk.x);
+	const auto y_dec = Base64UrlDecode(jwk.y);
+	if (!x_dec || !y_dec) return std::nullopt;
+	const std::vector<unsigned char> x_bin(x_dec->begin(), x_dec->end());
+	const std::vector<unsigned char> y_bin(y_dec->begin(), y_dec->end());
+	return EcPublicKeyToPem(group, x_bin, y_bin);
+}
+
+std::optional<std::string> JwkOkpToPem(const Jwk &jwk) {
+	if (jwk.x.empty() || jwk.crv.empty()) return std::nullopt;
+	if (jwk.crv != "Ed25519") return std::nullopt; // Ed448 / X25519 out of scope
+	const auto x_dec = Base64UrlDecode(jwk.x);
+	if (!x_dec) return std::nullopt;
+	const std::vector<unsigned char> x_bin(x_dec->begin(), x_dec->end());
+	return OkpPublicKeyToPem("ED25519", x_bin);
+}
+
 VerifyResult VerifyJwt(std::string_view token, const Jwk &jwk,
                        const VerifyOptions &opts) {
 	if (token.empty()) {
@@ -284,13 +388,18 @@ VerifyResult VerifyJwt(std::string_view token, const Jwk &jwk,
 		return VerifyResult::DisallowedAlgorithm;
 	}
 
-	if (jwk.kty != "RSA") {
+	std::optional<std::string> pem;
+	if (jwk.kty == "RSA") {
+		pem = JwkRsaToPem(jwk);
+	} else if (jwk.kty == "EC") {
+		pem = JwkEcToPem(jwk);
+	} else if (jwk.kty == "OKP") {
+		pem = JwkOkpToPem(jwk);
+	} else {
 		return VerifyResult::UnsupportedKeyType;
 	}
-
-	const auto pem = JwkRsaToPem(jwk);
 	if (!pem) {
-		// Malformed JWK contents.
+		// Malformed JWK contents (missing fields, bad base64url, unknown curve).
 		return VerifyResult::Malformed;
 	}
 

@@ -2,6 +2,7 @@
 
 #include <chrono>
 #include <cstdint>
+#include <map>
 #include <string>
 #include <vector>
 
@@ -16,6 +17,8 @@
 #include "jwt_verify.hpp"
 
 using quack_oauth::Jwk;
+using quack_oauth::JwkEcToPem;
+using quack_oauth::JwkOkpToPem;
 using quack_oauth::JwkRsaToPem;
 using quack_oauth::VerifyJwt;
 using quack_oauth::VerifyOptions;
@@ -219,9 +222,221 @@ TEST_CASE("VerifyJwt: unsupported key type", "[jwt][verify][key]") {
 	const auto &k = GetTestKey();
 	const auto token = SignRs256(k, 1700003600, 1700000000, "https://idp.test",
 	                             "api://quack");
-	Jwk ec = k.jwk;
-	ec.kty = "EC"; // S-7a only supports RSA
-	CHECK(VerifyJwt(token, ec, BaseOpts()) == VerifyResult::UnsupportedKeyType);
+	Jwk weird = k.jwk;
+	weird.kty = "WEIRD"; // not RSA / EC / OKP
+	CHECK(VerifyJwt(token, weird, BaseOpts()) == VerifyResult::UnsupportedKeyType);
+}
+
+// ---------------------------------------------------------------------------
+// R-S-3 ES256 / ES384 (EC P-256 / P-384) round-trip
+// ---------------------------------------------------------------------------
+
+struct EcKey {
+	std::string priv_pem;
+	Jwk jwk;
+};
+
+// One fresh EC keypair per curve, generated once per process.
+const EcKey &GetEcKey(const std::string &crv_name) {
+	static std::map<std::string, EcKey> cache;
+	auto it = cache.find(crv_name);
+	if (it != cache.end()) return it->second;
+
+	int nid = 0;
+	std::string jwk_crv;
+	std::string jwk_alg;
+	if (crv_name == "P-256") {
+		nid = NID_X9_62_prime256v1;
+		jwk_crv = "P-256";
+		jwk_alg = "ES256";
+	} else if (crv_name == "P-384") {
+		nid = NID_secp384r1;
+		jwk_crv = "P-384";
+		jwk_alg = "ES384";
+	} else {
+		FAIL("unknown EC curve: " + crv_name);
+	}
+
+	EVP_PKEY *pkey = EVP_EC_gen(OBJ_nid2sn(nid));
+	REQUIRE(pkey != nullptr);
+
+	BIO *priv_bio = BIO_new(BIO_s_mem());
+	PEM_write_bio_PrivateKey(priv_bio, pkey, nullptr, nullptr, 0, nullptr, nullptr);
+	char *priv_data = nullptr;
+	const long priv_len = BIO_get_mem_data(priv_bio, &priv_data);
+	std::string priv_pem(priv_data, static_cast<std::size_t>(priv_len));
+	BIO_free(priv_bio);
+
+	BIGNUM *x_bn = nullptr;
+	BIGNUM *y_bn = nullptr;
+	EVP_PKEY_get_bn_param(pkey, OSSL_PKEY_PARAM_EC_PUB_X, &x_bn);
+	EVP_PKEY_get_bn_param(pkey, OSSL_PKEY_PARAM_EC_PUB_Y, &y_bn);
+
+	// EC coordinates in JWK are fixed-width per RFC 7518 §6.2.1.2: pad with
+	// leading zeros to the curve's field size.
+	const std::size_t coord_bytes = (crv_name == "P-256") ? 32 : 48;
+	auto bn_to_b64url_padded = [&](const BIGNUM *bn) {
+		std::vector<unsigned char> buf(coord_bytes, 0);
+		BN_bn2binpad(bn, buf.data(), static_cast<int>(coord_bytes));
+		return B64UrlNoPad(std::string(buf.begin(), buf.end()));
+	};
+
+	Jwk jwk;
+	jwk.kid = "test-ec-" + crv_name;
+	jwk.kty = "EC";
+	jwk.alg = jwk_alg;
+	jwk.use = "sig";
+	jwk.crv = jwk_crv;
+	jwk.x = bn_to_b64url_padded(x_bn);
+	jwk.y = bn_to_b64url_padded(y_bn);
+
+	BN_free(x_bn);
+	BN_free(y_bn);
+	EVP_PKEY_free(pkey);
+
+	cache.emplace(crv_name, EcKey{std::move(priv_pem), std::move(jwk)});
+	return cache[crv_name];
+}
+
+VerifyOptions EcOpts(std::int64_t now_s = 1700000000) {
+	auto o = BaseOpts(now_s);
+	o.allowed_algorithms = {"ES256", "ES384", "EdDSA"};
+	return o;
+}
+
+std::string SignEc(const EcKey &k, const std::string &alg,
+                   std::int64_t exp_s, std::int64_t iat_s,
+                   const std::string &iss, const std::string &aud) {
+	auto builder = jwt::create<TraitsT>()
+	                   .set_type("JWT")
+	                   .set_key_id(k.jwk.kid)
+	                   .set_issuer(iss)
+	                   .set_subject("alice")
+	                   .set_audience(aud)
+	                   .set_issued_at(std::chrono::system_clock::time_point(
+	                       std::chrono::seconds(iat_s)))
+	                   .set_expires_at(std::chrono::system_clock::time_point(
+	                       std::chrono::seconds(exp_s)));
+	if (alg == "ES256") {
+		return builder.sign(jwt::algorithm::es256("", k.priv_pem, "", ""));
+	}
+	return builder.sign(jwt::algorithm::es384("", k.priv_pem, "", ""));
+}
+
+TEST_CASE("VerifyJwt: ES256 happy path (R-S-3)", "[jwt][verify][ec]") {
+	const auto &k = GetEcKey("P-256");
+	const auto token = SignEc(k, "ES256", 1700003600, 1700000000,
+	                          "https://idp.test", "api://quack");
+	CHECK(VerifyJwt(token, k.jwk, EcOpts()) == VerifyResult::Ok);
+}
+
+TEST_CASE("VerifyJwt: ES384 happy path (R-S-3)", "[jwt][verify][ec]") {
+	const auto &k = GetEcKey("P-384");
+	const auto token = SignEc(k, "ES384", 1700003600, 1700000000,
+	                          "https://idp.test", "api://quack");
+	CHECK(VerifyJwt(token, k.jwk, EcOpts()) == VerifyResult::Ok);
+}
+
+TEST_CASE("VerifyJwt: ES256 token signed by a different EC key is rejected",
+          "[jwt][verify][ec][sig]") {
+	const auto &k1 = GetEcKey("P-256");
+	const auto token = SignEc(k1, "ES256", 1700003600, 1700000000,
+	                          "https://idp.test", "api://quack");
+	const auto &k2 = GetEcKey("P-384");
+	// Hand the verifier the wrong JWK (different curve, different key).
+	CHECK(VerifyJwt(token, k2.jwk, EcOpts()) != VerifyResult::Ok);
+}
+
+TEST_CASE("JwkEcToPem: round-trips both curves", "[jwk][pem][ec]") {
+	for (const auto &crv : {"P-256", "P-384"}) {
+		const auto &k = GetEcKey(crv);
+		const auto pem = JwkEcToPem(k.jwk);
+		REQUIRE(pem.has_value());
+		CHECK(pem->find("BEGIN PUBLIC KEY") != std::string::npos);
+		CHECK(pem->find("END PUBLIC KEY") != std::string::npos);
+	}
+}
+
+TEST_CASE("JwkEcToPem: missing x/y or unknown crv returns nullopt",
+          "[jwk][pem][ec][error]") {
+	Jwk j;
+	j.kid = "x";
+	j.kty = "EC";
+	j.crv = "P-256";
+	CHECK_FALSE(JwkEcToPem(j).has_value()); // no x/y
+	j.x = "AA";
+	j.y = "BB";
+	j.crv = "P-521"; // unsupported
+	CHECK_FALSE(JwkEcToPem(j).has_value());
+}
+
+// ---------------------------------------------------------------------------
+// R-S-3 EdDSA (Ed25519) round-trip
+// ---------------------------------------------------------------------------
+
+const EcKey &GetEd25519Key() {
+	static const EcKey k = [] {
+		EVP_PKEY *pkey = EVP_PKEY_Q_keygen(nullptr, nullptr, "ED25519");
+		REQUIRE(pkey != nullptr);
+
+		BIO *priv_bio = BIO_new(BIO_s_mem());
+		PEM_write_bio_PrivateKey(priv_bio, pkey, nullptr, nullptr, 0, nullptr, nullptr);
+		char *priv_data = nullptr;
+		const long priv_len = BIO_get_mem_data(priv_bio, &priv_data);
+		std::string priv_pem(priv_data, static_cast<std::size_t>(priv_len));
+		BIO_free(priv_bio);
+
+		std::size_t raw_len = 0;
+		EVP_PKEY_get_raw_public_key(pkey, nullptr, &raw_len);
+		std::vector<unsigned char> raw(raw_len);
+		EVP_PKEY_get_raw_public_key(pkey, raw.data(), &raw_len);
+
+		Jwk jwk;
+		jwk.kid = "test-ed25519";
+		jwk.kty = "OKP";
+		jwk.alg = "EdDSA";
+		jwk.use = "sig";
+		jwk.crv = "Ed25519";
+		jwk.x = B64UrlNoPad(std::string(raw.begin(), raw.end()));
+
+		EVP_PKEY_free(pkey);
+		return EcKey{std::move(priv_pem), std::move(jwk)};
+	}();
+	return k;
+}
+
+TEST_CASE("VerifyJwt: EdDSA (Ed25519) happy path (R-S-3)",
+          "[jwt][verify][okp]") {
+	const auto &k = GetEd25519Key();
+	auto builder = jwt::create<TraitsT>()
+	                   .set_type("JWT")
+	                   .set_key_id(k.jwk.kid)
+	                   .set_issuer("https://idp.test")
+	                   .set_subject("alice")
+	                   .set_audience("api://quack")
+	                   .set_issued_at(std::chrono::system_clock::time_point(
+	                       std::chrono::seconds(1700000000)))
+	                   .set_expires_at(std::chrono::system_clock::time_point(
+	                       std::chrono::seconds(1700003600)));
+	const auto token = builder.sign(jwt::algorithm::ed25519("", k.priv_pem, "", ""));
+	CHECK(VerifyJwt(token, k.jwk, EcOpts()) == VerifyResult::Ok);
+}
+
+TEST_CASE("JwkOkpToPem: Ed25519 round-trip", "[jwk][pem][okp]") {
+	const auto &k = GetEd25519Key();
+	const auto pem = JwkOkpToPem(k.jwk);
+	REQUIRE(pem.has_value());
+	CHECK(pem->find("BEGIN PUBLIC KEY") != std::string::npos);
+}
+
+TEST_CASE("JwkOkpToPem: unknown curve returns nullopt",
+          "[jwk][pem][okp][error]") {
+	Jwk j;
+	j.kid = "x";
+	j.kty = "OKP";
+	j.crv = "X25519"; // valid OKP curve, but not a signing curve
+	j.x = "AAA";
+	CHECK_FALSE(JwkOkpToPem(j).has_value());
 }
 
 TEST_CASE("JwkRsaToPem: known key roundtrips to a PEM SubjectPublicKeyInfo",

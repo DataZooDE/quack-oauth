@@ -197,6 +197,81 @@ void AuditLogScan(ClientContext &, TableFunctionInput &input, DataChunk &output)
 	output.SetCardinality(out_row);
 }
 
+// ---------------------------------------------------------------------------
+// quack_oauth_current_principal() -- per-session Principal cache as a table.
+// Mirrors R-S-6: "subject, issuer, scopes, and a JSON blob of claims, derived
+// from the most recently authenticated token on the current connection." We
+// don't have a way to identify "current connection" from a regular scalar
+// invocation (quack's session_id is server-side state), so the function
+// surfaces ALL cached principals as rows -- operators filter as they like.
+// ---------------------------------------------------------------------------
+
+struct PrincipalRow {
+	std::string session_id;
+	std::string subject;
+	std::string issuer;
+	std::vector<std::string> scopes;
+	std::int64_t exp = 0;
+};
+
+struct CurrentPrincipalBindData : public TableFunctionData {
+	std::vector<PrincipalRow> rows;
+};
+
+struct CurrentPrincipalGlobalState : public GlobalTableFunctionState {
+	idx_t cursor = 0;
+};
+
+unique_ptr<FunctionData> CurrentPrincipalBind(ClientContext &, TableFunctionBindInput &,
+                                              vector<LogicalType> &return_types,
+                                              vector<string> &names) {
+	return_types = {LogicalType::VARCHAR, LogicalType::VARCHAR, LogicalType::VARCHAR,
+	                LogicalType::LIST(LogicalType::VARCHAR), LogicalType::BIGINT};
+	names = {"session_id", "subject", "issuer", "scopes", "exp"};
+
+	auto data = make_uniq<CurrentPrincipalBindData>();
+	auto &state = GetQuackOauthState();
+	std::lock_guard<std::mutex> guard(state.mu);
+	data->rows.reserve(state.session_principals.size());
+	for (const auto &kv : state.session_principals) {
+		PrincipalRow row;
+		row.session_id = kv.first;
+		row.subject = kv.second.subject;
+		row.issuer = kv.second.issuer;
+		row.scopes = kv.second.scopes;
+		row.exp = kv.second.exp;
+		data->rows.push_back(std::move(row));
+	}
+	return std::move(data);
+}
+
+unique_ptr<GlobalTableFunctionState>
+CurrentPrincipalInit(ClientContext &, TableFunctionInitInput &) {
+	return make_uniq<CurrentPrincipalGlobalState>();
+}
+
+void CurrentPrincipalScan(ClientContext &, TableFunctionInput &input, DataChunk &output) {
+	auto &bind_data = input.bind_data->Cast<CurrentPrincipalBindData>();
+	auto &state = input.global_state->Cast<CurrentPrincipalGlobalState>();
+	idx_t out_row = 0;
+	while (state.cursor < bind_data.rows.size() && out_row < STANDARD_VECTOR_SIZE) {
+		const auto &row = bind_data.rows[state.cursor];
+		output.SetValue(0, out_row, Value(row.session_id));
+		output.SetValue(1, out_row,
+		                row.subject.empty() ? Value(LogicalType::VARCHAR) : Value(row.subject));
+		output.SetValue(2, out_row,
+		                row.issuer.empty() ? Value(LogicalType::VARCHAR) : Value(row.issuer));
+		vector<Value> scope_vs;
+		scope_vs.reserve(row.scopes.size());
+		for (const auto &s : row.scopes) scope_vs.emplace_back(s);
+		output.SetValue(3, out_row, Value::LIST(LogicalType::VARCHAR, scope_vs));
+		output.SetValue(4, out_row, Value::BIGINT(row.exp));
+		state.cursor++;
+		out_row++;
+	}
+	output.SetCardinality(out_row);
+}
+
 } // namespace
 
 void RegisterQuackOauthDiagnose(ExtensionLoader &loader) {
@@ -213,6 +288,27 @@ void RegisterQuackOauthDiagnose(ExtensionLoader &loader) {
 		desc.parameter_names = {};
 		desc.parameter_types = {};
 		desc.examples = {"SELECT * FROM quack_oauth_diagnose()"};
+		desc.categories = {"quack_oauth"};
+		info.descriptions.push_back(std::move(desc));
+		loader.RegisterFunction(std::move(info));
+	}
+
+	{
+		TableFunction fn("quack_oauth_current_principal", {},
+		                 CurrentPrincipalScan, CurrentPrincipalBind, CurrentPrincipalInit);
+		CreateTableFunctionInfo info(fn);
+		FunctionDescription desc;
+		desc.description =
+		    "Returns the per-session Principal cache as a typed table (R-S-6): "
+		    "one row per active session_id with subject, issuer, scopes "
+		    "(VARCHAR[]), and exp (BIGINT unix seconds). Populated by the "
+		    "3-arg form of quack_oauth_check_token. Useful for ops "
+		    "introspection -- e.g. `SELECT * FROM quack_oauth_current_principal() "
+		    "WHERE exp < epoch(now())` shows stale entries that should be "
+		    "expired.";
+		desc.parameter_names = {};
+		desc.parameter_types = {};
+		desc.examples = {"SELECT * FROM quack_oauth_current_principal()"};
 		desc.categories = {"quack_oauth"};
 		info.descriptions.push_back(std::move(desc));
 		loader.RegisterFunction(std::move(info));

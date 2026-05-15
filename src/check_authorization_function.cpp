@@ -19,6 +19,7 @@
 #include "decision_cache.hpp"
 #include "policy.hpp"
 #include "policy_table.hpp"
+#include "principal_expiry.hpp"
 #include "quack_oauth_state.hpp"
 #include "tracing.hpp"
 
@@ -56,6 +57,14 @@ bool LookupDefaultAllow(ClientContext &context) {
 	return s == "allow";
 }
 
+std::int64_t LookupClockSkew(ClientContext &context) {
+	Value v;
+	if (!context.TryGetCurrentSetting("quack_oauth_clock_skew_s", v) || v.IsNull()) {
+		return 60; // matches R-S-3 default
+	}
+	return static_cast<std::int64_t>(v.GetValue<std::int32_t>());
+}
+
 void CheckAuthorizationScalarFun(DataChunk &args, ExpressionState &state,
                                  Vector &result) {
 	auto &context = state.GetContext();
@@ -83,6 +92,7 @@ void CheckAuthorizationScalarFun(DataChunk &args, ExpressionState &state,
 	const std::int64_t now_s = std::chrono::duration_cast<std::chrono::seconds>(
 	                               std::chrono::system_clock::now().time_since_epoch())
 	                               .count();
+	const std::int64_t clock_skew_s = LookupClockSkew(context);
 
 	BinaryExecutor::Execute<string_t, string_t, bool>(
 	    args.data[0], args.data[1], result, args.size(),
@@ -107,6 +117,16 @@ void CheckAuthorizationScalarFun(DataChunk &args, ExpressionState &state,
 		    }
 		    e.subject = it->second.subject;
 		    e.issuer = it->second.issuer;
+		    // R-S-9: every check_authorization re-evaluates token validity.
+		    // The principal cache from check_token gives us `exp`; if the
+		    // wall clock is past it (plus skew), drop the entry and deny.
+		    if (quack_oauth::IsPrincipalExpired(it->second, now_s, clock_skew_s)) {
+			    shared_state.session_principals.erase(it);
+			    e.event_type = quack_oauth::AuditEventType::AuthzDeny;
+			    e.reason = "principal expired";
+			    EmitAuditEvent(context, e);
+			    return false;
+		    }
 		    if (policy_load_failed) {
 			    e.event_type = quack_oauth::AuditEventType::AuthzDeny;
 			    e.reason = "policy_table load failed";
