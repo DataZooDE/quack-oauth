@@ -240,13 +240,16 @@ Explicit baselines (consistent with the references above):
   extension repo (`build/release/repository/<version>/<platform>/`),
   not `~/.duckdb/extensions/`. So `require quack` silently *skips*
   the test if quack isn't in the build repo, even when the operator
-  has it installed via `INSTALL quack;` at the shell level. Workaround:
-  use `statement ok LOAD <ext>;` — `LOAD` honours
-  `allow_unsigned_extensions` (which the runner enables) and finds
-  the extension at the user's default install path. Pattern in
-  `test/sql/oauth_quack_swap.test`. The `require` skip-on-missing is
-  fine when you genuinely want CI tolerance; use `LOAD` when "must
-  be installed locally" is the contract.
+  has it installed via `INSTALL quack;` at the shell level. `LOAD <ext>`
+  on the other hand honours `allow_unsigned_extensions` (which the
+  runner enables) and finds the extension at the user's default
+  install path -- so it works locally but *hard-fails* in CI because
+  the CI runner has no `~/.duckdb/extensions/`. **The default choice
+  for tests that need quack is `require quack` -- gracefully skipping
+  in CI is much better than a red build.** The canonical end-to-end
+  coverage of the quack swap is `make e2e` (Python+uv harness; boots
+  a real quack server in-process), which already exercises the real
+  wire. Pattern in `test/sql/oauth_quack_swap.test`.
 - **Pulling another DuckDB extension via `duckdb_extension_load(GIT_URL ...)`
   needs the target's submodules**: e.g. duckdb-quack's CMakeLists references
   `duckdb/third_party/httplib` as a relative path inside its own tree.
