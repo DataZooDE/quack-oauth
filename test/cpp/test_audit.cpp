@@ -110,6 +110,11 @@ TEST_CASE("FormatAuditLine: quoted values escape backslash + quote",
 	AuditEvent e = MakeEvent(AuditEventType::AuthzDeny, 1, "user");
 	e.reason = "rule says \"no\" \\ end";
 	const auto line = FormatAuditLine(e);
-	// The escaped form: \"...\\\"no\\\" \\\\ end\"
-	CHECK(line.find(R"(reason="rule says \"no\" \\ end")") != std::string::npos);
+	// The escaped form on the wire: reason="rule says \"no\" \\ end"
+	// (Use a plain-escaped string instead of a raw string here -- MSVC's
+	// preprocessor mishandles raw strings nested inside Catch2's CHECK
+	// macro expansion.)
+	const std::string expected =
+	    "reason=\"rule says \\\"no\\\" \\\\ end\"";
+	CHECK(line.find(expected) != std::string::npos);
 }
