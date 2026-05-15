@@ -2,18 +2,27 @@
 # description: 3-arg quack_oauth_check_token overload + wiring as quack's authentication callback (S-9, R-S-1 redux).
 # group: [sql]
 #
-# This test relies on the stock `quack` extension being installed locally
-# (it ships from the DuckDB core extension repo: `INSTALL quack;`). Pre-load
-# it before quack_oauth so the auth setting `quack_authentication_function`
-# exists. If quack isn't installed, the explicit LOAD below will fail with
-# a clear error rather than silently skipping.
+# This test exercises the actual callback-name swap that activates
+# quack-oauth in front of quack. It requires the `quack` extension to
+# be available -- the `require quack` directive tells sqllogictest to
+# SKIP the test (rather than fail) when it isn't, so CI runs don't
+# break for environments that haven't pre-installed quack.
+#
+# Local dev: install quack once via `duckdb -c "INSTALL quack;"`. Some
+# DuckDB unittest builds also look in `build/release/repository/<ver>/<plat>/`
+# -- see CLAUDE.md's "require <ext> vs LOAD <ext>" gotcha.
+#
+# Canonical end-to-end coverage of the swap lives in the Python+uv
+# harness at e2e/ (`make e2e`), which boots a real quack server with
+# our callbacks wired in and drives traffic through the wire protocol.
 
-statement ok
-LOAD quack;
+require quack
 
 require quack_oauth
 
-# Both overloads of quack_oauth_check_token are registered.
+# Both overloads of quack_oauth_check_token are registered (works
+# without quack too, but kept here so the assertion lands alongside
+# the swap it exercises).
 query II
 SELECT parameter_types::VARCHAR, return_type
 FROM duckdb_functions()
