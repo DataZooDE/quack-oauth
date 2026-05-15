@@ -110,9 +110,15 @@ install(
 # ---------------------------------------------------------------------------
 # Catch2 unit-test binary -- pure-logic tests, no DuckDB linkage.
 # Built only when Catch2 is available (i.e. when vcpkg provided it).
+#
+# Skipped entirely under EMSCRIPTEN: the test binary isn't runnable in
+# wasm anyway, and on the wasm_threads variant linking the test binary
+# fails because the vcpkg OpenSSL port wasn't compiled with the atomics
+# / bulk-memory features that --shared-memory requires. The extension
+# itself links fine because it's a shared library not an executable.
 # ---------------------------------------------------------------------------
 find_package(Catch2 3 CONFIG QUIET)
-if(Catch2_FOUND)
+if(Catch2_FOUND AND NOT EMSCRIPTEN)
   file(GLOB QUACK_OAUTH_UNIT_TEST_SOURCES CONFIGURE_DEPENDS test/cpp/test_*.cpp)
   if(QUACK_OAUTH_UNIT_TEST_SOURCES)
     add_executable(quack_oauth_unit_tests
