@@ -16,16 +16,16 @@ namespace quack_oauth {
 // from this struct on first use.
 struct Jwk {
 	std::string kid;
-	std::string kty;        // RSA, EC, OKP
-	std::string alg;        // RS256, ES256, EdDSA, ...
-	std::string use;        // "sig" expected for our purposes
+	std::string kty; // RSA, EC, OKP
+	std::string alg; // RS256, ES256, EdDSA, ...
+	std::string use; // "sig" expected for our purposes
 	// RSA
 	std::string n;
 	std::string e;
 	// EC / OKP
-	std::string crv;        // P-256, P-384, Ed25519, ...
+	std::string crv; // P-256, P-384, Ed25519, ...
 	std::string x;
-	std::string y;          // EC only
+	std::string y; // EC only
 };
 
 enum class JwksLookupStatus {
@@ -36,8 +36,8 @@ enum class JwksLookupStatus {
 
 struct JwksLookup {
 	JwksLookupStatus status = JwksLookupStatus::Miss;
-	std::optional<Jwk> jwk;          // populated only on Hit
-	std::int64_t retry_after_s = 0;  // populated only on RateLimited
+	std::optional<Jwk> jwk;         // populated only on Hit
+	std::int64_t retry_after_s = 0; // populated only on RateLimited
 };
 
 // Per-process JWKS cache: thread-safety is a higher-slice concern; this layer

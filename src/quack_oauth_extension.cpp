@@ -17,8 +17,8 @@
 #include "refresh_function.hpp"
 #endif
 
-#include "duckdb.hpp"
 #include "duckdb/main/config.hpp"
+#include "duckdb/main/database.hpp"
 #include "duckdb/main/extension/extension_loader.hpp"
 
 namespace duckdb {
@@ -43,11 +43,11 @@ void QuackOauthExtension::Load(ExtensionLoader &loader) {
 	LoadInternal(loader);
 }
 
-std::string QuackOauthExtension::Name() {
+string QuackOauthExtension::Name() {
 	return "quack_oauth";
 }
 
-std::string QuackOauthExtension::Version() const {
+string QuackOauthExtension::Version() const {
 #ifdef EXT_VERSION_QUACK_OAUTH
 	return EXT_VERSION_QUACK_OAUTH;
 #else

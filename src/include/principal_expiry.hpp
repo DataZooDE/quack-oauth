@@ -17,7 +17,6 @@ namespace quack_oauth {
 //     MUST NOT be accepted for processing" only when *after* `exp`).
 //   - `skew_s` is added to `exp` to give the same leeway operators
 //     already get on JWT signature verification (`quack_oauth_clock_skew_s`).
-bool IsPrincipalExpired(const Principal &p, std::int64_t now_s,
-                        std::int64_t skew_s);
+bool IsPrincipalExpired(const Principal &p, std::int64_t now_s, std::int64_t skew_s);
 
 } // namespace quack_oauth

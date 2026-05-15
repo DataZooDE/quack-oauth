@@ -250,6 +250,20 @@ Explicit baselines (consistent with the references above):
   coverage of the quack swap is `make e2e` (Python+uv harness; boots
   a real quack server in-process), which already exercises the real
   wire. Pattern in `test/sql/oauth_quack_swap.test`.
+- **DuckDB's core `HTTPUtil` is HTTP-only without `httpfs`.** The default
+  `HTTPLibClient` (in `duckdb/src/main/http/http_util.cpp`) wraps
+  `duckdb_httplib::Client` (not `SSLClient`) and throws
+  `NotImplementedException` on POST/PUT/HEAD/DELETE. HTTPS + POST support
+  is provided by `httpfs` registering its own `HTTPUtil` implementation.
+  So migrating `src/http_client_duckdb.cpp` to `HTTPUtil::Get(*context.db).Request(...)`
+  would create a runtime dependency on `LOAD httpfs`. Since OAuth/OIDC
+  endpoints are virtually always HTTPS + POST (token endpoint,
+  introspection, tokeninfo), we deliberately keep our own
+  `cpp-httplib`-backed `DuckdbHttpClient` and `RetryingHttpClient` rather
+  than introducing the httpfs precondition. Pattern reference for the
+  HTTPUtil API (when we eventually do migrate, e.g. after R-N-X "make
+  httpfs a hard dep") is `duckdb/src/main/extension/extension_install.cpp`
+  lines 433-449.
 - **Pulling another DuckDB extension via `duckdb_extension_load(GIT_URL ...)`
   needs the target's submodules**: e.g. duckdb-quack's CMakeLists references
   `duckdb/third_party/httplib` as a relative path inside its own tree.

@@ -13,8 +13,7 @@ using quack_oauth::Principal;
 
 namespace {
 
-Principal MakePrincipal(const std::string &sub,
-                        std::initializer_list<std::string> scopes) {
+Principal MakePrincipal(const std::string &sub, std::initializer_list<std::string> scopes) {
 	Principal p;
 	p.subject = sub;
 	p.scopes.assign(scopes);
@@ -24,15 +23,15 @@ Principal MakePrincipal(const std::string &sub,
 } // namespace
 
 TEST_CASE("ActionFromString: known names", "[policy]") {
-	CHECK(*ActionFromString("Attach")     == Action::Attach);
-	CHECK(*ActionFromString("Scan")       == Action::Scan);
-	CHECK(*ActionFromString("CopyTo")     == Action::CopyTo);
-	CHECK(*ActionFromString("CopyFrom")   == Action::CopyFrom);
+	CHECK(*ActionFromString("Attach") == Action::Attach);
+	CHECK(*ActionFromString("Scan") == Action::Scan);
+	CHECK(*ActionFromString("CopyTo") == Action::CopyTo);
+	CHECK(*ActionFromString("CopyFrom") == Action::CopyFrom);
 	CHECK(*ActionFromString("ServeAdmin") == Action::ServeAdmin);
 }
 
 TEST_CASE("ActionFromString: unknown name → nullopt", "[policy]") {
-	CHECK_FALSE(ActionFromString("attach").has_value());     // case sensitive
+	CHECK_FALSE(ActionFromString("attach").has_value()); // case sensitive
 	CHECK_FALSE(ActionFromString("Vandalise").has_value());
 	CHECK_FALSE(ActionFromString("").has_value());
 }
@@ -51,8 +50,7 @@ TEST_CASE("EvaluatePolicy: empty document, default allow", "[policy]") {
 	CHECK(EvaluatePolicy(d, p, Action::ServeAdmin, "").decision == Decision::Allow);
 }
 
-TEST_CASE("EvaluatePolicy: scope-gated rule allows the right principal",
-          "[policy]") {
+TEST_CASE("EvaluatePolicy: scope-gated rule allows the right principal", "[policy]") {
 	PolicyDocument d;
 	{
 		PolicyRule r;
@@ -67,14 +65,12 @@ TEST_CASE("EvaluatePolicy: scope-gated rule allows the right principal",
 	CHECK(EvaluatePolicy(d, reader, Action::CopyTo, "").decision == Decision::Deny);
 }
 
-TEST_CASE("EvaluatePolicy: subject-gated rule",
-          "[policy]") {
+TEST_CASE("EvaluatePolicy: subject-gated rule", "[policy]") {
 	PolicyDocument d;
 	{
 		PolicyRule r;
 		r.subject = "admin@example.com";
-		r.actions = {Action::ServeAdmin, Action::Scan, Action::Attach,
-		             Action::CopyTo, Action::CopyFrom};
+		r.actions = {Action::ServeAdmin, Action::Scan, Action::Attach, Action::CopyTo, Action::CopyFrom};
 		r.allow = true;
 		d.rules.push_back(r);
 	}
@@ -84,8 +80,7 @@ TEST_CASE("EvaluatePolicy: subject-gated rule",
 	CHECK(EvaluatePolicy(d, regular, Action::Scan, "").decision == Decision::Deny);
 }
 
-TEST_CASE("EvaluatePolicy: rule order matters -- first match wins",
-          "[policy]") {
+TEST_CASE("EvaluatePolicy: rule order matters -- first match wins", "[policy]") {
 	PolicyDocument d;
 	{
 		PolicyRule block;
@@ -105,8 +100,7 @@ TEST_CASE("EvaluatePolicy: rule order matters -- first match wins",
 	CHECK(EvaluatePolicy(d, alice_reader, Action::Scan, "").decision == Decision::Allow);
 }
 
-TEST_CASE("EvaluatePolicy: default allow + explicit deny",
-          "[policy]") {
+TEST_CASE("EvaluatePolicy: default allow + explicit deny", "[policy]") {
 	PolicyDocument d;
 	d.default_allow = true;
 	{
@@ -115,14 +109,11 @@ TEST_CASE("EvaluatePolicy: default allow + explicit deny",
 		block.allow = false;
 		d.rules.push_back(block);
 	}
-	CHECK(EvaluatePolicy(d, MakePrincipal("blocked-user", {}), Action::Scan, "")
-	          .decision == Decision::Deny);
-	CHECK(EvaluatePolicy(d, MakePrincipal("anyone-else", {}), Action::Scan, "")
-	          .decision == Decision::Allow);
+	CHECK(EvaluatePolicy(d, MakePrincipal("blocked-user", {}), Action::Scan, "").decision == Decision::Deny);
+	CHECK(EvaluatePolicy(d, MakePrincipal("anyone-else", {}), Action::Scan, "").decision == Decision::Allow);
 }
 
-TEST_CASE("EvaluatePolicy: rule with no constraints matches everything",
-          "[policy]") {
+TEST_CASE("EvaluatePolicy: rule with no constraints matches everything", "[policy]") {
 	PolicyDocument d;
 	{
 		PolicyRule r;

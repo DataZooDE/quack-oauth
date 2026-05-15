@@ -2,96 +2,81 @@
 
 #include <sstream>
 
-#include "duckdb.hpp"
-#include "duckdb/catalog/catalog_transaction.hpp"
+#include "duckdb/common/types/value.hpp"
 #include "duckdb/logging/logger.hpp"
+#include "duckdb/main/client_context.hpp"
 #include "duckdb/main/connection.hpp"
-#include "duckdb/main/secret/secret_manager.hpp"
+#include "duckdb/main/prepared_statement.hpp"
 
 #include "quack_oauth_state.hpp"
+#include "secret_accessor.hpp"
 
 namespace duckdb {
 
-namespace {
-
 // Resolve the `audit_table` field on the active server SECRET. Empty
 // when no SECRET is selected or the field is unset.
-std::string LookupAuditTable(ClientContext &context) {
+static string LookupAuditTable(ClientContext &context) {
 	Value v;
-	if (!context.TryGetCurrentSetting("quack_oauth_server_secret_name", v) ||
-	    v.IsNull()) {
+	if (!context.TryGetCurrentSetting("quack_oauth_server_secret_name", v) || v.IsNull()) {
 		return "";
 	}
-	const auto secret_name = v.ToString();
-	if (secret_name.empty()) return "";
-
-	auto &secret_manager = SecretManager::Get(context);
-	auto transaction = CatalogTransaction::GetSystemCatalogTransaction(context);
-	auto secret_entry = secret_manager.GetSecretByName(transaction, secret_name);
-	if (!secret_entry) return "";
-	const auto *kv = dynamic_cast<const KeyValueSecret *>(secret_entry->secret.get());
-	if (!kv) return "";
-	const auto it = kv->secret_map.find("audit_table");
-	return it != kv->secret_map.end() ? it->second.ToString() : std::string();
+	auto accessor = TryOpenSecret(context, v.ToString(), "quack_oauth_server");
+	return accessor.Get("audit_table");
 }
 
 // Quote an identifier (or qualified identifier) for safe SQL splicing.
 // Same shape as policy_table.cpp's QuoteQualifiedIdentifier.
-std::string QuoteQualifiedIdentifier(const std::string &qualified) {
-	std::string out;
-	std::string segment;
+static string QuoteQualifiedIdentifier(const string &qualified) {
+	string out;
+	string segment;
 	auto flush = [&](bool more) {
 		out.push_back('"');
 		for (char c : segment) {
-			if (c == '"') out.push_back('"');
+			if (c == '"')
+				out.push_back('"');
 			out.push_back(c);
 		}
 		out.push_back('"');
-		if (more) out.push_back('.');
+		if (more)
+			out.push_back('.');
 		segment.clear();
 	};
 	for (char c : qualified) {
-		if (c == '.') flush(true);
-		else segment += c;
+		if (c == '.')
+			flush(true);
+		else
+			segment += c;
 	}
 	flush(false);
 	return out;
 }
 
-void InsertAuditRow(ClientContext &context, const std::string &table,
-                    const quack_oauth::AuditEvent &event) {
+static void InsertAuditRow(ClientContext &context, const string &table, const quack_oauth::AuditEvent &event) {
 	Connection conn(*context.db);
-	std::string sql =
-	    "INSERT INTO " + QuoteQualifiedIdentifier(table) +
-	    " (timestamp_unix_s, event_type, subject, issuer, kid, token_hash, "
-	    "action, reason) VALUES (?, ?, ?, ?, ?, ?, ?, ?)";
+	string sql = "INSERT INTO " + QuoteQualifiedIdentifier(table) +
+	             " (timestamp_unix_s, event_type, subject, issuer, kid, token_hash, "
+	             "action, reason) VALUES (?, ?, ?, ?, ?, ?, ?, ?)";
 	auto stmt = conn.Prepare(sql);
 	if (stmt->HasError()) {
-		DUCKDB_LOG_WARNING(context,
-		    "quack_oauth audit_table insert prepare failed: " + stmt->GetError());
+		DUCKDB_LOG_WARNING(context, "quack_oauth audit_table insert prepare failed: " + stmt->GetError());
 		return;
 	}
-	auto result = stmt->Execute(
-	    Value::BIGINT(event.timestamp_unix_s),
-	    Value(quack_oauth::AuditEventTypeName(event.event_type)),
-	    event.subject.empty() ? Value(LogicalType::VARCHAR) : Value(event.subject),
-	    event.issuer.empty()  ? Value(LogicalType::VARCHAR) : Value(event.issuer),
-	    event.kid.empty()     ? Value(LogicalType::VARCHAR) : Value(event.kid),
-	    event.token_hash.empty() ? Value(LogicalType::VARCHAR) : Value(event.token_hash),
-	    event.action.empty()  ? Value(LogicalType::VARCHAR) : Value(event.action),
-	    event.reason.empty()  ? Value(LogicalType::VARCHAR) : Value(event.reason));
+	auto result =
+	    stmt->Execute(Value::BIGINT(event.timestamp_unix_s), Value(quack_oauth::AuditEventTypeName(event.event_type)),
+	                  event.subject.empty() ? Value(LogicalType::VARCHAR) : Value(event.subject),
+	                  event.issuer.empty() ? Value(LogicalType::VARCHAR) : Value(event.issuer),
+	                  event.kid.empty() ? Value(LogicalType::VARCHAR) : Value(event.kid),
+	                  event.token_hash.empty() ? Value(LogicalType::VARCHAR) : Value(event.token_hash),
+	                  event.action.empty() ? Value(LogicalType::VARCHAR) : Value(event.action),
+	                  event.reason.empty() ? Value(LogicalType::VARCHAR) : Value(event.reason));
 	if (result->HasError()) {
-		DUCKDB_LOG_WARNING(context,
-		    "quack_oauth audit_table insert failed: " + result->GetError());
+		DUCKDB_LOG_WARNING(context, "quack_oauth audit_table insert failed: " + result->GetError());
 	}
 }
 
-bool IsDenialEvent(quack_oauth::AuditEventType t) {
-	return t == quack_oauth::AuditEventType::TokenRejected ||
-	       t == quack_oauth::AuditEventType::AuthzDeny;
+static bool IsDenialEvent(quack_oauth::AuditEventType t) {
+	return t == quack_oauth::AuditEventType::TokenRejected || t == quack_oauth::AuditEventType::AuthzDeny;
 }
-
-} // namespace
 
 void EmitAuditEvent(ClientContext &context, const quack_oauth::AuditEvent &event) {
 	// Sink 1: in-memory ring (assumed: caller holds the state mutex).

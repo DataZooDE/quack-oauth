@@ -82,7 +82,7 @@ const TestKey &GetValidatorKey() {
 		BN_free(e_bn);
 		EVP_PKEY_free(pkey);
 
-		return TestKey{std::move(priv_pem), std::move(jwk)};
+		return TestKey {std::move(priv_pem), std::move(jwk)};
 	}();
 	return k;
 }
@@ -101,7 +101,9 @@ std::string Sign(const TestKey &k, std::int64_t exp_s, std::int64_t iat_s) {
 
 std::string JwksWith(const Jwk &j) {
 	// Hand-rolled JSON to avoid pulling picojson into the test.
-	auto quote = [](const std::string &s) { return std::string("\"") + s + "\""; };
+	auto quote = [](const std::string &s) {
+		return std::string("\"") + s + "\"";
+	};
 	std::string body = "{\"keys\":[{";
 	body += quote("kid") + ":" + quote(j.kid) + ",";
 	body += quote("kty") + ":" + quote(j.kty) + ",";
@@ -138,28 +140,26 @@ public:
 
 } // namespace
 
-TEST_CASE("Validator: cache hit short-circuits the HTTP fetch",
-          "[validator][cache-hit]") {
+TEST_CASE("Validator: cache hit short-circuits the HTTP fetch", "[validator][cache-hit]") {
 	const auto &k = GetValidatorKey();
 	JwksCache cache(30);
 	cache.OnFetchSuccess(k.jwk, 1700000000);
 
 	FakeHttpClient http;
-	ValidateContext ctx{http, cache, "https://idp.test/jwks"};
+	ValidateContext ctx {http, cache, "https://idp.test/jwks"};
 
 	const auto token = Sign(k, 1700003600, 1700000000);
 	CHECK(ValidateToken(token, BaseOpts(), ctx) == VerifyResult::Ok);
 	CHECK(http.call_count == 0);
 }
 
-TEST_CASE("Validator: cache miss triggers a fetch, populates, then verifies",
-          "[validator][cache-miss]") {
+TEST_CASE("Validator: cache miss triggers a fetch, populates, then verifies", "[validator][cache-miss]") {
 	const auto &k = GetValidatorKey();
 	JwksCache cache(30);
 
 	FakeHttpClient http;
-	http.next_response = IHttpClient::Response{200, JwksWith(k.jwk)};
-	ValidateContext ctx{http, cache, "https://idp.test/jwks"};
+	http.next_response = IHttpClient::Response {200, JwksWith(k.jwk)};
+	ValidateContext ctx {http, cache, "https://idp.test/jwks"};
 
 	const auto token = Sign(k, 1700003600, 1700000000);
 	CHECK(ValidateToken(token, BaseOpts(), ctx) == VerifyResult::Ok);
@@ -168,14 +168,13 @@ TEST_CASE("Validator: cache miss triggers a fetch, populates, then verifies",
 	CHECK(cache.Size() == 1);
 }
 
-TEST_CASE("Validator: rate-limited cache returns UnknownKid without fetching",
-          "[validator][rate-limit]") {
+TEST_CASE("Validator: rate-limited cache returns UnknownKid without fetching", "[validator][rate-limit]") {
 	const auto &k = GetValidatorKey();
 	JwksCache cache(30);
 	cache.OnFetchMiss(k.jwk.kid, 1700000000);
 
 	FakeHttpClient http;
-	ValidateContext ctx{http, cache, "https://idp.test/jwks"};
+	ValidateContext ctx {http, cache, "https://idp.test/jwks"};
 
 	const auto token = Sign(k, 1700003600, 1700000000);
 	// 10s after the recorded miss -- inside the 30s rate-limit window.
@@ -183,35 +182,32 @@ TEST_CASE("Validator: rate-limited cache returns UnknownKid without fetching",
 	CHECK(http.call_count == 0);
 }
 
-TEST_CASE("Validator: HTTP failure surfaces as JwksFetchFailed",
-          "[validator][http-fail]") {
+TEST_CASE("Validator: HTTP failure surfaces as JwksFetchFailed", "[validator][http-fail]") {
 	const auto &k = GetValidatorKey();
 	JwksCache cache(30);
 
 	FakeHttpClient http;
 	http.next_response = std::nullopt; // network error -- no response at all
-	ValidateContext ctx{http, cache, "https://idp.test/jwks"};
+	ValidateContext ctx {http, cache, "https://idp.test/jwks"};
 
 	const auto token = Sign(k, 1700003600, 1700000000);
 	CHECK(ValidateToken(token, BaseOpts(), ctx) == VerifyResult::JwksFetchFailed);
 	CHECK(cache.Size() == 0);
 }
 
-TEST_CASE("Validator: HTTP non-200 surfaces as JwksFetchFailed",
-          "[validator][http-fail]") {
+TEST_CASE("Validator: HTTP non-200 surfaces as JwksFetchFailed", "[validator][http-fail]") {
 	const auto &k = GetValidatorKey();
 	JwksCache cache(30);
 
 	FakeHttpClient http;
-	http.next_response = IHttpClient::Response{503, "service unavailable"};
-	ValidateContext ctx{http, cache, "https://idp.test/jwks"};
+	http.next_response = IHttpClient::Response {503, "service unavailable"};
+	ValidateContext ctx {http, cache, "https://idp.test/jwks"};
 
 	const auto token = Sign(k, 1700003600, 1700000000);
 	CHECK(ValidateToken(token, BaseOpts(), ctx) == VerifyResult::JwksFetchFailed);
 }
 
-TEST_CASE("Validator: kid absent from JWKS response records a miss",
-          "[validator][unknown-kid]") {
+TEST_CASE("Validator: kid absent from JWKS response records a miss", "[validator][unknown-kid]") {
 	const auto &k = GetValidatorKey();
 	JwksCache cache(30);
 
@@ -221,8 +217,8 @@ TEST_CASE("Validator: kid absent from JWKS response records a miss",
 	other.kid = "different-kid";
 
 	FakeHttpClient http;
-	http.next_response = IHttpClient::Response{200, JwksWith(other)};
-	ValidateContext ctx{http, cache, "https://idp.test/jwks"};
+	http.next_response = IHttpClient::Response {200, JwksWith(other)};
+	ValidateContext ctx {http, cache, "https://idp.test/jwks"};
 
 	const auto token = Sign(k, 1700003600, 1700000000);
 	CHECK(ValidateToken(token, BaseOpts(), ctx) == VerifyResult::UnknownKid);
@@ -233,13 +229,12 @@ TEST_CASE("Validator: kid absent from JWKS response records a miss",
 	CHECK(http.call_count == 1); // no second fetch
 }
 
-TEST_CASE("Validator: forbidden algorithm rejected before any cache access",
-          "[validator][alg]") {
+TEST_CASE("Validator: forbidden algorithm rejected before any cache access", "[validator][alg]") {
 	const auto &k = GetValidatorKey();
 	JwksCache cache(30);
 
 	FakeHttpClient http;
-	ValidateContext ctx{http, cache, "https://idp.test/jwks"};
+	ValidateContext ctx {http, cache, "https://idp.test/jwks"};
 
 	// HS256 token; the validator MUST reject before touching cache or HTTP.
 	const auto token = jwt::create<TraitsT>()
@@ -247,20 +242,17 @@ TEST_CASE("Validator: forbidden algorithm rejected before any cache access",
 	                       .set_key_id(k.jwk.kid)
 	                       .set_issuer("https://idp.test")
 	                       .set_audience("api://quack")
-	                       .set_expires_at(std::chrono::system_clock::time_point(
-	                           std::chrono::seconds(1700003600)))
-	                       .sign(jwt::algorithm::hs256{"shared-secret"});
-	CHECK(ValidateToken(token, BaseOpts(), ctx) ==
-	      VerifyResult::DisallowedAlgorithm);
+	                       .set_expires_at(std::chrono::system_clock::time_point(std::chrono::seconds(1700003600)))
+	                       .sign(jwt::algorithm::hs256 {"shared-secret"});
+	CHECK(ValidateToken(token, BaseOpts(), ctx) == VerifyResult::DisallowedAlgorithm);
 	CHECK(http.call_count == 0);
 	CHECK(cache.Size() == 0);
 }
 
-TEST_CASE("Validator: malformed token rejected before any cache access",
-          "[validator][malformed]") {
+TEST_CASE("Validator: malformed token rejected before any cache access", "[validator][malformed]") {
 	JwksCache cache(30);
 	FakeHttpClient http;
-	ValidateContext ctx{http, cache, "https://idp.test/jwks"};
+	ValidateContext ctx {http, cache, "https://idp.test/jwks"};
 
 	CHECK(ValidateToken("not-a-jwt", BaseOpts(), ctx) == VerifyResult::Malformed);
 	CHECK(http.call_count == 0);

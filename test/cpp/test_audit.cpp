@@ -12,8 +12,7 @@ using quack_oauth::RedactSensitive;
 
 namespace {
 
-AuditEvent MakeEvent(AuditEventType type, std::int64_t ts,
-                     const std::string &sub = "",
+AuditEvent MakeEvent(AuditEventType type, std::int64_t ts, const std::string &sub = "",
                      const std::string &reason = "ok") {
 	AuditEvent e;
 	e.timestamp_unix_s = ts;
@@ -66,14 +65,14 @@ TEST_CASE("AuditRing: size + capacity track correctly", "[audit]") {
 TEST_CASE("AuditEventTypeName: stable strings", "[audit]") {
 	CHECK(AuditEventTypeName(AuditEventType::TokenAccepted) == std::string("token_accepted"));
 	CHECK(AuditEventTypeName(AuditEventType::TokenRejected) == std::string("token_rejected"));
-	CHECK(AuditEventTypeName(AuditEventType::AuthzAllow)    == std::string("authz_allow"));
-	CHECK(AuditEventTypeName(AuditEventType::AuthzDeny)     == std::string("authz_deny"));
-	CHECK(AuditEventTypeName(AuditEventType::JwksRefresh)   == std::string("jwks_refresh"));
+	CHECK(AuditEventTypeName(AuditEventType::AuthzAllow) == std::string("authz_allow"));
+	CHECK(AuditEventTypeName(AuditEventType::AuthzDeny) == std::string("authz_deny"));
+	CHECK(AuditEventTypeName(AuditEventType::JwksRefresh) == std::string("jwks_refresh"));
 }
 
 TEST_CASE("FormatAuditLine: includes ts and event type", "[audit]") {
-	const auto line = FormatAuditLine(
-	    MakeEvent(AuditEventType::AuthzAllow, 1715000000, "alice@example.com", "rule allow"));
+	const auto line =
+	    FormatAuditLine(MakeEvent(AuditEventType::AuthzAllow, 1715000000, "alice@example.com", "rule allow"));
 	CHECK(line.find("ts=1715000000") != std::string::npos);
 	CHECK(line.find("event=authz_allow") != std::string::npos);
 	CHECK(line.find("sub=alice@example.com") != std::string::npos);
@@ -82,8 +81,7 @@ TEST_CASE("FormatAuditLine: includes ts and event type", "[audit]") {
 }
 
 TEST_CASE("FormatAuditLine: empty fields are omitted", "[audit]") {
-	const auto line = FormatAuditLine(
-	    MakeEvent(AuditEventType::TokenRejected, 1715000001));
+	const auto line = FormatAuditLine(MakeEvent(AuditEventType::TokenRejected, 1715000001));
 	CHECK(line.find("sub=") == std::string::npos);
 	CHECK(line.find("iss=") == std::string::npos);
 	CHECK(line.find("kid=") == std::string::npos);
@@ -91,8 +89,7 @@ TEST_CASE("FormatAuditLine: empty fields are omitted", "[audit]") {
 	CHECK(line.find("event=token_rejected") != std::string::npos);
 }
 
-TEST_CASE("FormatAuditLine: never leaks raw token (uses token_hash field)",
-          "[audit][security]") {
+TEST_CASE("FormatAuditLine: never leaks raw token (uses token_hash field)", "[audit][security]") {
 	AuditEvent e = MakeEvent(AuditEventType::TokenAccepted, 1715000002);
 	const std::string secret_token = "eyJhbGciOiJSUzI1NiJ9.payload.sig.SECRET";
 	e.token_hash = RedactSensitive(secret_token);
@@ -105,8 +102,7 @@ TEST_CASE("FormatAuditLine: never leaks raw token (uses token_hash field)",
 	CHECK(line.substr(pos + 6, 8).size() == 8);
 }
 
-TEST_CASE("FormatAuditLine: quoted values escape backslash + quote",
-          "[audit]") {
+TEST_CASE("FormatAuditLine: quoted values escape backslash + quote", "[audit]") {
 	AuditEvent e = MakeEvent(AuditEventType::AuthzDeny, 1, "user");
 	e.reason = "rule says \"no\" \\ end";
 	const auto line = FormatAuditLine(e);
@@ -114,7 +110,6 @@ TEST_CASE("FormatAuditLine: quoted values escape backslash + quote",
 	// (Use a plain-escaped string instead of a raw string here -- MSVC's
 	// preprocessor mishandles raw strings nested inside Catch2's CHECK
 	// macro expansion.)
-	const std::string expected =
-	    "reason=\"rule says \\\"no\\\" \\\\ end\"";
+	const std::string expected = "reason=\"rule says \\\"no\\\" \\\\ end\"";
 	CHECK(line.find(expected) != std::string::npos);
 }

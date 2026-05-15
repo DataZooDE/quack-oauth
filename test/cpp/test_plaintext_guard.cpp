@@ -2,8 +2,8 @@
 
 #include "plaintext_guard.hpp"
 
-using quack_oauth::IsLoopbackHost;
 using quack_oauth::HostFromQuackUri;
+using quack_oauth::IsLoopbackHost;
 
 TEST_CASE("IsLoopbackHost: textbook loopback names", "[plaintext-guard]") {
 	CHECK(IsLoopbackHost("127.0.0.1"));

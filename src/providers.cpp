@@ -5,9 +5,7 @@
 
 namespace quack_oauth {
 
-namespace {
-
-std::string Substitute(const std::string &tmpl, const std::string &tenant) {
+static std::string Substitute(const std::string &tmpl, const std::string &tenant) {
 	const std::string placeholder = "{tenant}";
 	std::string out = tmpl;
 	std::size_t pos = 0;
@@ -18,7 +16,7 @@ std::string Substitute(const std::string &tmpl, const std::string &tenant) {
 	return out;
 }
 
-std::string LowerAscii(std::string_view s) {
+static std::string LowerAscii(std::string_view s) {
 	std::string out;
 	out.reserve(s.size());
 	for (unsigned char c : s) {
@@ -27,15 +25,18 @@ std::string LowerAscii(std::string_view s) {
 	return out;
 }
 
-} // namespace
-
 ProviderId ProviderFromString(std::string_view s) {
 	const auto lower = LowerAscii(s);
-	if (lower == "entra") return ProviderId::Entra;
-	if (lower == "google") return ProviderId::Google;
-	if (lower == "keycloak") return ProviderId::Keycloak;
-	if (lower == "okta") return ProviderId::Okta;
-	if (lower == "github") return ProviderId::Github;
+	if (lower == "entra")
+		return ProviderId::Entra;
+	if (lower == "google")
+		return ProviderId::Google;
+	if (lower == "keycloak")
+		return ProviderId::Keycloak;
+	if (lower == "okta")
+		return ProviderId::Okta;
+	if (lower == "github")
+		return ProviderId::Github;
 	return ProviderId::Generic;
 }
 
@@ -99,10 +100,7 @@ ProviderConfig GetProviderConfig(ProviderId id) {
 	case ProviderId::Generic:
 	default:
 		return {
-		    ProviderId::Generic,
-		    "generic",
-		    ProviderValidation::Jwks,
-		    "", "", "",
+		    ProviderId::Generic, "generic", ProviderValidation::Jwks, "", "", "",
 		};
 	}
 }
@@ -114,8 +112,7 @@ ProviderResolved ResolveProvider(ProviderId id, const std::string &tenant_or_rea
 	out.validation = cfg.validation;
 	out.issuer = Substitute(cfg.issuer_template, tenant_or_realm);
 	out.jwks_uri = Substitute(cfg.jwks_uri_template, tenant_or_realm);
-	out.introspection_endpoint =
-	    Substitute(cfg.introspection_template, tenant_or_realm);
+	out.introspection_endpoint = Substitute(cfg.introspection_template, tenant_or_realm);
 	return out;
 }
 

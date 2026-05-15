@@ -22,12 +22,12 @@ struct DeviceAuthorizationResponse {
 
 // Outcome of a single poll of the token endpoint during a device flow.
 enum class DevicePollOutcome {
-	Pending,    // authorization_pending -- keep polling at the current interval
-	SlowDown,   // slow_down -- increase the interval by 5s per RFC 8628 §3.5
-	Success,    // got an access token (look at `tokens`)
-	Denied,     // access_denied -- user rejected
-	Expired,    // expired_token -- device_code is dead
-	Error,      // any other 4xx/5xx -- treat as terminal
+	Pending,  // authorization_pending -- keep polling at the current interval
+	SlowDown, // slow_down -- increase the interval by 5s per RFC 8628 §3.5
+	Success,  // got an access token (look at `tokens`)
+	Denied,   // access_denied -- user rejected
+	Expired,  // expired_token -- device_code is dead
+	Error,    // any other 4xx/5xx -- treat as terminal
 };
 
 struct DevicePollResult {
@@ -38,8 +38,7 @@ struct DevicePollResult {
 // Parse the JSON body of a device-authorization response (RFC 8628 §3.2).
 // Returns nullopt on malformed input or missing required fields
 // (`device_code`, `user_code`, `verification_uri`).
-std::optional<DeviceAuthorizationResponse>
-ParseDeviceAuthorizationResponse(std::string_view json);
+std::optional<DeviceAuthorizationResponse> ParseDeviceAuthorizationResponse(std::string_view json);
 
 // Parse a single token-endpoint poll response. RFC 8628 §3.5 spec:
 //   200          → success (token response in body)
@@ -48,23 +47,17 @@ ParseDeviceAuthorizationResponse(std::string_view json);
 //   400 + error: access_denied  → Denied
 //   400 + error: expired_token → Expired
 //   anything else            → Error
-DevicePollResult ParseDevicePollResponse(int http_status,
-                                         std::string_view body);
+DevicePollResult ParseDevicePollResponse(int http_status, std::string_view body);
 
 // POST to a device_authorization endpoint. Returns nullopt on transport
 // failure, non-200, or malformed body.
 std::optional<DeviceAuthorizationResponse>
-RequestDeviceAuthorization(IHttpClient &http,
-                           const std::string &device_authorization_endpoint,
-                           const std::string &client_id,
-                           const std::string &client_secret,
-                           const std::string &scope);
+RequestDeviceAuthorization(IHttpClient &http, const std::string &device_authorization_endpoint,
+                           const std::string &client_id, const std::string &client_secret, const std::string &scope);
 
 // POST one poll of the token endpoint for an in-progress device flow.
-DevicePollResult
-PollDeviceTokenEndpoint(IHttpClient &http, const std::string &token_endpoint,
-                        const std::string &client_id,
-                        const std::string &client_secret,
-                        const std::string &device_code);
+DevicePollResult PollDeviceTokenEndpoint(IHttpClient &http, const std::string &token_endpoint,
+                                         const std::string &client_id, const std::string &client_secret,
+                                         const std::string &device_code);
 
 } // namespace quack_oauth

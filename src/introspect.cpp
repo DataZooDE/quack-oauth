@@ -1,6 +1,5 @@
 #include "introspect.hpp"
 
-#include <sstream>
 #include <string>
 
 #ifndef PICOJSON_USE_INT64
@@ -8,50 +7,11 @@
 #endif
 #include <picojson/picojson.h>
 
+#include "picojson_helpers.hpp"
+
 namespace quack_oauth {
 
-namespace {
-
-// RFC 3986 unreserved characters + safe pct-encoding for everything else.
-std::string UrlEncode(std::string_view in) {
-	std::ostringstream out;
-	for (unsigned char c : in) {
-		if ((c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z') ||
-		    (c >= '0' && c <= '9') || c == '-' || c == '_' || c == '.' || c == '~') {
-			out << static_cast<char>(c);
-		} else {
-			out << '%';
-			static constexpr char kHex[] = "0123456789ABCDEF";
-			out << kHex[(c >> 4) & 0x0F];
-			out << kHex[c & 0x0F];
-		}
-	}
-	return out.str();
-}
-
-const std::string *AsString(const picojson::object &obj, const std::string &key) {
-	const auto it = obj.find(key);
-	if (it == obj.end() || !it->second.is<std::string>()) {
-		return nullptr;
-	}
-	return &it->second.get<std::string>();
-}
-
-std::int64_t AsInt(const picojson::object &obj, const std::string &key) {
-	const auto it = obj.find(key);
-	if (it == obj.end()) {
-		return 0;
-	}
-	if (it->second.is<std::int64_t>()) {
-		return it->second.get<std::int64_t>();
-	}
-	if (it->second.is<double>()) {
-		return static_cast<std::int64_t>(it->second.get<double>());
-	}
-	return 0;
-}
-
-void ExtractAudience(const picojson::object &obj, IntrospectionResponse &out) {
+static void ExtractAudience(const picojson::object &obj, IntrospectionResponse &out) {
 	const auto it = obj.find("aud");
 	if (it == obj.end()) {
 		return;
@@ -69,7 +29,7 @@ void ExtractAudience(const picojson::object &obj, IntrospectionResponse &out) {
 	}
 }
 
-void ExtractScp(const picojson::object &obj, IntrospectionResponse &out) {
+static void ExtractScp(const picojson::object &obj, IntrospectionResponse &out) {
 	const auto it = obj.find("scp");
 	if (it == obj.end() || !it->second.is<picojson::array>()) {
 		return;
@@ -81,10 +41,7 @@ void ExtractScp(const picojson::object &obj, IntrospectionResponse &out) {
 	}
 }
 
-} // namespace
-
-std::optional<IntrospectionResponse>
-ParseIntrospectionResponse(std::string_view json) {
+std::optional<IntrospectionResponse> ParseIntrospectionResponse(std::string_view json) {
 	if (json.empty()) {
 		return std::nullopt;
 	}
@@ -105,25 +62,29 @@ ParseIntrospectionResponse(std::string_view json) {
 	IntrospectionResponse out;
 	out.active = active_it->second.get<bool>();
 
-	if (const auto *s = AsString(obj, "sub")) out.subject = *s;
-	if (const auto *s = AsString(obj, "iss")) out.issuer = *s;
-	if (const auto *s = AsString(obj, "scope")) out.scope = *s;
-	if (const auto *s = AsString(obj, "client_id")) out.client_id = *s;
-	if (const auto *s = AsString(obj, "username")) out.username = *s;
+	if (const auto *s = AsString(obj, "sub"))
+		out.subject = *s;
+	if (const auto *s = AsString(obj, "iss"))
+		out.issuer = *s;
+	if (const auto *s = AsString(obj, "scope"))
+		out.scope = *s;
+	if (const auto *s = AsString(obj, "client_id"))
+		out.client_id = *s;
+	if (const auto *s = AsString(obj, "username"))
+		out.username = *s;
 
-	out.exp = AsInt(obj, "exp");
-	out.iat = AsInt(obj, "iat");
-	out.nbf = AsInt(obj, "nbf");
+	out.exp = AsIntFlexible(obj, "exp");
+	out.iat = AsIntFlexible(obj, "iat");
+	out.nbf = AsIntFlexible(obj, "nbf");
 
 	ExtractAudience(obj, out);
 	ExtractScp(obj, out);
 	return out;
 }
 
-std::optional<IntrospectionResponse>
-IntrospectToken(IHttpClient &http, const std::string &endpoint,
-                const std::string &client_id, const std::string &client_secret,
-                std::string_view token) {
+std::optional<IntrospectionResponse> IntrospectToken(IHttpClient &http, const std::string &endpoint,
+                                                     const std::string &client_id, const std::string &client_secret,
+                                                     std::string_view token) {
 	if (endpoint.empty() || token.empty()) {
 		return std::nullopt;
 	}

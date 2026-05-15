@@ -25,14 +25,11 @@ class RetryingHttpClient : public IHttpClient {
 public:
 	using SleepFn = std::function<void(std::chrono::milliseconds)>;
 
-	RetryingHttpClient(IHttpClient &inner, int max_retries,
-	                   std::chrono::milliseconds initial_delay,
-	                   SleepFn sleep_fn);
+	RetryingHttpClient(IHttpClient &inner, int max_retries, std::chrono::milliseconds initial_delay, SleepFn sleep_fn);
 
 	// Default-construct uses real std::this_thread::sleep_for.
 	RetryingHttpClient(IHttpClient &inner, int max_retries = 1,
-	                   std::chrono::milliseconds initial_delay =
-	                       std::chrono::milliseconds(1000));
+	                   std::chrono::milliseconds initial_delay = std::chrono::milliseconds(1000));
 
 	std::optional<Response> Get(std::string_view url) override;
 	std::optional<Response> Post(const PostRequest &req) override;

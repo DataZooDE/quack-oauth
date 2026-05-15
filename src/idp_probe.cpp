@@ -4,9 +4,12 @@ namespace quack_oauth {
 
 const char *StatusName(IdpProbeResult::Status s) {
 	switch (s) {
-	case IdpProbeResult::Status::Unconfigured: return "unconfigured";
-	case IdpProbeResult::Status::Reachable:    return "reachable";
-	case IdpProbeResult::Status::Unreachable:  return "unreachable";
+	case IdpProbeResult::Status::Unconfigured:
+		return "unconfigured";
+	case IdpProbeResult::Status::Reachable:
+		return "reachable";
+	case IdpProbeResult::Status::Unreachable:
+		return "unreachable";
 	}
 	return "unknown";
 }

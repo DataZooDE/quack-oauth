@@ -4,6 +4,8 @@
 #include <string>
 #include <unordered_map>
 
+#include "duckdb/common/string.hpp"
+
 #include "audit.hpp"
 #include "decision_cache.hpp"
 #include "jwks_cache.hpp"
@@ -28,7 +30,7 @@ namespace duckdb {
 struct QuackOauthState {
 	quack_oauth::JwksCache jwks_cache;
 	quack_oauth::DecisionCache decision_cache;
-	std::unordered_map<std::string, quack_oauth::Principal> session_principals;
+	std::unordered_map<string, quack_oauth::Principal> session_principals;
 	quack_oauth::AuditRing audit_ring;
 	std::mutex mu;
 

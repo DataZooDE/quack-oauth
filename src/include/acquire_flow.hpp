@@ -47,9 +47,7 @@ struct AcquireDecision {
 //
 // "Fresh" means `access_token` non-empty AND `expires_at_unix_s > now_s + renew_skew_s`.
 // expires_at_unix_s = 0 means "unknown" and is treated as expired.
-AcquireDecision DecideAcquireFlow(const ClientSecretView &v,
-                                  std::int64_t now_s,
-                                  std::int64_t renew_skew_s);
+AcquireDecision DecideAcquireFlow(const ClientSecretView &v, std::int64_t now_s, std::int64_t renew_skew_s);
 
 // Stable string form of the enum, used by the DUCKDB-side dispatcher
 // for logging / error messages.

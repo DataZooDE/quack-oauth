@@ -21,9 +21,9 @@ struct JwtParsed {
 	std::string typ;
 
 	// Payload (standard OIDC / OAuth 2.0 claims).
-	std::string subject;                  // sub
-	std::string issuer;                   // iss
-	std::vector<std::string> audience;    // aud (single string or array)
+	std::string subject;               // sub
+	std::string issuer;                // iss
+	std::vector<std::string> audience; // aud (single string or array)
 	std::int64_t exp = 0;
 	std::int64_t nbf = 0;
 	std::int64_t iat = 0;

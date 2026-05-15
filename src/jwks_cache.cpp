@@ -30,11 +30,11 @@ JwksLookup JwksCache::Lookup(const std::string &kid, std::int64_t now_s) const {
 void JwksCache::OnFetchSuccess(const Jwk &jwk, std::int64_t now_s) {
 	// A successful fetch supersedes any prior miss-rate-limit on this kid.
 	misses_.erase(jwk.kid);
-	hits_[jwk.kid] = Entry{jwk, now_s};
+	hits_[jwk.kid] = Entry {jwk, now_s};
 }
 
 void JwksCache::OnFetchMiss(const std::string &kid, std::int64_t now_s) {
-	misses_[kid] = MissEntry{now_s};
+	misses_[kid] = MissEntry {now_s};
 }
 
 std::size_t JwksCache::Size() const noexcept {

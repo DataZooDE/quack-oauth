@@ -8,18 +8,16 @@
 
 namespace duckdb {
 
-namespace {
-
 // Sensitive field allowlist. Kept in sync with `IsSensitiveField` in
 // src/tracing_redact.cpp -- if you change one, change the other.
-constexpr const char *kClientSensitiveFields[] = {
+static constexpr const char *kClientSensitiveFields[] = {
     "client_secret",
     "access_token",
     "refresh_token",
 };
 
-void CopyParams(CreateSecretInput &input, KeyValueSecret &result,
-                std::initializer_list<const char *> field_names) {
+static void CopyParams(CreateSecretInput &input, KeyValueSecret &result,
+                       std::initializer_list<const char *> field_names) {
 	for (const auto *field : field_names) {
 		const auto it = input.options.find(field);
 		if (it != input.options.end()) {
@@ -28,28 +26,25 @@ void CopyParams(CreateSecretInput &input, KeyValueSecret &result,
 	}
 }
 
-void Redact(KeyValueSecret &secret, std::initializer_list<const char *> field_names) {
+static void Redact(KeyValueSecret &secret, std::initializer_list<const char *> field_names) {
 	for (const auto *field : field_names) {
 		secret.redact_keys.insert(field);
 	}
 }
 
-unique_ptr<BaseSecret> CreateClientSecret(ClientContext &, CreateSecretInput &input) {
+static unique_ptr<BaseSecret> CreateClientSecret(ClientContext &, CreateSecretInput &input) {
 	auto result = make_uniq<KeyValueSecret>(input.scope, input.type, input.provider, input.name);
 
 	// R-C-1 field set.
 	CopyParams(input, *result,
-	           {"issuer", "client_id", "client_secret", "audience", "scope",
-	            "device_authorization_endpoint", "token_endpoint",
-	            "redirect_listener_port", "access_token", "refresh_token",
-	            "expires_at"});
+	           {"issuer", "client_id", "client_secret", "audience", "scope", "device_authorization_endpoint",
+	            "token_endpoint", "redirect_listener_port", "access_token", "refresh_token", "expires_at"});
 
-	Redact(*result, {kClientSensitiveFields[0], kClientSensitiveFields[1],
-	                 kClientSensitiveFields[2]});
+	Redact(*result, {kClientSensitiveFields[0], kClientSensitiveFields[1], kClientSensitiveFields[2]});
 	return std::move(result);
 }
 
-unique_ptr<BaseSecret> CreateServerSecret(ClientContext &, CreateSecretInput &input) {
+static unique_ptr<BaseSecret> CreateServerSecret(ClientContext &, CreateSecretInput &input) {
 	auto result = make_uniq<KeyValueSecret>(input.scope, input.type, input.provider, input.name);
 
 	// R-S-11 base fields + slice S-10b introspection extension.
@@ -62,14 +57,13 @@ unique_ptr<BaseSecret> CreateServerSecret(ClientContext &, CreateSecretInput &in
 	// `main.quack_oauth_policies`) holding the authorization rules;
 	// see API_REFERENCE.md for the expected schema.
 	CopyParams(input, *result,
-	           {"issuer", "audience", "jwks_uri", "policy_table", "audit_table",
-	            "introspection_endpoint", "introspect_client_id",
-	            "introspect_client_secret", "tenant_or_realm"});
+	           {"issuer", "audience", "jwks_uri", "policy_table", "audit_table", "introspection_endpoint",
+	            "introspect_client_id", "introspect_client_secret", "tenant_or_realm"});
 	Redact(*result, {"introspect_client_secret"});
 	return std::move(result);
 }
 
-void RegisterClientSecretType(ExtensionLoader &loader) {
+static void RegisterClientSecretType(ExtensionLoader &loader) {
 	SecretType type;
 	type.name = "quack_oauth";
 	type.deserializer = KeyValueSecret::Deserialize<KeyValueSecret>;
@@ -94,7 +88,7 @@ void RegisterClientSecretType(ExtensionLoader &loader) {
 	loader.RegisterFunction(fn);
 }
 
-void RegisterServerSecretType(ExtensionLoader &loader) {
+static void RegisterServerSecretType(ExtensionLoader &loader) {
 	SecretType type;
 	type.name = "quack_oauth_server";
 	type.deserializer = KeyValueSecret::Deserialize<KeyValueSecret>;
@@ -116,8 +110,6 @@ void RegisterServerSecretType(ExtensionLoader &loader) {
 	add("tenant_or_realm", LogicalTypeId::VARCHAR);
 	loader.RegisterFunction(fn);
 }
-
-} // namespace
 
 void RegisterQuackOauthSecrets(ExtensionLoader &loader) {
 	RegisterClientSecretType(loader);

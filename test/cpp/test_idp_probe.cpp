@@ -26,8 +26,7 @@ struct FakeHttp : public IHttpClient {
 
 } // namespace
 
-TEST_CASE("ProbeIdpReachability: empty URI returns Unconfigured",
-          "[idp-probe]") {
+TEST_CASE("ProbeIdpReachability: empty URI returns Unconfigured", "[idp-probe]") {
 	FakeHttp http;
 	const auto r = ProbeIdpReachability(http, "");
 	CHECK(r.status == IdpProbeResult::Status::Unconfigured);
@@ -36,7 +35,7 @@ TEST_CASE("ProbeIdpReachability: empty URI returns Unconfigured",
 
 TEST_CASE("ProbeIdpReachability: 200 → Reachable", "[idp-probe]") {
 	FakeHttp http;
-	http.next_get = IHttpClient::Response{200, "{}"};
+	http.next_get = IHttpClient::Response {200, "{}"};
 	const auto r = ProbeIdpReachability(http, "https://idp/jwks");
 	CHECK(r.status == IdpProbeResult::Status::Reachable);
 	CHECK(r.http_status == 200);
@@ -46,7 +45,7 @@ TEST_CASE("ProbeIdpReachability: 200 → Reachable", "[idp-probe]") {
 TEST_CASE("ProbeIdpReachability: 2xx → Reachable", "[idp-probe]") {
 	FakeHttp http;
 	for (int code : {200, 201, 204, 299}) {
-		http.next_get = IHttpClient::Response{code, ""};
+		http.next_get = IHttpClient::Response {code, ""};
 		const auto r = ProbeIdpReachability(http, "https://idp/jwks");
 		INFO("status=" << code);
 		CHECK(r.status == IdpProbeResult::Status::Reachable);
@@ -55,7 +54,7 @@ TEST_CASE("ProbeIdpReachability: 2xx → Reachable", "[idp-probe]") {
 
 TEST_CASE("ProbeIdpReachability: 4xx → Unreachable", "[idp-probe]") {
 	FakeHttp http;
-	http.next_get = IHttpClient::Response{404, "not found"};
+	http.next_get = IHttpClient::Response {404, "not found"};
 	const auto r = ProbeIdpReachability(http, "https://idp/jwks");
 	CHECK(r.status == IdpProbeResult::Status::Unreachable);
 	CHECK(r.http_status == 404);
@@ -63,14 +62,13 @@ TEST_CASE("ProbeIdpReachability: 4xx → Unreachable", "[idp-probe]") {
 
 TEST_CASE("ProbeIdpReachability: 5xx → Unreachable", "[idp-probe]") {
 	FakeHttp http;
-	http.next_get = IHttpClient::Response{503, ""};
+	http.next_get = IHttpClient::Response {503, ""};
 	const auto r = ProbeIdpReachability(http, "https://idp/jwks");
 	CHECK(r.status == IdpProbeResult::Status::Unreachable);
 	CHECK(r.http_status == 503);
 }
 
-TEST_CASE("ProbeIdpReachability: transport failure → Unreachable, status=0",
-          "[idp-probe]") {
+TEST_CASE("ProbeIdpReachability: transport failure → Unreachable, status=0", "[idp-probe]") {
 	FakeHttp http;
 	http.next_get = std::nullopt;
 	const auto r = ProbeIdpReachability(http, "https://idp/jwks");

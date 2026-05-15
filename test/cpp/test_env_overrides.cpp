@@ -31,7 +31,9 @@ struct EnvGuard {
 		}
 		SetEnv(n, v);
 	}
-	~EnvGuard() { SetEnv(name.c_str(), was_set ? prior.c_str() : nullptr); }
+	~EnvGuard() {
+		SetEnv(name.c_str(), was_set ? prior.c_str() : nullptr);
+	}
 };
 
 } // namespace

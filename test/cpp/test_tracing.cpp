@@ -35,8 +35,7 @@ TEST_CASE("RedactSensitive returns empty for empty input", "[tracing][redact]") 
 	REQUIRE(RedactSensitive("").empty());
 }
 
-TEST_CASE("IsSensitiveField recognises the documented field names",
-          "[tracing][redact]") {
+TEST_CASE("IsSensitiveField recognises the documented field names", "[tracing][redact]") {
 	REQUIRE(IsSensitiveField("token"));
 	REQUIRE(IsSensitiveField("access_token"));
 	REQUIRE(IsSensitiveField("refresh_token"));
@@ -52,8 +51,7 @@ TEST_CASE("IsSensitiveField is case-insensitive", "[tracing][redact]") {
 	REQUIRE(IsSensitiveField("Client_Secret"));
 }
 
-TEST_CASE("IsSensitiveField rejects non-sensitive field names",
-          "[tracing][redact]") {
+TEST_CASE("IsSensitiveField rejects non-sensitive field names", "[tracing][redact]") {
 	REQUIRE_FALSE(IsSensitiveField("sub"));
 	REQUIRE_FALSE(IsSensitiveField("iss"));
 	REQUIRE_FALSE(IsSensitiveField("kid"));

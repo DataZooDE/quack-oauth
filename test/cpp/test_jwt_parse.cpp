@@ -49,8 +49,7 @@ TEST_CASE("ParseJwt extracts header claims (alg, kid, typ)", "[jwt][parse]") {
 	CHECK(p->typ == "JWT");
 }
 
-TEST_CASE("ParseJwt extracts payload claims (sub, iss, exp, iat, nbf, scope)",
-          "[jwt][parse]") {
+TEST_CASE("ParseJwt extracts payload claims (sub, iss, exp, iat, nbf, scope)", "[jwt][parse]") {
 	const auto p = ParseJwt(kFixtureStringAud);
 	REQUIRE(p.has_value());
 	CHECK(p->subject == "alice");
@@ -68,8 +67,7 @@ TEST_CASE("ParseJwt handles single-string audience", "[jwt][parse][aud]") {
 	CHECK(p->audience[0] == "api://quack");
 }
 
-TEST_CASE("ParseJwt handles array-shaped audience (Entra-style)",
-          "[jwt][parse][aud]") {
+TEST_CASE("ParseJwt handles array-shaped audience (Entra-style)", "[jwt][parse][aud]") {
 	const auto p = ParseJwt(kFixtureArrayAudEntra);
 	REQUIRE(p.has_value());
 	REQUIRE(p->audience.size() == 2);
@@ -96,8 +94,7 @@ TEST_CASE("ParseJwt returns nullopt for malformed tokens", "[jwt][parse][error]"
 	CHECK_FALSE(ParseJwt("!!!.bbb.ccc").has_value());
 }
 
-TEST_CASE("ParseJwt returns nullopt when header is not JSON",
-          "[jwt][parse][error]") {
+TEST_CASE("ParseJwt returns nullopt when header is not JSON", "[jwt][parse][error]") {
 	// "notjson" base64url-encoded
 	CHECK_FALSE(ParseJwt("bm90anNvbg.eyJzdWIiOiJhIn0.sig").has_value());
 }

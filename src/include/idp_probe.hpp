@@ -16,8 +16,8 @@ struct IdpProbeResult {
 		Unreachable,  // 4xx, 5xx, or transport error
 	};
 	Status status = Status::Unconfigured;
-	int http_status = 0;     // 0 if transport error
-	std::string probed_uri;  // for `detail` formatting
+	int http_status = 0;    // 0 if transport error
+	std::string probed_uri; // for `detail` formatting
 };
 
 // Issue a GET on `jwks_uri` and classify the outcome. Empty `jwks_uri`

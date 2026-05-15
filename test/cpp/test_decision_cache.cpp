@@ -19,8 +19,7 @@ Principal MakePrincipal(const std::string &sub, std::int64_t exp_s = 0) {
 
 } // namespace
 
-TEST_CASE("DecisionCache::KeyOf returns a 64-hex SHA-256",
-          "[decision-cache][key]") {
+TEST_CASE("DecisionCache::KeyOf returns a 64-hex SHA-256", "[decision-cache][key]") {
 	const auto k1 = DecisionCache::KeyOf("any-token");
 	REQUIRE(k1.size() == 64);
 	for (char c : k1) {
@@ -28,24 +27,20 @@ TEST_CASE("DecisionCache::KeyOf returns a 64-hex SHA-256",
 	}
 }
 
-TEST_CASE("DecisionCache::KeyOf is deterministic and discriminating",
-          "[decision-cache][key]") {
+TEST_CASE("DecisionCache::KeyOf is deterministic and discriminating", "[decision-cache][key]") {
 	CHECK(DecisionCache::KeyOf("a") == DecisionCache::KeyOf("a"));
 	CHECK(DecisionCache::KeyOf("a") != DecisionCache::KeyOf("b"));
 	// Known SHA-256 vector: "hello" -> 2cf24dba5fb0a30e26e83b2ac5b9e29e1b161e5c1fa7425e73043362938b9824
-	CHECK(DecisionCache::KeyOf("hello") ==
-	      "2cf24dba5fb0a30e26e83b2ac5b9e29e1b161e5c1fa7425e73043362938b9824");
+	CHECK(DecisionCache::KeyOf("hello") == "2cf24dba5fb0a30e26e83b2ac5b9e29e1b161e5c1fa7425e73043362938b9824");
 }
 
-TEST_CASE("DecisionCache: empty cache returns nullopt",
-          "[decision-cache][lookup]") {
+TEST_CASE("DecisionCache: empty cache returns nullopt", "[decision-cache][lookup]") {
 	DecisionCache cache(/*max_entries=*/1000, /*default_ttl_s=*/60);
 	CHECK_FALSE(cache.Lookup(DecisionCache::KeyOf("absent"), 0).has_value());
 	CHECK(cache.Size() == 0);
 }
 
-TEST_CASE("DecisionCache: Store then Lookup returns the stored Principal",
-          "[decision-cache]") {
+TEST_CASE("DecisionCache: Store then Lookup returns the stored Principal", "[decision-cache]") {
 	DecisionCache cache(1000, 60);
 	const auto key = DecisionCache::KeyOf("t1");
 	cache.Store(key, MakePrincipal("alice", /*exp=*/2000), /*now=*/1000);
@@ -58,19 +53,17 @@ TEST_CASE("DecisionCache: Store then Lookup returns the stored Principal",
 	CHECK(cache.Size() == 1);
 }
 
-TEST_CASE("DecisionCache: TTL elapses after default_ttl_s",
-          "[decision-cache][ttl]") {
+TEST_CASE("DecisionCache: TTL elapses after default_ttl_s", "[decision-cache][ttl]") {
 	// exp is far in the future, so the TTL cap binds at 60s.
 	DecisionCache cache(1000, /*default_ttl_s=*/60);
 	const auto key = DecisionCache::KeyOf("t1");
 	cache.Store(key, MakePrincipal("alice", /*exp=*/1'000'000), /*now=*/1000);
 
-	CHECK(cache.Lookup(key, 1059).has_value());  // 59s after store
+	CHECK(cache.Lookup(key, 1059).has_value());       // 59s after store
 	CHECK_FALSE(cache.Lookup(key, 1061).has_value()); // 61s after store
 }
 
-TEST_CASE("DecisionCache: TTL is capped at min(default_ttl_s, exp - now)",
-          "[decision-cache][ttl]") {
+TEST_CASE("DecisionCache: TTL is capped at min(default_ttl_s, exp - now)", "[decision-cache][ttl]") {
 	DecisionCache cache(1000, /*default_ttl_s=*/60);
 	const auto key = DecisionCache::KeyOf("t1");
 	// Token expires 10s after store -> effective TTL is 10s, not 60.
@@ -80,8 +73,7 @@ TEST_CASE("DecisionCache: TTL is capped at min(default_ttl_s, exp - now)",
 	CHECK_FALSE(cache.Lookup(key, 1011).has_value());
 }
 
-TEST_CASE("DecisionCache: already-expired tokens are NOT stored",
-          "[decision-cache][ttl]") {
+TEST_CASE("DecisionCache: already-expired tokens are NOT stored", "[decision-cache][ttl]") {
 	DecisionCache cache(1000, 60);
 	const auto key = DecisionCache::KeyOf("expired");
 	cache.Store(key, MakePrincipal("alice", /*exp=*/500), /*now=*/1000);
@@ -90,8 +82,7 @@ TEST_CASE("DecisionCache: already-expired tokens are NOT stored",
 	CHECK_FALSE(cache.Lookup(key, 1000).has_value());
 }
 
-TEST_CASE("DecisionCache: tokens without exp (exp=0) still get default TTL",
-          "[decision-cache][ttl]") {
+TEST_CASE("DecisionCache: tokens without exp (exp=0) still get default TTL", "[decision-cache][ttl]") {
 	DecisionCache cache(1000, /*default_ttl_s=*/60);
 	const auto key = DecisionCache::KeyOf("no-exp");
 	cache.Store(key, MakePrincipal("alice", /*exp=*/0), /*now=*/1000);
@@ -99,8 +90,7 @@ TEST_CASE("DecisionCache: tokens without exp (exp=0) still get default TTL",
 	CHECK_FALSE(cache.Lookup(key, 1061).has_value());
 }
 
-TEST_CASE("DecisionCache: LRU evicts the least-recently-used entry on overflow",
-          "[decision-cache][lru]") {
+TEST_CASE("DecisionCache: LRU evicts the least-recently-used entry on overflow", "[decision-cache][lru]") {
 	DecisionCache cache(/*max_entries=*/2, /*default_ttl_s=*/60);
 	const auto k_a = DecisionCache::KeyOf("a");
 	const auto k_b = DecisionCache::KeyOf("b");
@@ -116,8 +106,7 @@ TEST_CASE("DecisionCache: LRU evicts the least-recently-used entry on overflow",
 	CHECK(cache.Lookup(k_c, 1003).has_value());
 }
 
-TEST_CASE("DecisionCache: Lookup on a hit moves the entry to the front",
-          "[decision-cache][lru]") {
+TEST_CASE("DecisionCache: Lookup on a hit moves the entry to the front", "[decision-cache][lru]") {
 	DecisionCache cache(/*max_entries=*/2, /*default_ttl_s=*/60);
 	const auto k_a = DecisionCache::KeyOf("a");
 	const auto k_b = DecisionCache::KeyOf("b");
@@ -137,8 +126,7 @@ TEST_CASE("DecisionCache: Lookup on a hit moves the entry to the front",
 	CHECK(cache.Lookup(k_c, 1004).has_value());
 }
 
-TEST_CASE("DecisionCache: Store on existing key updates the value (and refreshes TTL)",
-          "[decision-cache]") {
+TEST_CASE("DecisionCache: Store on existing key updates the value (and refreshes TTL)", "[decision-cache]") {
 	DecisionCache cache(1000, 60);
 	const auto key = DecisionCache::KeyOf("t1");
 	cache.Store(key, MakePrincipal("alice", /*exp=*/2000), 1000);

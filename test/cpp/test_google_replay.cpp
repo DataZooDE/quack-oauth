@@ -52,7 +52,9 @@ public:
 	std::map<std::string, Response> post_responses;
 	std::optional<PostRequest> last_post;
 
-	std::optional<Response> Get(std::string_view) override { return std::nullopt; }
+	std::optional<Response> Get(std::string_view) override {
+		return std::nullopt;
+	}
 	std::optional<Response> Post(const PostRequest &req) override {
 		last_post = req;
 		const auto it = post_responses.find(req.url);
@@ -91,15 +93,13 @@ std::optional<GoogleFixtures> LoadGoogleFixtures() {
 	f.tokeninfo_azp = m.at("tokeninfo_azp").get<std::string>();
 	f.tokeninfo_scope = m.at("tokeninfo_scope").get<std::string>();
 	f.tokeninfo_response_body = t.at("response_body").serialize();
-	f.access_token =
-	    k.at("response_body").get<picojson::object>().at("access_token").get<std::string>();
+	f.access_token = k.at("response_body").get<picojson::object>().at("access_token").get<std::string>();
 	return f;
 }
 
 } // namespace
 
-TEST_CASE("Google: ParseTokeninfoResponse handles Google's number-as-string quirk",
-          "[google][parse]") {
+TEST_CASE("Google: ParseTokeninfoResponse handles Google's number-as-string quirk", "[google][parse]") {
 	// `exp` and `expires_in` are strings -- the canonical Google quirk.
 	const auto r = ParseTokeninfoResponse(R"({
 	  "azp": "12345.apps.googleusercontent.com",
@@ -110,7 +110,8 @@ TEST_CASE("Google: ParseTokeninfoResponse handles Google's number-as-string quir
 	  "email": "alice@example.com",
 	  "email_verified": "true",
 	  "access_type": "online"
-	})", /*active=*/true);
+	})",
+	                                      /*active=*/true);
 	REQUIRE(r.has_value());
 	CHECK(r->active);
 	CHECK(r->azp == "12345.apps.googleusercontent.com");
@@ -122,43 +123,40 @@ TEST_CASE("Google: ParseTokeninfoResponse handles Google's number-as-string quir
 	CHECK(r->email_verified == true);
 }
 
-TEST_CASE("Google: ParseTokeninfoResponse tolerates absent `sub` (service-account tokens)",
-          "[google][parse]") {
+TEST_CASE("Google: ParseTokeninfoResponse tolerates absent `sub` (service-account tokens)", "[google][parse]") {
 	const auto r = ParseTokeninfoResponse(R"({
 	  "azp": "105406064300261473362",
 	  "aud": "105406064300261473362",
 	  "scope": "https://www.googleapis.com/auth/cloud-platform.read-only"
-	})", /*active=*/true);
+	})",
+	                                      /*active=*/true);
 	REQUIRE(r.has_value());
 	CHECK(r->subject.empty());
 }
 
-TEST_CASE("Google: ParseTokeninfoResponse: empty / non-JSON → nullopt",
-          "[google][parse][error]") {
+TEST_CASE("Google: ParseTokeninfoResponse: empty / non-JSON → nullopt", "[google][parse][error]") {
 	CHECK_FALSE(ParseTokeninfoResponse("", true).has_value());
 	CHECK_FALSE(ParseTokeninfoResponse("not json", true).has_value());
 	CHECK_FALSE(ParseTokeninfoResponse("[]", true).has_value());
 }
 
-TEST_CASE("Google: ParseTokeninfoResponse: also tolerates int-shaped exp",
-          "[google][parse]") {
+TEST_CASE("Google: ParseTokeninfoResponse: also tolerates int-shaped exp", "[google][parse]") {
 	// If Google ever fixes the string-quoting quirk, our parser still works.
 	const auto r = ParseTokeninfoResponse(R"({
 	  "azp": "x", "aud": "x", "exp": 1735689600, "expires_in": 3599
-	})", /*active=*/true);
+	})",
+	                                      /*active=*/true);
 	REQUIRE(r.has_value());
 	CHECK(r->exp == 1735689600);
 	CHECK(r->expires_in == 3599);
 }
 
-TEST_CASE("Google: QueryTokeninfo POSTs with access_token in body",
-          "[google][http]") {
+TEST_CASE("Google: QueryTokeninfo POSTs with access_token in body", "[google][http]") {
 	ReplayHttpClient http;
 	http.post_responses["https://oauth2.googleapis.com/tokeninfo"] =
-	    IHttpClient::Response{200, R"({"azp": "abc", "aud": "abc"})"};
+	    IHttpClient::Response {200, R"({"azp": "abc", "aud": "abc"})"};
 
-	const auto r = QueryTokeninfo(http, "https://oauth2.googleapis.com/tokeninfo",
-	                              "the-opaque-token");
+	const auto r = QueryTokeninfo(http, "https://oauth2.googleapis.com/tokeninfo", "the-opaque-token");
 	REQUIRE(r.has_value());
 	CHECK(r->active);
 	CHECK(r->azp == "abc");
@@ -170,37 +168,30 @@ TEST_CASE("Google: QueryTokeninfo POSTs with access_token in body",
 	CHECK(http.last_post->basic_pass.empty());
 }
 
-TEST_CASE("Google: QueryTokeninfo: HTTP 400 surfaces as active=false",
-          "[google][http]") {
+TEST_CASE("Google: QueryTokeninfo: HTTP 400 surfaces as active=false", "[google][http]") {
 	ReplayHttpClient http;
 	http.post_responses["https://oauth2.googleapis.com/tokeninfo"] =
-	    IHttpClient::Response{400, R"({"error_description": "Invalid Value"})"};
+	    IHttpClient::Response {400, R"({"error_description": "Invalid Value"})"};
 
-	const auto r = QueryTokeninfo(http, "https://oauth2.googleapis.com/tokeninfo",
-	                              "revoked-token");
+	const auto r = QueryTokeninfo(http, "https://oauth2.googleapis.com/tokeninfo", "revoked-token");
 	REQUIRE(r.has_value());
 	CHECK_FALSE(r->active);
 }
 
-TEST_CASE("Google: QueryTokeninfo: transport error → nullopt",
-          "[google][http][error]") {
+TEST_CASE("Google: QueryTokeninfo: transport error → nullopt", "[google][http][error]") {
 	ReplayHttpClient http;
 	// no response configured
-	CHECK_FALSE(QueryTokeninfo(http, "https://oauth2.googleapis.com/tokeninfo", "t")
-	                .has_value());
+	CHECK_FALSE(QueryTokeninfo(http, "https://oauth2.googleapis.com/tokeninfo", "t").has_value());
 }
 
-TEST_CASE("Google: QueryTokeninfo: empty endpoint / token short-circuits",
-          "[google][http]") {
+TEST_CASE("Google: QueryTokeninfo: empty endpoint / token short-circuits", "[google][http]") {
 	ReplayHttpClient http;
 	CHECK_FALSE(QueryTokeninfo(http, "", "t").has_value());
-	CHECK_FALSE(QueryTokeninfo(http, "https://oauth2.googleapis.com/tokeninfo", "")
-	                .has_value());
+	CHECK_FALSE(QueryTokeninfo(http, "https://oauth2.googleapis.com/tokeninfo", "").has_value());
 	CHECK_FALSE(http.last_post.has_value());
 }
 
-TEST_CASE("Google replay: live tokeninfo response from a real service-account flow",
-          "[google][replay]") {
+TEST_CASE("Google replay: live tokeninfo response from a real service-account flow", "[google][replay]") {
 	const auto fixtures = LoadGoogleFixtures();
 	if (!fixtures.has_value()) {
 		WARN("Google transcripts not found. Run ./scripts/capture_google_transcript.sh");
@@ -208,11 +199,9 @@ TEST_CASE("Google replay: live tokeninfo response from a real service-account fl
 	}
 
 	ReplayHttpClient http;
-	http.post_responses[fixtures->tokeninfo_endpoint] =
-	    IHttpClient::Response{200, fixtures->tokeninfo_response_body};
+	http.post_responses[fixtures->tokeninfo_endpoint] = IHttpClient::Response {200, fixtures->tokeninfo_response_body};
 
-	const auto r = QueryTokeninfo(http, fixtures->tokeninfo_endpoint,
-	                              fixtures->access_token);
+	const auto r = QueryTokeninfo(http, fixtures->tokeninfo_endpoint, fixtures->access_token);
 	REQUIRE(r.has_value());
 	CHECK(r->active);
 	CHECK(r->azp == fixtures->tokeninfo_azp);
@@ -221,15 +210,13 @@ TEST_CASE("Google replay: live tokeninfo response from a real service-account fl
 	CHECK(r->exp == fixtures->tokeninfo_exp);
 }
 
-TEST_CASE("Google replay: request shape matches what Google's tokeninfo expects",
-          "[google][replay]") {
+TEST_CASE("Google replay: request shape matches what Google's tokeninfo expects", "[google][replay]") {
 	const auto fixtures = LoadGoogleFixtures();
 	if (!fixtures.has_value()) {
 		return;
 	}
 	ReplayHttpClient http;
-	http.post_responses[fixtures->tokeninfo_endpoint] =
-	    IHttpClient::Response{200, fixtures->tokeninfo_response_body};
+	http.post_responses[fixtures->tokeninfo_endpoint] = IHttpClient::Response {200, fixtures->tokeninfo_response_body};
 	QueryTokeninfo(http, fixtures->tokeninfo_endpoint, fixtures->access_token);
 
 	REQUIRE(http.last_post.has_value());

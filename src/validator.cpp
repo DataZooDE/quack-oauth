@@ -11,31 +11,26 @@
 
 namespace quack_oauth {
 
-namespace {
-
-bool StartsWith(const std::string &s, const std::string &prefix) {
-	return s.size() >= prefix.size() &&
-	       std::equal(prefix.begin(), prefix.end(), s.begin());
+static bool StartsWith(const std::string &s, const std::string &prefix) {
+	return s.size() >= prefix.size() && std::equal(prefix.begin(), prefix.end(), s.begin());
 }
 
-bool IsForbiddenAlgorithm(const std::string &alg) {
+static bool IsForbiddenAlgorithm(const std::string &alg) {
 	return alg.empty() || alg == "none" || StartsWith(alg, "HS");
 }
 
-bool IsAllowed(const std::string &alg, const std::vector<std::string> &whitelist) {
+static bool IsAllowed(const std::string &alg, const std::vector<std::string> &whitelist) {
 	static const std::vector<std::string> kDefault = {"RS256", "RS384", "RS512"};
 	const auto &use = whitelist.empty() ? kDefault : whitelist;
 	return std::find(use.begin(), use.end(), alg) != use.end();
 }
 
-VerifyResult VerifyWithCachedKey(std::string_view token, const Jwk &jwk,
-                                 const VerifyOptions &opts) {
+static VerifyResult VerifyWithCachedKey(std::string_view token, const Jwk &jwk, const VerifyOptions &opts) {
 	return VerifyJwt(token, jwk, opts);
 }
 
 // Returns true iff the kid landed in the cache after a fetch + parse.
-bool IngestJwks(const std::string &kid, const std::string &body,
-                std::int64_t now_s, JwksCache &cache) {
+static bool IngestJwks(const std::string &kid, const std::string &body, std::int64_t now_s, JwksCache &cache) {
 	const auto keys = ParseJwksJson(body);
 	if (keys.empty()) {
 		return false;
@@ -50,26 +45,21 @@ bool IngestJwks(const std::string &kid, const std::string &body,
 	return found;
 }
 
-bool AudienceMatches(const std::vector<std::string> &actual,
-                     const std::string &expected) {
+static bool AudienceMatches(const std::vector<std::string> &actual, const std::string &expected) {
 	if (expected.empty()) {
 		return true;
 	}
 	return std::find(actual.begin(), actual.end(), expected) != actual.end();
 }
 
-} // namespace
-
-VerifyResult ValidateToken(std::string_view token, const VerifyOptions &opts,
-                           ValidateContext &ctx) {
+VerifyResult ValidateToken(std::string_view token, const VerifyOptions &opts, ValidateContext &ctx) {
 	const auto parsed = ParseJwt(token);
 	if (!parsed) {
 		return VerifyResult::Malformed;
 	}
 
 	// Reject forbidden algorithms before any cache or HTTP work (R-S-3).
-	if (IsForbiddenAlgorithm(parsed->alg) ||
-	    !IsAllowed(parsed->alg, opts.allowed_algorithms)) {
+	if (IsForbiddenAlgorithm(parsed->alg) || !IsAllowed(parsed->alg, opts.allowed_algorithms)) {
 		return VerifyResult::DisallowedAlgorithm;
 	}
 
@@ -94,8 +84,7 @@ VerifyResult ValidateToken(std::string_view token, const VerifyOptions &opts,
 		return VerifyResult::JwksFetchFailed;
 	}
 
-	const bool kid_present = IngestJwks(parsed->kid, resp->body, opts.now_s,
-	                                    ctx.jwks_cache);
+	const bool kid_present = IngestJwks(parsed->kid, resp->body, opts.now_s, ctx.jwks_cache);
 	if (!kid_present) {
 		ctx.jwks_cache.OnFetchMiss(parsed->kid, opts.now_s);
 		return VerifyResult::UnknownKid;
@@ -110,9 +99,7 @@ VerifyResult ValidateToken(std::string_view token, const VerifyOptions &opts,
 	return VerifyWithCachedKey(token, *second_lookup.jwk, opts);
 }
 
-VerifyResult ValidateTokenViaTokeninfo(std::string_view token,
-                                       const VerifyOptions &opts,
-                                       TokeninfoContext &ctx,
+VerifyResult ValidateTokenViaTokeninfo(std::string_view token, const VerifyOptions &opts, TokeninfoContext &ctx,
                                        Principal *out_principal) {
 	if (token.empty()) {
 		return VerifyResult::Malformed;
@@ -138,8 +125,7 @@ VerifyResult ValidateTokenViaTokeninfo(std::string_view token,
 	// both equal the service account's unique numeric id. Accept a match
 	// against either.
 	if (!ctx.expected_audience.empty()) {
-		if (resp->aud != ctx.expected_audience &&
-		    resp->azp != ctx.expected_audience) {
+		if (resp->aud != ctx.expected_audience && resp->azp != ctx.expected_audience) {
 			return VerifyResult::WrongAudience;
 		}
 	}
@@ -155,7 +141,8 @@ VerifyResult ValidateTokenViaTokeninfo(std::string_view token,
 		std::size_t start = 0;
 		while (start < resp->scope.size()) {
 			auto end = resp->scope.find(' ', start);
-			if (end == std::string::npos) end = resp->scope.size();
+			if (end == std::string::npos)
+				end = resp->scope.size();
 			if (end > start) {
 				p.scopes.emplace_back(resp->scope.substr(start, end - start));
 			}
@@ -170,10 +157,8 @@ VerifyResult ValidateTokenViaTokeninfo(std::string_view token,
 	return VerifyResult::Ok;
 }
 
-VerifyResult ValidateTokenViaIntrospection(std::string_view token,
-                                          const VerifyOptions &opts,
-                                          IntrospectContext &ctx,
-                                          Principal *out_principal) {
+VerifyResult ValidateTokenViaIntrospection(std::string_view token, const VerifyOptions &opts, IntrospectContext &ctx,
+                                           Principal *out_principal) {
 	if (token.empty()) {
 		return VerifyResult::Malformed;
 	}
@@ -185,8 +170,7 @@ VerifyResult ValidateTokenViaIntrospection(std::string_view token,
 		return VerifyResult::Ok;
 	}
 
-	const auto resp = IntrospectToken(ctx.http, ctx.endpoint, ctx.client_id,
-	                                  ctx.client_secret, token);
+	const auto resp = IntrospectToken(ctx.http, ctx.endpoint, ctx.client_id, ctx.client_secret, token);
 	if (!resp.has_value()) {
 		// Transport, non-200, malformed -- treat as fetch failure rather
 		// than InvalidSignature (we couldn't determine signature validity).
@@ -203,8 +187,7 @@ VerifyResult ValidateTokenViaIntrospection(std::string_view token,
 
 	// iss / aud checks against the introspect response. They're advisory
 	// when the IdP doesn't return them.
-	if (!ctx.expected_issuer.empty() && !resp->issuer.empty() &&
-	    resp->issuer != ctx.expected_issuer) {
+	if (!ctx.expected_issuer.empty() && !resp->issuer.empty() && resp->issuer != ctx.expected_issuer) {
 		return VerifyResult::WrongIssuer;
 	}
 	if (!ctx.expected_audience.empty() && !resp->audience.empty() &&
@@ -220,7 +203,8 @@ VerifyResult ValidateTokenViaIntrospection(std::string_view token,
 		std::size_t start = 0;
 		while (start < resp->scope.size()) {
 			auto end = resp->scope.find(' ', start);
-			if (end == std::string::npos) end = resp->scope.size();
+			if (end == std::string::npos)
+				end = resp->scope.size();
 			if (end > start) {
 				p.scopes.emplace_back(resp->scope.substr(start, end - start));
 			}

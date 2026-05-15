@@ -18,10 +18,10 @@ namespace quack_oauth {
 // current code paths actually need. `claims` (raw provider blob) is added
 // when a slice needs it.
 struct Principal {
-	std::string subject;                 // sub
-	std::string issuer;                  // iss
-	std::vector<std::string> scopes;     // scope (space-split) ∪ scp[]
-	std::int64_t exp = 0;                // unix seconds
+	std::string subject;             // sub
+	std::string issuer;              // iss
+	std::vector<std::string> scopes; // scope (space-split) ∪ scp[]
+	std::int64_t exp = 0;            // unix seconds
 };
 
 // Per-process decision cache keyed by SHA-256 of the raw token (R-N-2:
@@ -50,8 +50,7 @@ public:
 	// Cache a positive decision. The effective TTL is `min(default_ttl_s,
 	// principal.exp - now_s)` when `principal.exp > 0`, else `default_ttl_s`.
 	// Non-positive TTLs short-circuit -- nothing is inserted.
-	void Store(const std::string &key, const Principal &principal,
-	           std::int64_t now_s);
+	void Store(const std::string &key, const Principal &principal, std::int64_t now_s);
 
 	std::size_t Size() const noexcept;
 
@@ -67,7 +66,7 @@ private:
 
 	std::size_t max_entries_;
 	std::int64_t default_ttl_s_;
-	List entries_;  // front = most-recently-used
+	List entries_; // front = most-recently-used
 	Map index_;
 };
 

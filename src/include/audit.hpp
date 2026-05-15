@@ -41,8 +41,12 @@ public:
 	explicit AuditRing(std::size_t capacity = 16);
 	void Push(AuditEvent event);
 	std::vector<AuditEvent> Snapshot() const;
-	std::size_t size() const noexcept { return count_; }
-	std::size_t capacity() const noexcept { return ring_.size(); }
+	std::size_t size() const noexcept {
+		return count_;
+	}
+	std::size_t capacity() const noexcept {
+		return ring_.size();
+	}
 
 private:
 	std::vector<AuditEvent> ring_;

@@ -30,8 +30,7 @@ TEST_CASE("Default policy: quack:read allows Attach + Scan, denies CopyTo / Copy
 	CHECK(EvaluateDefaultPolicy(p, Action::ServeAdmin, "").decision == Decision::Deny);
 }
 
-TEST_CASE("Default policy: quack:write implies quack:read (full data-plane access)",
-          "[authz][default-policy]") {
+TEST_CASE("Default policy: quack:write implies quack:read (full data-plane access)", "[authz][default-policy]") {
 	const auto p = WithScopes({"quack:write"});
 	CHECK(EvaluateDefaultPolicy(p, Action::Attach, "").decision == Decision::Allow);
 	CHECK(EvaluateDefaultPolicy(p, Action::Scan, "").decision == Decision::Allow);
@@ -41,8 +40,7 @@ TEST_CASE("Default policy: quack:write implies quack:read (full data-plane acces
 	CHECK(EvaluateDefaultPolicy(p, Action::ServeAdmin, "").decision == Decision::Deny);
 }
 
-TEST_CASE("Default policy: no scopes denies everything",
-          "[authz][default-policy]") {
+TEST_CASE("Default policy: no scopes denies everything", "[authz][default-policy]") {
 	const auto p = WithScopes({});
 	CHECK(EvaluateDefaultPolicy(p, Action::Attach, "").decision == Decision::Deny);
 	CHECK(EvaluateDefaultPolicy(p, Action::Scan, "").decision == Decision::Deny);
@@ -51,36 +49,27 @@ TEST_CASE("Default policy: no scopes denies everything",
 	CHECK(EvaluateDefaultPolicy(p, Action::ServeAdmin, "").decision == Decision::Deny);
 }
 
-TEST_CASE("Default policy: unrelated scopes do not unlock data-plane access",
-          "[authz][default-policy]") {
+TEST_CASE("Default policy: unrelated scopes do not unlock data-plane access", "[authz][default-policy]") {
 	const auto p = WithScopes({"openid", "profile", "email"});
 	CHECK(EvaluateDefaultPolicy(p, Action::Scan, "").decision == Decision::Deny);
 	CHECK(EvaluateDefaultPolicy(p, Action::CopyTo, "").decision == Decision::Deny);
 }
 
-TEST_CASE("Default policy: deny reasons cite the missing scope",
-          "[authz][default-policy][reason]") {
+TEST_CASE("Default policy: deny reasons cite the missing scope", "[authz][default-policy][reason]") {
 	const Principal anonymous = WithScopes({});
-	CHECK(EvaluateDefaultPolicy(anonymous, Action::Scan, "").reason ==
-	      "requires quack:read");
-	CHECK(EvaluateDefaultPolicy(anonymous, Action::CopyTo, "").reason ==
-	      "requires quack:write");
+	CHECK(EvaluateDefaultPolicy(anonymous, Action::Scan, "").reason == "requires quack:read");
+	CHECK(EvaluateDefaultPolicy(anonymous, Action::CopyTo, "").reason == "requires quack:write");
 
 	const Principal reader = WithScopes({"quack:read"});
-	CHECK(EvaluateDefaultPolicy(reader, Action::CopyFrom, "").reason ==
-	      "requires quack:write");
-	CHECK(EvaluateDefaultPolicy(reader, Action::ServeAdmin, "").reason ==
-	      "default policy never permits ServeAdmin");
+	CHECK(EvaluateDefaultPolicy(reader, Action::CopyFrom, "").reason == "requires quack:write");
+	CHECK(EvaluateDefaultPolicy(reader, Action::ServeAdmin, "").reason == "default policy never permits ServeAdmin");
 }
 
-TEST_CASE("Default policy: object glob is currently ignored (R-S-7 future hook)",
-          "[authz][default-policy][object]") {
+TEST_CASE("Default policy: object glob is currently ignored (R-S-7 future hook)", "[authz][default-policy][object]") {
 	// A reader is allowed to Scan any object today; a future schema
 	// extension to the policy table can tighten this via per-object
 	// globs without changing the default.
 	const auto reader = WithScopes({"quack:read"});
-	CHECK(EvaluateDefaultPolicy(reader, Action::Scan, "main.sensitive").decision ==
-	      Decision::Allow);
-	CHECK(EvaluateDefaultPolicy(reader, Action::Scan, "main.*").decision ==
-	      Decision::Allow);
+	CHECK(EvaluateDefaultPolicy(reader, Action::Scan, "main.sensitive").decision == Decision::Allow);
+	CHECK(EvaluateDefaultPolicy(reader, Action::Scan, "main.*").decision == Decision::Allow);
 }

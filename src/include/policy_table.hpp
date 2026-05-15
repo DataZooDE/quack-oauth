@@ -30,7 +30,6 @@ namespace duckdb {
 //
 // `default_allow` is set by the caller from the
 // `quack_oauth_policy_default` setting; this loader only fills `rules`.
-std::optional<quack_oauth::PolicyDocument>
-LoadPolicyFromTable(ClientContext &context, const std::string &qualified_table);
+std::optional<quack_oauth::PolicyDocument> LoadPolicyFromTable(ClientContext &context, const string &qualified_table);
 
 } // namespace duckdb

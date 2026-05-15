@@ -1,7 +1,7 @@
 #pragma once
 
 #include <string>
-#include <string_view>  // IWYU pragma: keep
+#include <string_view> // IWYU pragma: keep
 
 namespace quack_oauth {
 

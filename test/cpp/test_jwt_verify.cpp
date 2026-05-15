@@ -85,27 +85,23 @@ const TestKey &GetTestKey() {
 		BN_free(e_bn);
 		EVP_PKEY_free(pkey);
 
-		return TestKey{std::move(priv_pem), std::move(jwk)};
+		return TestKey {std::move(priv_pem), std::move(jwk)};
 	}();
 	return k;
 }
 
-std::string SignRs256(const TestKey &k, std::int64_t exp_s, std::int64_t iat_s,
-                      const std::string &iss, const std::string &aud,
-                      std::int64_t nbf_s = 0) {
+std::string SignRs256(const TestKey &k, std::int64_t exp_s, std::int64_t iat_s, const std::string &iss,
+                      const std::string &aud, std::int64_t nbf_s = 0) {
 	auto builder = jwt::create<TraitsT>()
 	                   .set_type("JWT")
 	                   .set_key_id(k.jwk.kid)
 	                   .set_issuer(iss)
 	                   .set_subject("alice")
 	                   .set_audience(aud)
-	                   .set_issued_at(std::chrono::system_clock::time_point(
-	                       std::chrono::seconds(iat_s)))
-	                   .set_expires_at(std::chrono::system_clock::time_point(
-	                       std::chrono::seconds(exp_s)));
+	                   .set_issued_at(std::chrono::system_clock::time_point(std::chrono::seconds(iat_s)))
+	                   .set_expires_at(std::chrono::system_clock::time_point(std::chrono::seconds(exp_s)));
 	if (nbf_s > 0) {
-		builder.set_not_before(std::chrono::system_clock::time_point(
-		    std::chrono::seconds(nbf_s)));
+		builder.set_not_before(std::chrono::system_clock::time_point(std::chrono::seconds(nbf_s)));
 	}
 	return builder.sign(jwt::algorithm::rs256("", k.priv_pem, "", ""));
 }
@@ -122,56 +118,46 @@ VerifyOptions BaseOpts(std::int64_t now_s = 1700000000) {
 
 } // namespace
 
-TEST_CASE("VerifyJwt: happy path on a freshly-signed RS256 token",
-          "[jwt][verify]") {
+TEST_CASE("VerifyJwt: happy path on a freshly-signed RS256 token", "[jwt][verify]") {
 	const auto &k = GetTestKey();
-	const auto token = SignRs256(k, 1700003600, 1700000000, "https://idp.test",
-	                             "api://quack");
+	const auto token = SignRs256(k, 1700003600, 1700000000, "https://idp.test", "api://quack");
 	CHECK(VerifyJwt(token, k.jwk, BaseOpts()) == VerifyResult::Ok);
 }
 
 TEST_CASE("VerifyJwt: expired token is rejected", "[jwt][verify][exp]") {
 	const auto &k = GetTestKey();
-	const auto token = SignRs256(k, 1699000000, 1698990000, "https://idp.test",
-	                             "api://quack");
+	const auto token = SignRs256(k, 1699000000, 1698990000, "https://idp.test", "api://quack");
 	CHECK(VerifyJwt(token, k.jwk, BaseOpts(1700000000)) == VerifyResult::Expired);
 }
 
-TEST_CASE("VerifyJwt: clock skew gives a token leeway past exp",
-          "[jwt][verify][exp]") {
+TEST_CASE("VerifyJwt: clock skew gives a token leeway past exp", "[jwt][verify][exp]") {
 	const auto &k = GetTestKey();
 	// Token exp = now - 30s; clock skew = 60s -> still Ok.
-	const auto token = SignRs256(k, 1699999970, 1699996400, "https://idp.test",
-	                             "api://quack");
+	const auto token = SignRs256(k, 1699999970, 1699996400, "https://idp.test", "api://quack");
 	CHECK(VerifyJwt(token, k.jwk, BaseOpts(1700000000)) == VerifyResult::Ok);
 }
 
 TEST_CASE("VerifyJwt: not-yet-valid token is rejected", "[jwt][verify][nbf]") {
 	const auto &k = GetTestKey();
-	const auto token = SignRs256(k, 1700003600, 1700000000, "https://idp.test",
-	                             "api://quack", /*nbf*/ 1700000200);
-	CHECK(VerifyJwt(token, k.jwk, BaseOpts(1700000000)) ==
-	      VerifyResult::NotYetValid);
+	const auto token = SignRs256(k, 1700003600, 1700000000, "https://idp.test", "api://quack", /*nbf*/ 1700000200);
+	CHECK(VerifyJwt(token, k.jwk, BaseOpts(1700000000)) == VerifyResult::NotYetValid);
 }
 
 TEST_CASE("VerifyJwt: wrong issuer", "[jwt][verify][iss]") {
 	const auto &k = GetTestKey();
-	const auto token = SignRs256(k, 1700003600, 1700000000, "https://other.idp",
-	                             "api://quack");
+	const auto token = SignRs256(k, 1700003600, 1700000000, "https://other.idp", "api://quack");
 	CHECK(VerifyJwt(token, k.jwk, BaseOpts()) == VerifyResult::WrongIssuer);
 }
 
 TEST_CASE("VerifyJwt: wrong audience", "[jwt][verify][aud]") {
 	const auto &k = GetTestKey();
-	const auto token = SignRs256(k, 1700003600, 1700000000, "https://idp.test",
-	                             "api://other");
+	const auto token = SignRs256(k, 1700003600, 1700000000, "https://idp.test", "api://other");
 	CHECK(VerifyJwt(token, k.jwk, BaseOpts()) == VerifyResult::WrongAudience);
 }
 
 TEST_CASE("VerifyJwt: invalid signature is rejected", "[jwt][verify][sig]") {
 	const auto &k = GetTestKey();
-	auto token = SignRs256(k, 1700003600, 1700000000, "https://idp.test",
-	                       "api://quack");
+	auto token = SignRs256(k, 1700003600, 1700000000, "https://idp.test", "api://quack");
 	// Mangle a *middle* character of the signature segment -- flipping the
 	// last char only modifies base64url's trailing padding bits, leaving
 	// the actual signature bytes unchanged for unpadded RSA-2048 signatures.
@@ -184,32 +170,26 @@ TEST_CASE("VerifyJwt: invalid signature is rejected", "[jwt][verify][sig]") {
 	CHECK(VerifyJwt(token, k.jwk, BaseOpts()) == VerifyResult::InvalidSignature);
 }
 
-TEST_CASE("VerifyJwt: alg=none is rejected per R-S-3",
-          "[jwt][verify][alg]") {
+TEST_CASE("VerifyJwt: alg=none is rejected per R-S-3", "[jwt][verify][alg]") {
 	// Manually built. Header: {"alg":"none","typ":"JWT","kid":"test-key-1"}.
 	// Payload: {"iss":"https://idp.test","aud":"api://quack","exp":1700003600}.
-	const std::string token =
-	    "eyJhbGciOiJub25lIiwidHlwIjoiSldUIiwia2lkIjoidGVzdC1rZXktMSJ9."
-	    "eyJpc3MiOiJodHRwczovL2lkcC50ZXN0IiwiYXVkIjoiYXBpOi8vcXVhY2siLCJleHAiOjE3MDAwMDM2MDB9."
-	    "";
+	const std::string token = "eyJhbGciOiJub25lIiwidHlwIjoiSldUIiwia2lkIjoidGVzdC1rZXktMSJ9."
+	                          "eyJpc3MiOiJodHRwczovL2lkcC50ZXN0IiwiYXVkIjoiYXBpOi8vcXVhY2siLCJleHAiOjE3MDAwMDM2MDB9."
+	                          "";
 	const auto &k = GetTestKey();
-	CHECK(VerifyJwt(token, k.jwk, BaseOpts()) ==
-	      VerifyResult::DisallowedAlgorithm);
+	CHECK(VerifyJwt(token, k.jwk, BaseOpts()) == VerifyResult::DisallowedAlgorithm);
 }
 
-TEST_CASE("VerifyJwt: HS256 (symmetric) is rejected per R-S-3",
-          "[jwt][verify][alg]") {
+TEST_CASE("VerifyJwt: HS256 (symmetric) is rejected per R-S-3", "[jwt][verify][alg]") {
 	const auto token = jwt::create<TraitsT>()
 	                       .set_type("JWT")
 	                       .set_key_id("test-key-1")
 	                       .set_issuer("https://idp.test")
 	                       .set_audience("api://quack")
-	                       .set_expires_at(std::chrono::system_clock::time_point(
-	                           std::chrono::seconds(1700003600)))
-	                       .sign(jwt::algorithm::hs256{"shared-secret"});
+	                       .set_expires_at(std::chrono::system_clock::time_point(std::chrono::seconds(1700003600)))
+	                       .sign(jwt::algorithm::hs256 {"shared-secret"});
 	const auto &k = GetTestKey();
-	CHECK(VerifyJwt(token, k.jwk, BaseOpts()) ==
-	      VerifyResult::DisallowedAlgorithm);
+	CHECK(VerifyJwt(token, k.jwk, BaseOpts()) == VerifyResult::DisallowedAlgorithm);
 }
 
 TEST_CASE("VerifyJwt: malformed token", "[jwt][verify][error]") {
@@ -220,8 +200,7 @@ TEST_CASE("VerifyJwt: malformed token", "[jwt][verify][error]") {
 
 TEST_CASE("VerifyJwt: unsupported key type", "[jwt][verify][key]") {
 	const auto &k = GetTestKey();
-	const auto token = SignRs256(k, 1700003600, 1700000000, "https://idp.test",
-	                             "api://quack");
+	const auto token = SignRs256(k, 1700003600, 1700000000, "https://idp.test", "api://quack");
 	Jwk weird = k.jwk;
 	weird.kty = "WEIRD"; // not RSA / EC / OKP
 	CHECK(VerifyJwt(token, weird, BaseOpts()) == VerifyResult::UnsupportedKeyType);
@@ -240,7 +219,8 @@ struct EcKey {
 const EcKey &GetEcKey(const std::string &crv_name) {
 	static std::map<std::string, EcKey> cache;
 	auto it = cache.find(crv_name);
-	if (it != cache.end()) return it->second;
+	if (it != cache.end())
+		return it->second;
 
 	int nid = 0;
 	std::string jwk_crv;
@@ -294,7 +274,7 @@ const EcKey &GetEcKey(const std::string &crv_name) {
 	BN_free(y_bn);
 	EVP_PKEY_free(pkey);
 
-	cache.emplace(crv_name, EcKey{std::move(priv_pem), std::move(jwk)});
+	cache.emplace(crv_name, EcKey {std::move(priv_pem), std::move(jwk)});
 	return cache[crv_name];
 }
 
@@ -304,8 +284,7 @@ VerifyOptions EcOpts(std::int64_t now_s = 1700000000) {
 	return o;
 }
 
-std::string SignEc(const EcKey &k, const std::string &alg,
-                   std::int64_t exp_s, std::int64_t iat_s,
+std::string SignEc(const EcKey &k, const std::string &alg, std::int64_t exp_s, std::int64_t iat_s,
                    const std::string &iss, const std::string &aud) {
 	auto builder = jwt::create<TraitsT>()
 	                   .set_type("JWT")
@@ -313,10 +292,8 @@ std::string SignEc(const EcKey &k, const std::string &alg,
 	                   .set_issuer(iss)
 	                   .set_subject("alice")
 	                   .set_audience(aud)
-	                   .set_issued_at(std::chrono::system_clock::time_point(
-	                       std::chrono::seconds(iat_s)))
-	                   .set_expires_at(std::chrono::system_clock::time_point(
-	                       std::chrono::seconds(exp_s)));
+	                   .set_issued_at(std::chrono::system_clock::time_point(std::chrono::seconds(iat_s)))
+	                   .set_expires_at(std::chrono::system_clock::time_point(std::chrono::seconds(exp_s)));
 	if (alg == "ES256") {
 		return builder.sign(jwt::algorithm::es256("", k.priv_pem, "", ""));
 	}
@@ -325,23 +302,19 @@ std::string SignEc(const EcKey &k, const std::string &alg,
 
 TEST_CASE("VerifyJwt: ES256 happy path (R-S-3)", "[jwt][verify][ec]") {
 	const auto &k = GetEcKey("P-256");
-	const auto token = SignEc(k, "ES256", 1700003600, 1700000000,
-	                          "https://idp.test", "api://quack");
+	const auto token = SignEc(k, "ES256", 1700003600, 1700000000, "https://idp.test", "api://quack");
 	CHECK(VerifyJwt(token, k.jwk, EcOpts()) == VerifyResult::Ok);
 }
 
 TEST_CASE("VerifyJwt: ES384 happy path (R-S-3)", "[jwt][verify][ec]") {
 	const auto &k = GetEcKey("P-384");
-	const auto token = SignEc(k, "ES384", 1700003600, 1700000000,
-	                          "https://idp.test", "api://quack");
+	const auto token = SignEc(k, "ES384", 1700003600, 1700000000, "https://idp.test", "api://quack");
 	CHECK(VerifyJwt(token, k.jwk, EcOpts()) == VerifyResult::Ok);
 }
 
-TEST_CASE("VerifyJwt: ES256 token signed by a different EC key is rejected",
-          "[jwt][verify][ec][sig]") {
+TEST_CASE("VerifyJwt: ES256 token signed by a different EC key is rejected", "[jwt][verify][ec][sig]") {
 	const auto &k1 = GetEcKey("P-256");
-	const auto token = SignEc(k1, "ES256", 1700003600, 1700000000,
-	                          "https://idp.test", "api://quack");
+	const auto token = SignEc(k1, "ES256", 1700003600, 1700000000, "https://idp.test", "api://quack");
 	const auto &k2 = GetEcKey("P-384");
 	// Hand the verifier the wrong JWK (different curve, different key).
 	CHECK(VerifyJwt(token, k2.jwk, EcOpts()) != VerifyResult::Ok);
@@ -357,8 +330,7 @@ TEST_CASE("JwkEcToPem: round-trips both curves", "[jwk][pem][ec]") {
 	}
 }
 
-TEST_CASE("JwkEcToPem: missing x/y or unknown crv returns nullopt",
-          "[jwk][pem][ec][error]") {
+TEST_CASE("JwkEcToPem: missing x/y or unknown crv returns nullopt", "[jwk][pem][ec][error]") {
 	Jwk j;
 	j.kid = "x";
 	j.kty = "EC";
@@ -400,13 +372,12 @@ const EcKey &GetEd25519Key() {
 		jwk.x = B64UrlNoPad(std::string(raw.begin(), raw.end()));
 
 		EVP_PKEY_free(pkey);
-		return EcKey{std::move(priv_pem), std::move(jwk)};
+		return EcKey {std::move(priv_pem), std::move(jwk)};
 	}();
 	return k;
 }
 
-TEST_CASE("VerifyJwt: EdDSA (Ed25519) happy path (R-S-3)",
-          "[jwt][verify][okp]") {
+TEST_CASE("VerifyJwt: EdDSA (Ed25519) happy path (R-S-3)", "[jwt][verify][okp]") {
 	const auto &k = GetEd25519Key();
 	auto builder = jwt::create<TraitsT>()
 	                   .set_type("JWT")
@@ -414,10 +385,8 @@ TEST_CASE("VerifyJwt: EdDSA (Ed25519) happy path (R-S-3)",
 	                   .set_issuer("https://idp.test")
 	                   .set_subject("alice")
 	                   .set_audience("api://quack")
-	                   .set_issued_at(std::chrono::system_clock::time_point(
-	                       std::chrono::seconds(1700000000)))
-	                   .set_expires_at(std::chrono::system_clock::time_point(
-	                       std::chrono::seconds(1700003600)));
+	                   .set_issued_at(std::chrono::system_clock::time_point(std::chrono::seconds(1700000000)))
+	                   .set_expires_at(std::chrono::system_clock::time_point(std::chrono::seconds(1700003600)));
 	const auto token = builder.sign(jwt::algorithm::ed25519("", k.priv_pem, "", ""));
 	CHECK(VerifyJwt(token, k.jwk, EcOpts()) == VerifyResult::Ok);
 }
@@ -429,8 +398,7 @@ TEST_CASE("JwkOkpToPem: Ed25519 round-trip", "[jwk][pem][okp]") {
 	CHECK(pem->find("BEGIN PUBLIC KEY") != std::string::npos);
 }
 
-TEST_CASE("JwkOkpToPem: unknown curve returns nullopt",
-          "[jwk][pem][okp][error]") {
+TEST_CASE("JwkOkpToPem: unknown curve returns nullopt", "[jwk][pem][okp][error]") {
 	Jwk j;
 	j.kid = "x";
 	j.kty = "OKP";
@@ -439,8 +407,7 @@ TEST_CASE("JwkOkpToPem: unknown curve returns nullopt",
 	CHECK_FALSE(JwkOkpToPem(j).has_value());
 }
 
-TEST_CASE("JwkRsaToPem: known key roundtrips to a PEM SubjectPublicKeyInfo",
-          "[jwk][pem]") {
+TEST_CASE("JwkRsaToPem: known key roundtrips to a PEM SubjectPublicKeyInfo", "[jwk][pem]") {
 	const auto &k = GetTestKey();
 	const auto pem = JwkRsaToPem(k.jwk);
 	REQUIRE(pem.has_value());

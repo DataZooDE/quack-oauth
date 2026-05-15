@@ -1,8 +1,8 @@
 #pragma once
 
-#include "duckdb.hpp"
-
 namespace duckdb {
+
+class DBConfig;
 
 // Registers every `quack_oauth_*` extension setting against the DBConfig.
 //

@@ -45,7 +45,9 @@ public:
 	// Issue a POST. Same error semantics as `Get`. The default returns
 	// `nullopt` so legacy callers that don't override compile; concrete
 	// implementations should provide a real implementation.
-	virtual std::optional<Response> Post(const PostRequest &) { return std::nullopt; }
+	virtual std::optional<Response> Post(const PostRequest &) {
+		return std::nullopt;
+	}
 };
 
 } // namespace quack_oauth

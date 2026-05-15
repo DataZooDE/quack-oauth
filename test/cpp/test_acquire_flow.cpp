@@ -11,7 +11,9 @@ using quack_oauth::DecideAcquireFlow;
 
 namespace {
 
-ClientSecretView Empty() { return {}; }
+ClientSecretView Empty() {
+	return {};
+}
 
 ClientSecretView WithAccessToken(const std::string &at, std::int64_t exp) {
 	ClientSecretView v;
@@ -28,8 +30,7 @@ TEST_CASE("DecideAcquireFlow: fresh AT → UseCached", "[acquire-flow]") {
 	CHECK(d.flow == AcquireFlow::UseCached);
 }
 
-TEST_CASE("DecideAcquireFlow: AT within skew of expiry → falls through to refresh",
-          "[acquire-flow]") {
+TEST_CASE("DecideAcquireFlow: AT within skew of expiry → falls through to refresh", "[acquire-flow]") {
 	auto v = WithAccessToken("eyJ...", 1700000050);
 	v.refresh_token = "rt-xyz";
 	v.token_endpoint = "https://idp/token";
@@ -39,8 +40,7 @@ TEST_CASE("DecideAcquireFlow: AT within skew of expiry → falls through to refr
 	CHECK(d.flow == AcquireFlow::RefreshToken);
 }
 
-TEST_CASE("DecideAcquireFlow: AT past expiry → falls through to refresh",
-          "[acquire-flow]") {
+TEST_CASE("DecideAcquireFlow: AT past expiry → falls through to refresh", "[acquire-flow]") {
 	auto v = WithAccessToken("eyJ...", 1699999000);
 	v.refresh_token = "rt-xyz";
 	v.token_endpoint = "https://idp/token";
@@ -49,8 +49,7 @@ TEST_CASE("DecideAcquireFlow: AT past expiry → falls through to refresh",
 	CHECK(d.flow == AcquireFlow::RefreshToken);
 }
 
-TEST_CASE("DecideAcquireFlow: no AT but client_credentials available → ClientCredentials",
-          "[acquire-flow]") {
+TEST_CASE("DecideAcquireFlow: no AT but client_credentials available → ClientCredentials", "[acquire-flow]") {
 	ClientSecretView v;
 	v.token_endpoint = "https://idp/token";
 	v.client_id = "cli";
@@ -59,8 +58,7 @@ TEST_CASE("DecideAcquireFlow: no AT but client_credentials available → ClientC
 	CHECK(d.flow == AcquireFlow::ClientCredentials);
 }
 
-TEST_CASE("DecideAcquireFlow: refresh_token wins over client_credentials when both exist",
-          "[acquire-flow]") {
+TEST_CASE("DecideAcquireFlow: refresh_token wins over client_credentials when both exist", "[acquire-flow]") {
 	ClientSecretView v;
 	v.token_endpoint = "https://idp/token";
 	v.client_id = "cli";
@@ -70,8 +68,7 @@ TEST_CASE("DecideAcquireFlow: refresh_token wins over client_credentials when bo
 	CHECK(d.flow == AcquireFlow::RefreshToken);
 }
 
-TEST_CASE("DecideAcquireFlow: only device_authorization_endpoint → DeviceCode",
-          "[acquire-flow]") {
+TEST_CASE("DecideAcquireFlow: only device_authorization_endpoint → DeviceCode", "[acquire-flow]") {
 	ClientSecretView v;
 	v.token_endpoint = "https://idp/token";
 	v.client_id = "cli";
@@ -80,15 +77,13 @@ TEST_CASE("DecideAcquireFlow: only device_authorization_endpoint → DeviceCode"
 	CHECK(d.flow == AcquireFlow::DeviceCode);
 }
 
-TEST_CASE("DecideAcquireFlow: nothing usable → Unconfigured",
-          "[acquire-flow]") {
+TEST_CASE("DecideAcquireFlow: nothing usable → Unconfigured", "[acquire-flow]") {
 	ClientSecretView v; // all empty
 	const auto d = DecideAcquireFlow(v, 1700000000, 60);
 	CHECK(d.flow == AcquireFlow::Unconfigured);
 }
 
-TEST_CASE("DecideAcquireFlow: AT with expires_at=0 (unknown) → falls through to refresh",
-          "[acquire-flow]") {
+TEST_CASE("DecideAcquireFlow: AT with expires_at=0 (unknown) → falls through to refresh", "[acquire-flow]") {
 	auto v = WithAccessToken("eyJ...", 0); // expires_at not set
 	v.refresh_token = "rt-xyz";
 	v.token_endpoint = "https://idp/token";
@@ -99,8 +94,7 @@ TEST_CASE("DecideAcquireFlow: AT with expires_at=0 (unknown) → falls through t
 	CHECK(d.flow == AcquireFlow::RefreshToken);
 }
 
-TEST_CASE("DecideAcquireFlow: fresh AT but only access_token field → UseCached",
-          "[acquire-flow]") {
+TEST_CASE("DecideAcquireFlow: fresh AT but only access_token field → UseCached", "[acquire-flow]") {
 	// Operator injected an AT externally (R-C-1 explicitly allows this).
 	// No client_id, no token_endpoint -- we should still use the AT.
 	auto v = WithAccessToken("eyJ-injected", 1700009999);

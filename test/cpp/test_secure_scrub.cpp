@@ -12,8 +12,7 @@ TEST_CASE("SecureScrub: empty string is a no-op", "[scrub]") {
 	CHECK(s.empty());
 }
 
-TEST_CASE("SecureScrub: bytes are zeroed before the string is freed",
-          "[scrub]") {
+TEST_CASE("SecureScrub: bytes are zeroed before the string is freed", "[scrub]") {
 	std::string s = "eyJhbGciOiJSUzI1NiIs...some-secret-jwt-bytes";
 	const auto orig = s; // snapshot for comparison
 	SecureScrub(s);

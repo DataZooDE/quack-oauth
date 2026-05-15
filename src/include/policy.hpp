@@ -40,8 +40,7 @@ std::optional<Action> ActionFromString(std::string_view s);
 // Evaluate the policy against a (principal, action, object) tuple.
 // `object` is unused in this slice but kept in the signature for symmetry
 // with EvaluateDefaultPolicy.
-PolicyOutcome EvaluatePolicy(const PolicyDocument &doc,
-                             const Principal &principal, Action action,
+PolicyOutcome EvaluatePolicy(const PolicyDocument &doc, const Principal &principal, Action action,
                              std::string_view object);
 
 } // namespace quack_oauth

@@ -8,11 +8,9 @@
 
 namespace quack_oauth {
 
-namespace {
+static constexpr char kHex[] = "0123456789abcdef";
 
-constexpr char kHex[] = "0123456789abcdef";
-
-std::string HexEncode(const std::uint8_t *bytes, std::size_t n) {
+static std::string HexEncode(const std::uint8_t *bytes, std::size_t n) {
 	std::string out;
 	out.resize(n * 2);
 	for (std::size_t i = 0; i < n; ++i) {
@@ -22,33 +20,27 @@ std::string HexEncode(const std::uint8_t *bytes, std::size_t n) {
 	return out;
 }
 
-} // namespace
-
 DecisionCache::DecisionCache(std::size_t max_entries, std::int64_t default_ttl_s)
-    : max_entries_(max_entries == 0 ? 1 : max_entries),
-      default_ttl_s_(default_ttl_s) {
+    : max_entries_(max_entries == 0 ? 1 : max_entries), default_ttl_s_(default_ttl_s) {
 }
 
 std::string DecisionCache::KeyOf(std::string_view token) {
-	std::array<std::uint8_t, EVP_MAX_MD_SIZE> digest{};
+	std::array<std::uint8_t, EVP_MAX_MD_SIZE> digest {};
 	unsigned int digest_len = 0;
 	EVP_MD_CTX *ctx = EVP_MD_CTX_new();
 	if (ctx == nullptr) {
 		return {};
 	}
 	std::string out;
-	if (EVP_DigestInit_ex(ctx, EVP_sha256(), nullptr) == 1 &&
-	    EVP_DigestUpdate(ctx, token.data(), token.size()) == 1 &&
-	    EVP_DigestFinal_ex(ctx, digest.data(), &digest_len) == 1 &&
-	    digest_len == 32) {
+	if (EVP_DigestInit_ex(ctx, EVP_sha256(), nullptr) == 1 && EVP_DigestUpdate(ctx, token.data(), token.size()) == 1 &&
+	    EVP_DigestFinal_ex(ctx, digest.data(), &digest_len) == 1 && digest_len == 32) {
 		out = HexEncode(digest.data(), digest_len);
 	}
 	EVP_MD_CTX_free(ctx);
 	return out;
 }
 
-std::optional<Principal> DecisionCache::Lookup(const std::string &key,
-                                              std::int64_t now_s) {
+std::optional<Principal> DecisionCache::Lookup(const std::string &key, std::int64_t now_s) {
 	const auto it = index_.find(key);
 	if (it == index_.end()) {
 		return std::nullopt;
@@ -64,8 +56,7 @@ std::optional<Principal> DecisionCache::Lookup(const std::string &key,
 	return it->second->principal;
 }
 
-void DecisionCache::Store(const std::string &key, const Principal &principal,
-                          std::int64_t now_s) {
+void DecisionCache::Store(const std::string &key, const Principal &principal, std::int64_t now_s) {
 	std::int64_t ttl = default_ttl_s_;
 	if (principal.exp > 0) {
 		const auto remaining = principal.exp - now_s;
@@ -84,7 +75,7 @@ void DecisionCache::Store(const std::string &key, const Principal &principal,
 		return;
 	}
 
-	entries_.push_front(Entry{key, principal, now_s + ttl});
+	entries_.push_front(Entry {key, principal, now_s + ttl});
 	index_[key] = entries_.begin();
 
 	while (entries_.size() > max_entries_) {

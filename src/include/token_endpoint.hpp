@@ -27,11 +27,9 @@ std::optional<TokenResponse> ParseTokenResponse(std::string_view json);
 // `grant_type=client_credentials[&scope=...]` to the token endpoint with
 // HTTP Basic auth (`client_id:client_secret`). Returns `nullopt` on transport
 // error, non-200, or malformed body.
-std::optional<TokenResponse>
-AcquireTokenClientCredentials(IHttpClient &http, const std::string &token_endpoint,
-                              const std::string &client_id,
-                              const std::string &client_secret,
-                              const std::string &scope);
+std::optional<TokenResponse> AcquireTokenClientCredentials(IHttpClient &http, const std::string &token_endpoint,
+                                                           const std::string &client_id,
+                                                           const std::string &client_secret, const std::string &scope);
 
 // Acquire a fresh access token via RFC 6749 §6 refresh_token grant. POSTs
 // `grant_type=refresh_token&refresh_token=<urlencoded>[&scope=...]`. Public
@@ -39,11 +37,8 @@ AcquireTokenClientCredentials(IHttpClient &http, const std::string &token_endpoi
 // clients pass it. The response may include a new `refresh_token` (some
 // IdPs rotate, others don't); the original SHOULD continue to work either
 // way per R-C-5 (we persist whatever the IdP returned).
-std::optional<TokenResponse>
-AcquireTokenRefreshToken(IHttpClient &http, const std::string &token_endpoint,
-                         const std::string &client_id,
-                         const std::string &client_secret,
-                         const std::string &refresh_token,
-                         const std::string &scope);
+std::optional<TokenResponse> AcquireTokenRefreshToken(IHttpClient &http, const std::string &token_endpoint,
+                                                      const std::string &client_id, const std::string &client_secret,
+                                                      const std::string &refresh_token, const std::string &scope);
 
 } // namespace quack_oauth

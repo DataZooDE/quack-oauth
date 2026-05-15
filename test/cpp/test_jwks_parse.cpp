@@ -11,13 +11,13 @@ using quack_oauth::ParseJwksJson;
 namespace {
 
 bool HasKid(const std::vector<Jwk> &keys, const std::string &kid) {
-	return std::any_of(keys.begin(), keys.end(),
-	                   [&](const Jwk &k) { return k.kid == kid; });
+	return std::any_of(keys.begin(), keys.end(), [&](const Jwk &k) { return k.kid == kid; });
 }
 
 const Jwk *FindKid(const std::vector<Jwk> &keys, const std::string &kid) {
 	for (const auto &k : keys) {
-		if (k.kid == kid) return &k;
+		if (k.kid == kid)
+			return &k;
 	}
 	return nullptr;
 }
@@ -59,8 +59,7 @@ constexpr const char *kEcKeyJwks = R"({
 
 } // namespace
 
-TEST_CASE("ParseJwksJson extracts every key in a valid document",
-          "[jwks][parse]") {
+TEST_CASE("ParseJwksJson extracts every key in a valid document", "[jwks][parse]") {
 	const auto keys = ParseJwksJson(kValidKeycloakJwks);
 	REQUIRE(keys.size() == 2);
 	CHECK(HasKid(keys, "rsa-1"));
@@ -89,24 +88,21 @@ TEST_CASE("ParseJwksJson preserves EC fields", "[jwks][parse]") {
 	CHECK(k.y == "x_FEzRu9m36HLN_tue659LNpXW6pCyStikYjKIWI5a0");
 }
 
-TEST_CASE("ParseJwksJson returns empty on malformed JSON",
-          "[jwks][parse][error]") {
+TEST_CASE("ParseJwksJson returns empty on malformed JSON", "[jwks][parse][error]") {
 	CHECK(ParseJwksJson("").empty());
 	CHECK(ParseJwksJson("not json at all").empty());
 	CHECK(ParseJwksJson("{").empty());
 	CHECK(ParseJwksJson("[]").empty());
 }
 
-TEST_CASE("ParseJwksJson tolerates missing keys array",
-          "[jwks][parse][error]") {
+TEST_CASE("ParseJwksJson tolerates missing keys array", "[jwks][parse][error]") {
 	// Well-formed JSON but no `keys` -- the response shape is wrong.
 	CHECK(ParseJwksJson(R"({"unrelated":"field"})").empty());
 	// `keys` exists but is not an array.
 	CHECK(ParseJwksJson(R"({"keys":"not-an-array"})").empty());
 }
 
-TEST_CASE("ParseJwksJson skips entries missing required fields",
-          "[jwks][parse]") {
+TEST_CASE("ParseJwksJson skips entries missing required fields", "[jwks][parse]") {
 	// A key without `kid` is unusable for signature verification (we look up
 	// by kid). A key without `kty` has no algorithm family. Both are silently
 	// dropped from the output -- it's OK for an IdP doc to mix usable and

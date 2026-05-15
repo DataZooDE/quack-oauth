@@ -7,35 +7,34 @@ namespace quack_oauth {
 
 const char *ActionName(Action a) {
 	switch (a) {
-	case Action::Attach:     return "Attach";
-	case Action::Scan:       return "Scan";
-	case Action::CopyTo:     return "CopyTo";
-	case Action::CopyFrom:   return "CopyFrom";
-	case Action::ServeAdmin: return "ServeAdmin";
+	case Action::Attach:
+		return "Attach";
+	case Action::Scan:
+		return "Scan";
+	case Action::CopyTo:
+		return "CopyTo";
+	case Action::CopyFrom:
+		return "CopyFrom";
+	case Action::ServeAdmin:
+		return "ServeAdmin";
 	}
 	return "unknown";
 }
 
-namespace {
-
-bool HasScope(const Principal &p, const std::string &needle) {
+static bool HasScope(const Principal &p, const std::string &needle) {
 	return std::find(p.scopes.begin(), p.scopes.end(), needle) != p.scopes.end();
 }
 
-PolicyOutcome Allow(const char *reason) {
+static PolicyOutcome Allow(const char *reason) {
 	return {Decision::Allow, reason};
 }
 
-PolicyOutcome Deny(const char *reason) {
+static PolicyOutcome Deny(const char *reason) {
 	return {Decision::Deny, reason};
 }
 
-} // namespace
-
-PolicyOutcome EvaluateDefaultPolicy(const Principal &principal, Action action,
-                                    std::string_view /*object*/) {
-	const bool has_read =
-	    HasScope(principal, "quack:read") || HasScope(principal, "quack:write");
+PolicyOutcome EvaluateDefaultPolicy(const Principal &principal, Action action, std::string_view /*object*/) {
+	const bool has_read = HasScope(principal, "quack:read") || HasScope(principal, "quack:write");
 	const bool has_write = HasScope(principal, "quack:write");
 
 	switch (action) {

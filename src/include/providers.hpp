@@ -31,7 +31,7 @@ enum class ProviderValidation {
 // substitution token -- callers pass that in via `ResolveProvider`.
 struct ProviderConfig {
 	ProviderId id;
-	std::string name;             // canonical lowercase string ("entra", "keycloak"...)
+	std::string name; // canonical lowercase string ("entra", "keycloak"...)
 	ProviderValidation validation;
 	std::string issuer_template;
 	std::string jwks_uri_template;

@@ -18,10 +18,10 @@ namespace quack_oauth {
 // false on 400 (invalid_token).
 struct TokeninfoResponse {
 	bool active = false;
-	std::string azp;        // service-account or OAuth client unique id
-	std::string aud;        // for service-account tokens, equals `azp`
-	std::string subject;    // `sub`; empty for service-account tokens
-	std::string scope;      // space-delimited
+	std::string azp;     // service-account or OAuth client unique id
+	std::string aud;     // for service-account tokens, equals `azp`
+	std::string subject; // `sub`; empty for service-account tokens
+	std::string scope;   // space-delimited
 	std::int64_t exp = 0;
 	std::int64_t expires_in = 0;
 	std::string email;
@@ -35,8 +35,7 @@ struct TokeninfoResponse {
 // Returns nullopt only if the input isn't JSON. Google's tokeninfo MUST
 // return at least `aud` and `azp` on success; we don't enforce field
 // presence here -- the caller decides.
-std::optional<TokeninfoResponse> ParseTokeninfoResponse(std::string_view json,
-                                                       bool active);
+std::optional<TokeninfoResponse> ParseTokeninfoResponse(std::string_view json, bool active);
 
 // Validate an opaque Google access token via the tokeninfo endpoint. POSTs
 // `access_token=<urlencoded>` (no Basic auth -- Google's tokeninfo is
@@ -44,8 +43,6 @@ std::optional<TokeninfoResponse> ParseTokeninfoResponse(std::string_view json,
 //   200 → active=true, fields populated
 //   400 → active=false, fields empty
 //   else → nullopt (transport failure)
-std::optional<TokeninfoResponse>
-QueryTokeninfo(IHttpClient &http, const std::string &endpoint,
-               std::string_view token);
+std::optional<TokeninfoResponse> QueryTokeninfo(IHttpClient &http, const std::string &endpoint, std::string_view token);
 
 } // namespace quack_oauth

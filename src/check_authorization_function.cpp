@@ -3,11 +3,14 @@
 #include <mutex>
 #include <string>
 
-#include "duckdb.hpp"
-#include "duckdb/catalog/catalog_transaction.hpp"
+#include "duckdb/common/types/data_chunk.hpp"
+#include "duckdb/common/types/value.hpp"
+#include "duckdb/common/types/vector.hpp"
+#include "duckdb/common/vector_operations/binary_executor.hpp"
+#include "duckdb/execution/expression_executor_state.hpp"
 #include "duckdb/function/scalar_function.hpp"
 #include "duckdb/main/client_context.hpp"
-#include "duckdb/main/secret/secret_manager.hpp"
+#include "duckdb/main/extension/extension_loader.hpp"
 #include "duckdb/parser/parsed_data/create_scalar_function_info.hpp"
 
 #include <chrono>
@@ -21,52 +24,39 @@
 #include "policy_table.hpp"
 #include "principal_expiry.hpp"
 #include "quack_oauth_state.hpp"
+#include "secret_accessor.hpp"
 #include "tracing.hpp"
 
 namespace duckdb {
 
-namespace {
-
 // Resolve the policy_table from the active TYPE=quack_oauth_server SECRET.
-std::string LookupPolicyTable(ClientContext &context) {
+static string LookupPolicyTable(ClientContext &context) {
 	Value v;
-	if (!context.TryGetCurrentSetting("quack_oauth_server_secret_name", v) ||
-	    v.IsNull()) {
+	if (!context.TryGetCurrentSetting("quack_oauth_server_secret_name", v) || v.IsNull()) {
 		return "";
 	}
-	const auto secret_name = v.ToString();
-	if (secret_name.empty()) return "";
-
-	auto &secret_manager = SecretManager::Get(context);
-	auto transaction = CatalogTransaction::GetSystemCatalogTransaction(context);
-	auto secret_entry = secret_manager.GetSecretByName(transaction, secret_name);
-	if (!secret_entry) return "";
-	const auto *kv = dynamic_cast<const KeyValueSecret *>(secret_entry->secret.get());
-	if (!kv) return "";
-	const auto it = kv->secret_map.find("policy_table");
-	return it != kv->secret_map.end() ? it->second.ToString() : std::string();
+	auto accessor = TryOpenSecret(context, v.ToString(), "quack_oauth_server");
+	return accessor.Get("policy_table");
 }
 
-bool LookupDefaultAllow(ClientContext &context) {
+static bool LookupDefaultAllow(ClientContext &context) {
 	Value v;
-	if (!context.TryGetCurrentSetting("quack_oauth_policy_default", v) ||
-	    v.IsNull()) {
+	if (!context.TryGetCurrentSetting("quack_oauth_policy_default", v) || v.IsNull()) {
 		return false; // default-deny
 	}
 	const auto s = v.ToString();
 	return s == "allow";
 }
 
-std::int64_t LookupClockSkew(ClientContext &context) {
+static int64_t LookupClockSkew(ClientContext &context) {
 	Value v;
 	if (!context.TryGetCurrentSetting("quack_oauth_clock_skew_s", v) || v.IsNull()) {
 		return 60; // matches R-S-3 default
 	}
-	return static_cast<std::int64_t>(v.GetValue<std::int32_t>());
+	return static_cast<int64_t>(v.GetValue<int32_t>());
 }
 
-void CheckAuthorizationScalarFun(DataChunk &args, ExpressionState &state,
-                                 Vector &result) {
+static void CheckAuthorizationScalarFun(DataChunk &args, ExpressionState &state, Vector &result) {
 	auto &context = state.GetContext();
 	auto &shared_state = GetQuackOauthState();
 	std::lock_guard<std::mutex> guard(shared_state.mu);
@@ -89,10 +79,9 @@ void CheckAuthorizationScalarFun(DataChunk &args, ExpressionState &state,
 		}
 	}
 
-	const std::int64_t now_s = std::chrono::duration_cast<std::chrono::seconds>(
-	                               std::chrono::system_clock::now().time_since_epoch())
-	                               .count();
-	const std::int64_t clock_skew_s = LookupClockSkew(context);
+	const int64_t now_s =
+	    std::chrono::duration_cast<std::chrono::seconds>(std::chrono::system_clock::now().time_since_epoch()).count();
+	const int64_t clock_skew_s = LookupClockSkew(context);
 
 	BinaryExecutor::Execute<string_t, string_t, bool>(
 	    args.data[0], args.data[1], result, args.size(),
@@ -103,7 +92,7 @@ void CheckAuthorizationScalarFun(DataChunk &args, ExpressionState &state,
 
 		    quack_oauth::AuditEvent e;
 		    e.timestamp_unix_s = now_s;
-		    e.action = std::string(quack_oauth::ActionName(action));
+		    e.action = string(quack_oauth::ActionName(action));
 		    // `query` is not redacted here -- it is intentionally NOT logged.
 		    // We log the action + reason instead so operators can audit policy
 		    // outcomes without seeing user SQL in clear text.
@@ -133,44 +122,36 @@ void CheckAuthorizationScalarFun(DataChunk &args, ExpressionState &state,
 			    EmitAuditEvent(context, e);
 			    return false;
 		    }
-		    const auto outcome =
-		        policy.has_value()
-		            ? quack_oauth::EvaluatePolicy(*policy, it->second, action, "")
-		            : quack_oauth::EvaluateDefaultPolicy(it->second, action, "");
+		    const auto outcome = policy.has_value() ? quack_oauth::EvaluatePolicy(*policy, it->second, action, "")
+		                                            : quack_oauth::EvaluateDefaultPolicy(it->second, action, "");
 		    const bool allow = outcome.decision == quack_oauth::Decision::Allow;
-		    e.event_type = allow ? quack_oauth::AuditEventType::AuthzAllow
-		                         : quack_oauth::AuditEventType::AuthzDeny;
+		    e.event_type = allow ? quack_oauth::AuditEventType::AuthzAllow : quack_oauth::AuditEventType::AuthzDeny;
 		    e.reason = outcome.reason;
 		    EmitAuditEvent(context, e);
 		    return allow;
 	    });
 }
 
-} // namespace
-
 void RegisterQuackOauthCheckAuthorization(ExtensionLoader &loader) {
-	ScalarFunction fn("quack_oauth_check_authorization",
-	                  {LogicalType::VARCHAR, LogicalType::VARCHAR},
+	ScalarFunction fn("quack_oauth_check_authorization", {LogicalType::VARCHAR, LogicalType::VARCHAR},
 	                  LogicalType::BOOLEAN, CheckAuthorizationScalarFun);
 	// Emits an audit event per call AND reads from session-keyed in-memory
 	// state that may change between rows. MUST NOT be constant-folded.
 	fn.SetVolatile();
 	CreateScalarFunctionInfo info(std::move(fn));
 	FunctionDescription desc;
-	desc.description =
-	    "Authorize a query for a session whose Principal was previously cached by "
-	    "quack_oauth_check_token(). Detects the action from the SQL "
-	    "(ATTACH/Scan/CopyTo/CopyFrom/ServeAdmin) and evaluates the policy: either the "
-	    "SQL-native rules in the table named by `policy_table` on the active "
-	    "quack_oauth_server SECRET, or the default scope-based policy (quack:read → "
-	    "Attach + Scan; quack:write → also CopyTo + CopyFrom; ServeAdmin always denied). "
-	    "Returns false for unknown session_id or fail-closed policy loading. Wired into "
-	    "quack via `SET quack_authorization_function = 'quack_oauth_check_authorization'`.";
+	desc.description = "Authorize a query for a session whose Principal was previously cached by "
+	                   "quack_oauth_check_token(). Detects the action from the SQL "
+	                   "(ATTACH/Scan/CopyTo/CopyFrom/ServeAdmin) and evaluates the policy: either the "
+	                   "SQL-native rules in the table named by `policy_table` on the active "
+	                   "quack_oauth_server SECRET, or the default scope-based policy (quack:read → "
+	                   "Attach + Scan; quack:write → also CopyTo + CopyFrom; ServeAdmin always denied). "
+	                   "Returns false for unknown session_id or fail-closed policy loading. Wired into "
+	                   "quack via `SET quack_authorization_function = 'quack_oauth_check_authorization'`.";
 	desc.parameter_names = {"session_id", "query_string"};
 	desc.parameter_types = {LogicalType::VARCHAR, LogicalType::VARCHAR};
-	desc.examples = {
-	    "SELECT quack_oauth_check_authorization('sess-1', 'SELECT * FROM t')",
-	    "SELECT quack_oauth_check_authorization('sess-1', 'COPY t TO ''out.csv''')"};
+	desc.examples = {"SELECT quack_oauth_check_authorization('sess-1', 'SELECT * FROM t')",
+	                 "SELECT quack_oauth_check_authorization('sess-1', 'COPY t TO ''out.csv''')"};
 	desc.categories = {"quack_oauth"};
 	info.descriptions.push_back(std::move(desc));
 	loader.RegisterFunction(std::move(info));

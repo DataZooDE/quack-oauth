@@ -20,35 +20,29 @@ TEST_CASE("DetectAction: ATTACH", "[action-detect]") {
 	CHECK(DetectAction("  attach 'foo'") == Action::Attach);
 }
 
-TEST_CASE("DetectAction: COPY direction is detected from TO / FROM",
-          "[action-detect][copy]") {
+TEST_CASE("DetectAction: COPY direction is detected from TO / FROM", "[action-detect][copy]") {
 	CHECK(DetectAction("COPY t TO 'file.csv'") == Action::CopyTo);
 	CHECK(DetectAction("COPY t FROM 'file.csv'") == Action::CopyFrom);
-	CHECK(DetectAction("copy (select 1) to 'out.csv' (format csv)") ==
-	      Action::CopyTo);
+	CHECK(DetectAction("copy (select 1) to 'out.csv' (format csv)") == Action::CopyTo);
 	// Unrecognised COPY shape -- conservative Scan fallback.
 	CHECK(DetectAction("COPY") == Action::Scan);
 }
 
-TEST_CASE("DetectAction: PRAGMA quack_* → ServeAdmin",
-          "[action-detect][admin]") {
-	CHECK(DetectAction("PRAGMA quack_serve('rs.example.com', 'token')") ==
-	      Action::ServeAdmin);
+TEST_CASE("DetectAction: PRAGMA quack_* → ServeAdmin", "[action-detect][admin]") {
+	CHECK(DetectAction("PRAGMA quack_serve('rs.example.com', 'token')") == Action::ServeAdmin);
 	CHECK(DetectAction("pragma quack_stop") == Action::ServeAdmin);
 	// Non-admin pragmas are scans.
 	CHECK(DetectAction("PRAGMA version") == Action::Scan);
 }
 
-TEST_CASE("DetectAction: leading comments + whitespace are skipped",
-          "[action-detect]") {
+TEST_CASE("DetectAction: leading comments + whitespace are skipped", "[action-detect]") {
 	CHECK(DetectAction("\n\t  SELECT 1") == Action::Scan);
 	CHECK(DetectAction("-- a comment\nSELECT 1") == Action::Scan);
 	CHECK(DetectAction("/* block */ ATTACH 'x' AS y") == Action::Attach);
 	CHECK(DetectAction("-- c1\n-- c2\n  COPY t FROM 'x'") == Action::CopyFrom);
 }
 
-TEST_CASE("DetectAction: unknown / write statements map to Scan",
-          "[action-detect]") {
+TEST_CASE("DetectAction: unknown / write statements map to Scan", "[action-detect]") {
 	// These are write statements at the SQL level, but our authz only
 	// distinguishes the 5 quack-level actions. They route to Scan;
 	// the default policy still denies them via missing write scope when

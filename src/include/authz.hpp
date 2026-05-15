@@ -3,7 +3,7 @@
 #include <string>
 #include <string_view>
 
-#include "decision_cache.hpp"  // for Principal
+#include "decision_cache.hpp" // for Principal
 
 namespace quack_oauth {
 
@@ -44,7 +44,6 @@ struct PolicyOutcome {
 // The `object` argument is reserved for future glob-based filtering (R-S-7
 // "allow/deny by referenced object `schema.table` glob"). The default policy
 // ignores it; a future schema extension of the policy table can use it.
-PolicyOutcome EvaluateDefaultPolicy(const Principal &principal, Action action,
-                                    std::string_view object);
+PolicyOutcome EvaluateDefaultPolicy(const Principal &principal, Action action, std::string_view object);
 
 } // namespace quack_oauth

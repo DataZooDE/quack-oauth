@@ -52,8 +52,7 @@ struct IntrospectContext {
 // the fetched JWKS. On a fetch that does not contain the target `kid`, the
 // cache records a miss so subsequent calls within the rate-limit window
 // short-circuit.
-VerifyResult ValidateToken(std::string_view token, const VerifyOptions &opts,
-                           ValidateContext &ctx);
+VerifyResult ValidateToken(std::string_view token, const VerifyOptions &opts, ValidateContext &ctx);
 
 // Dependencies for the Google-style tokeninfo path. Parallel to
 // IntrospectContext but without HTTP Basic auth (Google's tokeninfo is
@@ -75,9 +74,7 @@ struct TokeninfoContext {
 //      `opts.now_s` (with clock_skew); cache; return Ok.
 //   4. HTTP 400 (revoked / invalid_token) → return InvalidSignature.
 //   5. Transport error or other non-200 → return JwksFetchFailed.
-VerifyResult ValidateTokenViaTokeninfo(std::string_view token,
-                                       const VerifyOptions &opts,
-                                       TokeninfoContext &ctx,
+VerifyResult ValidateTokenViaTokeninfo(std::string_view token, const VerifyOptions &opts, TokeninfoContext &ctx,
                                        Principal *out_principal = nullptr);
 
 // Validate a JWT end-to-end via RFC 7662 introspection:
@@ -90,9 +87,7 @@ VerifyResult ValidateTokenViaTokeninfo(std::string_view token,
 //      caching. `active=true` → optionally cross-check iss/aud against
 //      `opts` / `ctx`, then cache for `min(default_ttl, exp - now)` and
 //      return `Ok`.
-VerifyResult ValidateTokenViaIntrospection(std::string_view token,
-                                          const VerifyOptions &opts,
-                                          IntrospectContext &ctx,
-                                          Principal *out_principal = nullptr);
+VerifyResult ValidateTokenViaIntrospection(std::string_view token, const VerifyOptions &opts, IntrospectContext &ctx,
+                                           Principal *out_principal = nullptr);
 
 } // namespace quack_oauth

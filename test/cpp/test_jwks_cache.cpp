@@ -31,8 +31,7 @@ TEST_CASE("JwksCache: empty cache yields Miss", "[jwks][cache]") {
 	CHECK(cache.Size() == 0);
 }
 
-TEST_CASE("JwksCache: OnFetchSuccess makes subsequent lookups Hit",
-          "[jwks][cache]") {
+TEST_CASE("JwksCache: OnFetchSuccess makes subsequent lookups Hit", "[jwks][cache]") {
 	JwksCache cache(kRefresh);
 	cache.OnFetchSuccess(MakeRsaJwk("k1"), 100);
 
@@ -56,8 +55,7 @@ TEST_CASE("JwksCache: cached entries never expire on hit", "[jwks][cache]") {
 	CHECK(far_future.status == JwksLookupStatus::Hit);
 }
 
-TEST_CASE("JwksCache: OnFetchMiss rate-limits subsequent fetches per R-S-4",
-          "[jwks][cache][rate-limit]") {
+TEST_CASE("JwksCache: OnFetchMiss rate-limits subsequent fetches per R-S-4", "[jwks][cache][rate-limit]") {
 	JwksCache cache(kRefresh);
 	cache.OnFetchMiss("nope", 0);
 
@@ -75,8 +73,7 @@ TEST_CASE("JwksCache: OnFetchMiss rate-limits subsequent fetches per R-S-4",
 	CHECK(r_after.status == JwksLookupStatus::Miss);
 }
 
-TEST_CASE("JwksCache: rate-limit is per-kid, not global",
-          "[jwks][cache][rate-limit]") {
+TEST_CASE("JwksCache: rate-limit is per-kid, not global", "[jwks][cache][rate-limit]") {
 	JwksCache cache(kRefresh);
 	cache.OnFetchMiss("k1", 0);
 
@@ -85,8 +82,7 @@ TEST_CASE("JwksCache: rate-limit is per-kid, not global",
 	CHECK(r.status == JwksLookupStatus::Miss);
 }
 
-TEST_CASE("JwksCache: a later success on a previously-missed kid clears the limit",
-          "[jwks][cache][rate-limit]") {
+TEST_CASE("JwksCache: a later success on a previously-missed kid clears the limit", "[jwks][cache][rate-limit]") {
 	JwksCache cache(kRefresh);
 	cache.OnFetchMiss("k1", 0);
 	cache.OnFetchSuccess(MakeRsaJwk("k1"), 5);
@@ -97,8 +93,7 @@ TEST_CASE("JwksCache: a later success on a previously-missed kid clears the limi
 	CHECK(r.jwk->kid == "k1");
 }
 
-TEST_CASE("JwksCache: Size() reflects only successful fetches",
-          "[jwks][cache]") {
+TEST_CASE("JwksCache: Size() reflects only successful fetches", "[jwks][cache]") {
 	JwksCache cache(kRefresh);
 	cache.OnFetchMiss("absent-1", 0);
 	cache.OnFetchMiss("absent-2", 0);
@@ -106,8 +101,7 @@ TEST_CASE("JwksCache: Size() reflects only successful fetches",
 	CHECK(cache.Size() == 1);
 }
 
-TEST_CASE("JwksCache: re-fetching the same kid overwrites the cached JWK",
-          "[jwks][cache]") {
+TEST_CASE("JwksCache: re-fetching the same kid overwrites the cached JWK", "[jwks][cache]") {
 	// Models IdP key rotation that reuses a kid (rare but legal): the latest
 	// JWK MUST replace the previous one.
 	JwksCache cache(kRefresh);

@@ -9,9 +9,7 @@
 
 namespace quack_oauth {
 
-namespace {
-
-const std::string *GetString(const picojson::object &obj, const std::string &field) {
+static const std::string *GetString(const picojson::object &obj, const std::string &field) {
 	const auto it = obj.find(field);
 	if (it == obj.end() || !it->second.is<std::string>()) {
 		return nullptr;
@@ -19,12 +17,12 @@ const std::string *GetString(const picojson::object &obj, const std::string &fie
 	return &it->second.get<std::string>();
 }
 
-std::string GetStringOrEmpty(const picojson::object &obj, const std::string &field) {
+static std::string GetStringOrEmpty(const picojson::object &obj, const std::string &field) {
 	const auto *p = GetString(obj, field);
 	return p ? *p : std::string();
 }
 
-std::optional<Jwk> ParseSingleJwk(const picojson::value &v) {
+static std::optional<Jwk> ParseSingleJwk(const picojson::value &v) {
 	if (!v.is<picojson::object>()) {
 		return std::nullopt;
 	}
@@ -49,8 +47,6 @@ std::optional<Jwk> ParseSingleJwk(const picojson::value &v) {
 	j.y = GetStringOrEmpty(obj, "y");
 	return j;
 }
-
-} // namespace
 
 std::vector<Jwk> ParseJwksJson(std::string_view json) {
 	if (json.empty()) {

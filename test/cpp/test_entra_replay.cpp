@@ -100,8 +100,7 @@ std::optional<EntraFixtures> LoadEntraFixtures() {
 	// Serialise the response_body object as JSON so ParseJwksJson sees what
 	// the live JWKS endpoint would have returned.
 	f.jwks_response_body = j.at("response_body").serialize();
-	f.access_token =
-	    t.at("response_body").get<picojson::object>().at("access_token").get<std::string>();
+	f.access_token = t.at("response_body").get<picojson::object>().at("access_token").get<std::string>();
 	return f;
 }
 
@@ -120,8 +119,7 @@ VerifyOptions OptsAtCapture(const EntraFixtures &f) {
 
 } // namespace
 
-TEST_CASE("Entra replay: live Entra token validates against captured JWKS",
-          "[entra][replay]") {
+TEST_CASE("Entra replay: live Entra token validates against captured JWKS", "[entra][replay]") {
 	const auto fixtures = LoadEntraFixtures();
 	if (!fixtures.has_value()) {
 		WARN("Entra transcripts not found under test/integration/transcripts/entra/."
@@ -130,19 +128,16 @@ TEST_CASE("Entra replay: live Entra token validates against captured JWKS",
 	}
 
 	ReplayHttpClient http;
-	http.get_responses[fixtures->jwks_uri] =
-	    IHttpClient::Response{200, fixtures->jwks_response_body};
+	http.get_responses[fixtures->jwks_uri] = IHttpClient::Response {200, fixtures->jwks_response_body};
 
 	JwksCache cache(30);
-	ValidateContext ctx{http, cache, fixtures->jwks_uri};
+	ValidateContext ctx {http, cache, fixtures->jwks_uri};
 
-	const auto result =
-	    ValidateToken(fixtures->access_token, OptsAtCapture(*fixtures), ctx);
+	const auto result = ValidateToken(fixtures->access_token, OptsAtCapture(*fixtures), ctx);
 	CHECK(result == VerifyResult::Ok);
 }
 
-TEST_CASE("Entra replay: tampered signature rejected",
-          "[entra][replay][sig]") {
+TEST_CASE("Entra replay: tampered signature rejected", "[entra][replay][sig]") {
 	const auto fixtures = LoadEntraFixtures();
 	if (!fixtures.has_value()) {
 		return;
@@ -157,56 +152,48 @@ TEST_CASE("Entra replay: tampered signature rejected",
 	}
 
 	ReplayHttpClient http;
-	http.get_responses[fixtures->jwks_uri] =
-	    IHttpClient::Response{200, fixtures->jwks_response_body};
+	http.get_responses[fixtures->jwks_uri] = IHttpClient::Response {200, fixtures->jwks_response_body};
 
 	JwksCache cache(30);
-	ValidateContext ctx{http, cache, fixtures->jwks_uri};
+	ValidateContext ctx {http, cache, fixtures->jwks_uri};
 
-	const auto result =
-	    ValidateToken(token, OptsAtCapture(*fixtures), ctx);
+	const auto result = ValidateToken(token, OptsAtCapture(*fixtures), ctx);
 	CHECK(result == VerifyResult::InvalidSignature);
 }
 
-TEST_CASE("Entra replay: expired clock rejects the captured token",
-          "[entra][replay][exp]") {
+TEST_CASE("Entra replay: expired clock rejects the captured token", "[entra][replay][exp]") {
 	const auto fixtures = LoadEntraFixtures();
 	if (!fixtures.has_value()) {
 		return;
 	}
 	ReplayHttpClient http;
-	http.get_responses[fixtures->jwks_uri] =
-	    IHttpClient::Response{200, fixtures->jwks_response_body};
+	http.get_responses[fixtures->jwks_uri] = IHttpClient::Response {200, fixtures->jwks_response_body};
 
 	JwksCache cache(30);
-	ValidateContext ctx{http, cache, fixtures->jwks_uri};
+	ValidateContext ctx {http, cache, fixtures->jwks_uri};
 
 	auto opts = OptsAtCapture(*fixtures);
 	// One hour past the token's exp.
 	opts.now_s = fixtures->captured_exp + 3600;
 
-	const auto result =
-	    ValidateToken(fixtures->access_token, opts, ctx);
+	const auto result = ValidateToken(fixtures->access_token, opts, ctx);
 	CHECK(result == VerifyResult::Expired);
 }
 
-TEST_CASE("Entra replay: wrong expected_issuer rejects the captured token",
-          "[entra][replay][iss]") {
+TEST_CASE("Entra replay: wrong expected_issuer rejects the captured token", "[entra][replay][iss]") {
 	const auto fixtures = LoadEntraFixtures();
 	if (!fixtures.has_value()) {
 		return;
 	}
 	ReplayHttpClient http;
-	http.get_responses[fixtures->jwks_uri] =
-	    IHttpClient::Response{200, fixtures->jwks_response_body};
+	http.get_responses[fixtures->jwks_uri] = IHttpClient::Response {200, fixtures->jwks_response_body};
 
 	JwksCache cache(30);
-	ValidateContext ctx{http, cache, fixtures->jwks_uri};
+	ValidateContext ctx {http, cache, fixtures->jwks_uri};
 
 	auto opts = OptsAtCapture(*fixtures);
 	opts.expected_issuer = "https://login.microsoftonline.com/wrong-tid/v2.0";
 
-	const auto result =
-	    ValidateToken(fixtures->access_token, opts, ctx);
+	const auto result = ValidateToken(fixtures->access_token, opts, ctx);
 	CHECK(result == VerifyResult::WrongIssuer);
 }

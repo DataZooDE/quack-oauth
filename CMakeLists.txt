@@ -39,6 +39,7 @@ set(PURE_SOURCES
     src/jwks_parse.cpp
     src/jwt_parse.cpp
     src/jwt_verify.cpp
+    src/picojson_helpers.cpp
     src/plaintext_guard.cpp
     src/platform_time.cpp
     src/policy.cpp
@@ -62,6 +63,7 @@ set(DUCKDB_WASM_SAFE_SOURCES
     src/policy_table.cpp
     src/quack_oauth_extension.cpp
     src/quack_oauth_state.cpp
+    src/secret_accessor.cpp
     src/secrets.cpp
     src/settings.cpp
     src/tracing_log.cpp

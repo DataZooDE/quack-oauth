@@ -10,13 +10,11 @@
 
 namespace quack_oauth {
 
-namespace {
-
-std::string UrlEncode(std::string_view in) {
+static std::string UrlEncode(std::string_view in) {
 	std::ostringstream out;
 	for (unsigned char c : in) {
-		if ((c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z') ||
-		    (c >= '0' && c <= '9') || c == '-' || c == '_' || c == '.' || c == '~') {
+		if ((c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z') || (c >= '0' && c <= '9') || c == '-' || c == '_' ||
+		    c == '.' || c == '~') {
 			out << static_cast<char>(c);
 		} else {
 			out << '%';
@@ -28,7 +26,7 @@ std::string UrlEncode(std::string_view in) {
 	return out.str();
 }
 
-const std::string *AsString(const picojson::object &obj, const std::string &key) {
+static const std::string *AsString(const picojson::object &obj, const std::string &key) {
 	const auto it = obj.find(key);
 	if (it == obj.end() || !it->second.is<std::string>()) {
 		return nullptr;
@@ -36,25 +34,25 @@ const std::string *AsString(const picojson::object &obj, const std::string &key)
 	return &it->second.get<std::string>();
 }
 
-std::int64_t AsInt(const picojson::object &obj, const std::string &key,
-                   std::int64_t fallback) {
+static std::int64_t AsInt(const picojson::object &obj, const std::string &key, std::int64_t fallback) {
 	const auto it = obj.find(key);
-	if (it == obj.end()) return fallback;
-	if (it->second.is<std::int64_t>()) return it->second.get<std::int64_t>();
+	if (it == obj.end())
+		return fallback;
+	if (it->second.is<std::int64_t>())
+		return it->second.get<std::int64_t>();
 	if (it->second.is<double>())
 		return static_cast<std::int64_t>(it->second.get<double>());
 	return fallback;
 }
 
-} // namespace
-
-std::optional<DeviceAuthorizationResponse>
-ParseDeviceAuthorizationResponse(std::string_view json) {
-	if (json.empty()) return std::nullopt;
+std::optional<DeviceAuthorizationResponse> ParseDeviceAuthorizationResponse(std::string_view json) {
+	if (json.empty())
+		return std::nullopt;
 	picojson::value root;
 	std::string err;
 	picojson::parse(root, json.begin(), json.end(), &err);
-	if (!err.empty() || !root.is<picojson::object>()) return std::nullopt;
+	if (!err.empty() || !root.is<picojson::object>())
+		return std::nullopt;
 	const auto &obj = root.get<picojson::object>();
 
 	const auto *device_code = AsString(obj, "device_code");
@@ -76,8 +74,7 @@ ParseDeviceAuthorizationResponse(std::string_view json) {
 	return out;
 }
 
-DevicePollResult ParseDevicePollResponse(int http_status,
-                                         std::string_view body) {
+DevicePollResult ParseDevicePollResponse(int http_status, std::string_view body) {
 	if (http_status == 200) {
 		DevicePollResult r;
 		r.outcome = DevicePollOutcome::Success;
@@ -111,11 +108,8 @@ DevicePollResult ParseDevicePollResponse(int http_status,
 }
 
 std::optional<DeviceAuthorizationResponse>
-RequestDeviceAuthorization(IHttpClient &http,
-                           const std::string &device_authorization_endpoint,
-                           const std::string &client_id,
-                           const std::string &client_secret,
-                           const std::string &scope) {
+RequestDeviceAuthorization(IHttpClient &http, const std::string &device_authorization_endpoint,
+                           const std::string &client_id, const std::string &client_secret, const std::string &scope) {
 	if (device_authorization_endpoint.empty() || client_id.empty()) {
 		return std::nullopt;
 	}
@@ -137,11 +131,9 @@ RequestDeviceAuthorization(IHttpClient &http,
 	return ParseDeviceAuthorizationResponse(resp->body);
 }
 
-DevicePollResult
-PollDeviceTokenEndpoint(IHttpClient &http, const std::string &token_endpoint,
-                        const std::string &client_id,
-                        const std::string &client_secret,
-                        const std::string &device_code) {
+DevicePollResult PollDeviceTokenEndpoint(IHttpClient &http, const std::string &token_endpoint,
+                                         const std::string &client_id, const std::string &client_secret,
+                                         const std::string &device_code) {
 	if (token_endpoint.empty() || client_id.empty() || device_code.empty()) {
 		return {DevicePollOutcome::Error, std::nullopt};
 	}

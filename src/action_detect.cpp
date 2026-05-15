@@ -5,11 +5,9 @@
 
 namespace quack_oauth {
 
-namespace {
-
 // Strip leading whitespace + `--` line comments + `/* ... */` block comments.
 // Returns the offset of the first "real" character.
-std::size_t SkipNoise(std::string_view s) {
+static std::size_t SkipNoise(std::string_view s) {
 	std::size_t i = 0;
 	while (i < s.size()) {
 		const char c = s[i];
@@ -19,13 +17,16 @@ std::size_t SkipNoise(std::string_view s) {
 		}
 		if (c == '-' && i + 1 < s.size() && s[i + 1] == '-') {
 			// Line comment until newline.
-			while (i < s.size() && s[i] != '\n') ++i;
+			while (i < s.size() && s[i] != '\n')
+				++i;
 			continue;
 		}
 		if (c == '/' && i + 1 < s.size() && s[i + 1] == '*') {
 			i += 2;
-			while (i + 1 < s.size() && !(s[i] == '*' && s[i + 1] == '/')) ++i;
-			if (i + 1 < s.size()) i += 2;
+			while (i + 1 < s.size() && !(s[i] == '*' && s[i + 1] == '/'))
+				++i;
+			if (i + 1 < s.size())
+				i += 2;
 			continue;
 		}
 		break;
@@ -34,7 +35,7 @@ std::size_t SkipNoise(std::string_view s) {
 }
 
 // Extract the first ASCII keyword (uppercased) starting at offset `i`.
-std::string FirstKeyword(std::string_view s, std::size_t i) {
+static std::string FirstKeyword(std::string_view s, std::size_t i) {
 	std::string out;
 	while (i < s.size()) {
 		const auto c = static_cast<unsigned char>(s[i]);
@@ -51,8 +52,7 @@ std::string FirstKeyword(std::string_view s, std::size_t i) {
 // Walk the remaining text and return true if any of `keywords` appears as
 // a whole-word token. Used to disambiguate `COPY ... TO ...` vs
 // `COPY ... FROM ...`.
-bool ContainsKeyword(std::string_view s, std::size_t start,
-                     std::initializer_list<const char *> keywords) {
+static bool ContainsKeyword(std::string_view s, std::size_t start, std::initializer_list<const char *> keywords) {
 	std::string upper;
 	upper.reserve(s.size() - start);
 	for (std::size_t i = start; i < s.size(); ++i) {
@@ -64,19 +64,16 @@ bool ContainsKeyword(std::string_view s, std::size_t start,
 		std::string needle = kw;
 		std::size_t pos = 0;
 		while ((pos = upper.find(needle, pos)) != std::string::npos) {
-			const bool left_ok =
-			    pos == 0 || !std::isalnum(static_cast<unsigned char>(upper[pos - 1]));
-			const bool right_ok =
-			    pos + needle.size() == upper.size() ||
-			    !std::isalnum(static_cast<unsigned char>(upper[pos + needle.size()]));
-			if (left_ok && right_ok) return true;
+			const bool left_ok = pos == 0 || !std::isalnum(static_cast<unsigned char>(upper[pos - 1]));
+			const bool right_ok = pos + needle.size() == upper.size() ||
+			                      !std::isalnum(static_cast<unsigned char>(upper[pos + needle.size()]));
+			if (left_ok && right_ok)
+				return true;
 			pos += needle.size();
 		}
 	}
 	return false;
 }
-
-} // namespace
 
 Action DetectAction(std::string_view query_string) {
 	const auto start = SkipNoise(query_string);
@@ -99,8 +96,7 @@ Action DetectAction(std::string_view query_string) {
 	}
 	if (kw == "PRAGMA") {
 		// Administrative pragmas (start with `quack_`) are admin actions.
-		if (ContainsKeyword(query_string, start + kw.size(),
-		                    {"QUACK_SERVE", "QUACK_STOP", "QUACK_RESTART"})) {
+		if (ContainsKeyword(query_string, start + kw.size(), {"QUACK_SERVE", "QUACK_STOP", "QUACK_RESTART"})) {
 			return Action::ServeAdmin;
 		}
 		return Action::Scan;

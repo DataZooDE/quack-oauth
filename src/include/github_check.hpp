@@ -6,7 +6,7 @@
 
 #include "decision_cache.hpp" // Principal
 #include "http_client.hpp"
-#include "jwt_verify.hpp"     // VerifyResult
+#include "jwt_verify.hpp" // VerifyResult
 
 namespace quack_oauth {
 
@@ -33,8 +33,8 @@ namespace quack_oauth {
 
 struct GithubContext {
 	IHttpClient &http;
-	std::string check_url;    // https://api.github.com/applications/{client_id}/token
-	std::string client_id;    // for HTTP Basic
+	std::string check_url; // https://api.github.com/applications/{client_id}/token
+	std::string client_id; // for HTTP Basic
 	std::string client_secret;
 };
 
@@ -45,8 +45,6 @@ std::optional<Principal> ParseGithubCheckResponse(std::string_view json);
 // Make the HTTP call and map its outcome to a VerifyResult. When
 // `out_principal` is non-null AND the result is Ok, it is filled from the
 // parsed response.
-VerifyResult ValidateTokenViaGithubCheck(std::string_view token,
-                                         GithubContext &ctx,
-                                         Principal *out_principal);
+VerifyResult ValidateTokenViaGithubCheck(std::string_view token, GithubContext &ctx, Principal *out_principal);
 
 } // namespace quack_oauth

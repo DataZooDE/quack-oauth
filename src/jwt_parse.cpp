@@ -8,15 +8,13 @@
 
 namespace quack_oauth {
 
-namespace {
-
 using TraitsT = jwt::traits::kazuho_picojson;
 
-std::int64_t ToUnixSeconds(const std::chrono::system_clock::time_point &tp) {
+static std::int64_t ToUnixSeconds(const std::chrono::system_clock::time_point &tp) {
 	return std::chrono::duration_cast<std::chrono::seconds>(tp.time_since_epoch()).count();
 }
 
-void ExtractHeader(const jwt::decoded_jwt<TraitsT> &decoded, JwtParsed &out) {
+static void ExtractHeader(const jwt::decoded_jwt<TraitsT> &decoded, JwtParsed &out) {
 	if (decoded.has_algorithm()) {
 		out.alg = decoded.get_algorithm();
 	}
@@ -28,7 +26,7 @@ void ExtractHeader(const jwt::decoded_jwt<TraitsT> &decoded, JwtParsed &out) {
 	}
 }
 
-void ExtractStandardPayload(const jwt::decoded_jwt<TraitsT> &decoded, JwtParsed &out) {
+static void ExtractStandardPayload(const jwt::decoded_jwt<TraitsT> &decoded, JwtParsed &out) {
 	if (decoded.has_subject()) {
 		out.subject = decoded.get_subject();
 	}
@@ -52,7 +50,7 @@ void ExtractStandardPayload(const jwt::decoded_jwt<TraitsT> &decoded, JwtParsed 
 	}
 }
 
-void ExtractScopes(const jwt::decoded_jwt<TraitsT> &decoded, JwtParsed &out) {
+static void ExtractScopes(const jwt::decoded_jwt<TraitsT> &decoded, JwtParsed &out) {
 	// `scope` (RFC 6749 §3.3): single space-delimited string.
 	if (decoded.has_payload_claim("scope")) {
 		const auto claim = decoded.get_payload_claim("scope");
@@ -72,8 +70,6 @@ void ExtractScopes(const jwt::decoded_jwt<TraitsT> &decoded, JwtParsed &out) {
 		}
 	}
 }
-
-} // namespace
 
 std::optional<JwtParsed> ParseJwt(std::string_view token) {
 	if (token.empty()) {
