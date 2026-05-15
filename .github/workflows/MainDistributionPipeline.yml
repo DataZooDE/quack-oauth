@@ -1,5 +1,14 @@
 #
-# This workflow calls the main distribution pipeline from DuckDB to build, test and (optionally) release the extension
+# This workflow calls the main distribution pipeline from DuckDB to build,
+# test and (optionally) release the extension.
+#
+# Architectures we explicitly exclude (until a slice proves them green):
+#   wasm_mvp / wasm_eh / wasm_threads -- our source-side wasm gating is
+#     in place (S-14) but the wasm32-emscripten vcpkg build of OpenSSL +
+#     jwt-cpp + picojson has not yet been validated. Tracked in
+#     docs/IMPLEMENTATION.md "Deferred items".
+#   windows_amd64_mingw -- vcpkg's OpenSSL port on MinGW is fragile;
+#     sibling extensions (anofox-tabular, erpl-web) also skip it.
 #
 name: Main Extension Distribution Pipeline
 on:
@@ -13,18 +22,10 @@ concurrency:
 
 jobs:
   duckdb-stable-build:
-    name: Build extension binaries
-    uses: duckdb/extension-ci-tools/.github/workflows/_extension_distribution.yml@v1.5-variegata
+    name: Build extension binaries (v1.5.2)
+    uses: duckdb/extension-ci-tools/.github/workflows/_extension_distribution.yml@v1.5.2
     with:
       duckdb_version: v1.5.2
-      ci_tools_version: v1.5-variegata
-      extension_name: waddle
-
-  code-quality-check:
-    name: Code Quality Check
-    uses: duckdb/extension-ci-tools/.github/workflows/_extension_code_quality.yml@v1.5-variegata
-    with:
-      duckdb_version: v1.5.2
-      ci_tools_version: v1.5-variegata
-      extension_name: waddle
-      format_checks: 'format;tidy'
+      ci_tools_version: v1.5.2
+      extension_name: quack_oauth
+      exclude_archs: 'wasm_mvp;wasm_eh;wasm_threads;windows_amd64_mingw'

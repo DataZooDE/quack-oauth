@@ -1,0 +1,38 @@
+# name: oauth_provider_preset_keycloak.test
+# description: quack_oauth_provider='keycloak' preset resolves jwks_uri from tenant_or_realm (S-11a, R-S-12).
+# group: [sql]
+#
+# Template -- run via `make integration_keycloak`. Substitutes
+# @REALM_URL@ (e.g. http://localhost:8080/realms/quack-test) and @TOKEN@.
+
+require quack_oauth
+
+# Create a server SECRET that ONLY specifies tenant_or_realm + audience.
+# issuer and jwks_uri are absent -- the provider preset must fill them in
+# from the Keycloak template.
+statement ok
+CREATE SECRET rs_preset (
+    TYPE quack_oauth_server,
+    tenant_or_realm '@REALM_URL@',
+    audience 'account'
+);
+
+statement ok
+SET quack_oauth_provider = 'keycloak';
+
+statement ok
+SET quack_oauth_server_secret_name = 'rs_preset';
+
+# Real Keycloak token validates end-to-end: the preset resolved
+# jwks_uri = `@REALM_URL@/protocol/openid-connect/certs` automatically.
+query I
+SELECT quack_oauth_check_token('@TOKEN@');
+----
+true
+
+# Reset to defaults.
+statement ok
+SET quack_oauth_provider = 'generic';
+
+statement ok
+DROP SECRET rs_preset;

@@ -1,0 +1,94 @@
+# name: oauth_policy_table_keycloak.test
+# description: SQL-table-driven check_authorization end-to-end (S-13d).
+# group: [sql]
+#
+# Template -- run via `make integration_keycloak`. Substitutes @ISSUER@,
+# @JWKS_URI@, @TOKEN@. The test CREATEs the policy table itself with
+# rules that grant Scan to any token carrying the `email` scope (alice's
+# default ROPC token has it via Keycloak's `email` default client scope).
+# This proves the SQL-table policy path is wired end-to-end.
+
+require quack_oauth
+
+# Build the policy table BEFORE creating the SECRET that references it.
+# The check_authorization loader will SELECT from this table per chunk.
+statement ok
+CREATE TABLE quack_oauth_policies (
+    priority  INTEGER NOT NULL,
+    subject   VARCHAR,
+    any_scope VARCHAR[],
+    actions   VARCHAR[],
+    allow     BOOLEAN NOT NULL
+);
+
+statement ok
+INSERT INTO quack_oauth_policies VALUES
+    (10, NULL, ['email'], ['Scan'], true);
+
+statement ok
+CREATE SECRET rs (
+    TYPE quack_oauth_server,
+    issuer '@ISSUER@',
+    jwks_uri '@JWKS_URI@',
+    policy_table 'main.quack_oauth_policies'
+);
+
+statement ok
+SET quack_oauth_server_secret_name = 'rs';
+
+# Populate session_principals.
+query I
+SELECT quack_oauth_check_token('sess-p', '@TOKEN@', 'server-psk');
+----
+true
+
+# Rule says: any token with `email` scope can Scan. alice's token
+# has `email` (Keycloak default scope).
+query I
+SELECT quack_oauth_check_authorization('sess-p', 'SELECT 1');
+----
+true
+
+# Same policy denies non-Scan actions for this principal -- proves the
+# action gating works through the SQL-table path. Default is 'deny'
+# because no rule matches CopyTo / Attach for an email-only token.
+query I
+SELECT quack_oauth_check_authorization('sess-p', 'COPY t TO ''out.csv''');
+----
+false
+
+query I
+SELECT quack_oauth_check_authorization('sess-p', 'ATTACH ''quack:rs'' AS r');
+----
+false
+
+# Unknown session still denies regardless of policy.
+query I
+SELECT quack_oauth_check_authorization('no-such-session', 'SELECT 1');
+----
+false
+
+# Flip the default: with no Attach rule but default_allow, Attach now allows.
+statement ok
+SET quack_oauth_policy_default = 'allow';
+
+query I
+SELECT quack_oauth_check_authorization('sess-p', 'ATTACH ''quack:rs'' AS r');
+----
+true
+
+# Reset and verify deny is back.
+statement ok
+RESET quack_oauth_policy_default;
+
+query I
+SELECT quack_oauth_check_authorization('sess-p', 'ATTACH ''quack:rs'' AS r');
+----
+false
+
+# Cleanup.
+statement ok
+DROP SECRET rs;
+
+statement ok
+DROP TABLE quack_oauth_policies;

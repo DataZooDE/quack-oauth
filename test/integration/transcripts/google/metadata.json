@@ -1,0 +1,15 @@
+{
+  "captured_at": 1778771999,
+  "note": "Access token is opaque (not a JWT). Validation goes through tokeninfo, NOT JWKS. Tokens expire after captured_at + expires_in seconds.",
+  "project_id": "datazoo-landingpage",
+  "provider": "google",
+  "scope_requested": "https://www.googleapis.com/auth/cloud-platform.read-only",
+  "service_account_email": "quack-oauth-test@datazoo-landingpage.iam.gserviceaccount.com",
+  "token_endpoint": "https://oauth2.googleapis.com/token",
+  "tokeninfo_aud": "105406064300261473362",
+  "tokeninfo_azp": "105406064300261473362",
+  "tokeninfo_endpoint": "https://oauth2.googleapis.com/tokeninfo",
+  "tokeninfo_exp": 1778775599,
+  "tokeninfo_scope": "https://www.googleapis.com/auth/cloud-platform.read-only",
+  "tokeninfo_sub": ""
+}

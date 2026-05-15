@@ -1,0 +1,70 @@
+# name: test/sql/oauth_diagnose.test
+# description: quack_oauth_diagnose() returns live state per R-N-13 (S-15).
+# group: [sql]
+
+require quack_oauth
+
+# R-N-13: diagnose() reports configuration + cache + recent-decision state.
+# The exact status / detail strings depend on session state -- the global
+# QuackOauthState is shared across SQL tests run in the same unittest
+# process, so we don't pin "empty" vs "active". We assert the row SET
+# (five components are always reported, in alphabetical order) and that
+# `detail` carries the documented key=value contract.
+
+query I
+SELECT component FROM quack_oauth_diagnose() ORDER BY component;
+----
+decision_cache
+extension
+jwks_cache
+recent_decisions
+session_principals
+
+# `extension` row must surface enabled + secret_name + validation_mode + provider.
+query I
+SELECT detail LIKE '%enabled=%'
+   AND detail LIKE '%secret_name=%'
+   AND detail LIKE '%validation_mode=%'
+   AND detail LIKE '%provider=%'
+FROM quack_oauth_diagnose() WHERE component = 'extension';
+----
+true
+
+# Cache rows must carry `entries=`; recent_decisions carries `count=`.
+query I
+SELECT detail LIKE 'entries=%' FROM quack_oauth_diagnose() WHERE component = 'jwks_cache';
+----
+true
+
+query I
+SELECT detail LIKE 'entries=%' FROM quack_oauth_diagnose() WHERE component = 'decision_cache';
+----
+true
+
+query I
+SELECT detail LIKE 'sessions=%' FROM quack_oauth_diagnose() WHERE component = 'session_principals';
+----
+true
+
+query I
+SELECT detail LIKE '%count=%' AND detail LIKE '%accepted=%' AND detail LIKE '%denied=%'
+FROM quack_oauth_diagnose() WHERE component = 'recent_decisions';
+----
+true
+
+# Column schema is part of the contract.
+query III
+SELECT typeof(component), typeof(status), typeof(detail)
+FROM quack_oauth_diagnose()
+LIMIT 1;
+----
+VARCHAR	VARCHAR	VARCHAR
+
+# quack_oauth_audit_log() is registered with the documented column shape.
+# We assert the schema via the catalog (no rows needed -- previous tests
+# in the same unittest process may have populated the in-memory ring).
+query I
+SELECT count(*) > 0 FROM duckdb_functions()
+WHERE function_name = 'quack_oauth_audit_log' AND function_type = 'table';
+----
+true

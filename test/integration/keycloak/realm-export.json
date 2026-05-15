@@ -1,0 +1,84 @@
+{
+  "realm": "quack-test",
+  "enabled": true,
+  "accessTokenLifespan": 600,
+  "sslRequired": "external",
+  "registrationAllowed": false,
+  "loginWithEmailAllowed": true,
+  "duplicateEmailsAllowed": false,
+  "resetPasswordAllowed": false,
+  "editUsernameAllowed": false,
+  "bruteForceProtected": false,
+  "users": [
+    {
+      "username": "alice",
+      "enabled": true,
+      "emailVerified": true,
+      "firstName": "Alice",
+      "lastName": "Test",
+      "email": "alice@example.com",
+      "credentials": [
+        {
+          "type": "password",
+          "value": "secret",
+          "temporary": false
+        }
+      ],
+      "realmRoles": ["default-roles-quack-test"]
+    }
+  ],
+  "clients": [
+    {
+      "clientId": "quack-client",
+      "name": "quack-oauth integration test client",
+      "enabled": true,
+      "publicClient": false,
+      "secret": "quack-client-test-secret",
+      "standardFlowEnabled": false,
+      "implicitFlowEnabled": false,
+      "directAccessGrantsEnabled": true,
+      "serviceAccountsEnabled": false,
+      "protocol": "openid-connect",
+      "redirectUris": [],
+      "webOrigins": [],
+      "attributes": {
+        "access.token.lifespan": "600"
+      }
+    },
+    {
+      "clientId": "quack-machine",
+      "name": "quack-oauth client_credentials integration test client (S-12)",
+      "enabled": true,
+      "publicClient": false,
+      "secret": "quack-machine-test-secret",
+      "standardFlowEnabled": false,
+      "implicitFlowEnabled": false,
+      "directAccessGrantsEnabled": false,
+      "serviceAccountsEnabled": true,
+      "protocol": "openid-connect",
+      "redirectUris": [],
+      "webOrigins": [],
+      "attributes": {
+        "access.token.lifespan": "600"
+      }
+    },
+    {
+      "clientId": "quack-device",
+      "name": "quack-oauth device_code integration test client (S-17)",
+      "enabled": true,
+      "publicClient": true,
+      "standardFlowEnabled": false,
+      "implicitFlowEnabled": false,
+      "directAccessGrantsEnabled": false,
+      "serviceAccountsEnabled": false,
+      "consentRequired": false,
+      "protocol": "openid-connect",
+      "redirectUris": [],
+      "webOrigins": [],
+      "attributes": {
+        "oauth2.device.authorization.grant.enabled": "true",
+        "access.token.lifespan": "600"
+      }
+    }
+  ]
+}

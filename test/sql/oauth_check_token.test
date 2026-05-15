@@ -1,0 +1,67 @@
+# name: test/sql/oauth_check_token.test
+# description: quack_oauth_check_token early-fail paths -- bind-time errors and short-circuits that need no live IdP (S-7b.2, R-S-1 / R-S-3).
+# group: [sql]
+
+require quack_oauth
+
+# Without quack_oauth_server_secret_name set, the function raises a clear
+# operator-facing error (configuration mistake -- fail loud, not silent).
+statement error
+SELECT quack_oauth_check_token('any-token-value');
+----
+quack_oauth_server_secret_name
+
+# A named secret that doesn't exist is also a fail-loud configuration error.
+statement ok
+SET quack_oauth_server_secret_name = 'does_not_exist';
+
+statement error
+SELECT quack_oauth_check_token('any-token-value');
+----
+SECRET 'does_not_exist' not found
+
+# Happy-path configuration: create a server SECRET, point the setting at it.
+# We use a `.invalid` host so any code path that DID hit HTTP would fail
+# fast on DNS, ensuring nothing in this test actually touches the network.
+statement ok
+CREATE SECRET rs (
+    TYPE quack_oauth_server,
+    issuer 'https://idp.test',
+    audience 'api://quack',
+    jwks_uri 'https://idp.nonexistent.invalid/.well-known/jwks.json'
+);
+
+statement ok
+SET quack_oauth_server_secret_name = 'rs';
+
+# Malformed input is rejected at parse time -- no kid → no HTTP fetch.
+query I
+SELECT quack_oauth_check_token('not-a-jwt');
+----
+false
+
+query I
+SELECT quack_oauth_check_token('');
+----
+false
+
+# HS256 token (jwt.io's default example). Symmetric algorithm is forbidden
+# by R-S-3 -- ValidateToken rejects on the algorithm allowlist before any
+# cache or HTTP work. So this also returns false without touching the
+# `.invalid` URL.
+query I
+SELECT quack_oauth_check_token('eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiIxMjM0NTY3ODkwIiwibmFtZSI6IkpvaG4gRG9lIiwiaWF0IjoxNTE2MjM5MDIyfQ.SflKxwRJSMeKKF2QT4fwpMeJf36POk6yJV_adQssw5c');
+----
+false
+
+# Batch invocation: multiple tokens in one chunk all return false.
+query I
+SELECT quack_oauth_check_token(t) FROM (VALUES ('a'), ('b'), ('c')) v(t);
+----
+false
+false
+false
+
+# Cleanup.
+statement ok
+DROP SECRET rs;

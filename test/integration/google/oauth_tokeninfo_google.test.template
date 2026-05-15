@@ -1,0 +1,58 @@
+# name: oauth_tokeninfo_google.test
+# description: End-to-end tokeninfo validation against a live GCP service-account token (S-11b/Google + tokeninfo dispatch).
+# group: [sql]
+#
+# Template -- run via `make integration_google`. Substitutes:
+#   @TOKENINFO_URL@   https://oauth2.googleapis.com/tokeninfo
+#   @AUDIENCE@        service account's unique numeric id (aud == azp)
+#   @TOKEN@           freshly-minted access token
+#   @TAMPERED_TOKEN@  token with a flipped middle char
+
+require quack_oauth
+
+# Server SECRET for tokeninfo mode: we put the tokeninfo URL into
+# `introspection_endpoint` (the SECRET field) and the expected audience.
+# jwks_uri stays empty -- the validator picks the path from the mode.
+statement ok
+CREATE SECRET rs_google (
+    TYPE quack_oauth_server,
+    introspection_endpoint '@TOKENINFO_URL@',
+    audience '@AUDIENCE@'
+);
+
+statement ok
+SET quack_oauth_server_secret_name = 'rs_google';
+
+statement ok
+SET quack_oauth_validation_mode = 'tokeninfo';
+
+# Live Google access token validates via tokeninfo.
+query I
+SELECT quack_oauth_check_token('@TOKEN@');
+----
+true
+
+# Second call hits the decision cache -- same outcome, no extra HTTP.
+query I
+SELECT quack_oauth_check_token('@TOKEN@');
+----
+true
+
+# Tampered/invalid token: Google returns HTTP 400, we surface as false.
+query I
+SELECT quack_oauth_check_token('@TAMPERED_TOKEN@');
+----
+false
+
+# Garbage input: also rejected (Google returns 400 for any malformed input).
+query I
+SELECT quack_oauth_check_token('not-a-real-google-token');
+----
+false
+
+# Reset.
+statement ok
+SET quack_oauth_validation_mode = 'jwks';
+
+statement ok
+DROP SECRET rs_google;

@@ -1,0 +1,59 @@
+# name: oauth_introspect_keycloak.test
+# description: End-to-end RFC 7662 introspection against a live Keycloak (S-10b).
+# group: [sql]
+#
+# Template -- run via `make integration_keycloak`. The runner substitutes
+# @ISSUER@, @INTROSPECT_URL@, @CLIENT_ID@, @CLIENT_SECRET@, @TOKEN@,
+# @TOKEN_TAMPERED@ with the values it harvested from docker-compose Keycloak.
+
+require quack_oauth
+
+statement ok
+CREATE SECRET rs_intro (
+    TYPE quack_oauth_server,
+    issuer '@ISSUER@',
+    jwks_uri '',
+    introspection_endpoint '@INTROSPECT_URL@',
+    introspect_client_id '@CLIENT_ID@',
+    introspect_client_secret '@CLIENT_SECRET@'
+);
+
+statement ok
+SET quack_oauth_server_secret_name = 'rs_intro';
+
+statement ok
+SET quack_oauth_validation_mode = 'introspect';
+
+# Live introspection against Keycloak: the IdP reports active=true on a
+# freshly-issued token, validator stores in the decision cache, returns Ok.
+query I
+SELECT quack_oauth_check_token('@TOKEN@');
+----
+true
+
+# Second call should hit the decision cache (TTL >= 30s by default).
+query I
+SELECT quack_oauth_check_token('@TOKEN@');
+----
+true
+
+# Tampered token: Keycloak's introspection returns active=false because the
+# signature no longer verifies. Validator rejects (InvalidSignature, surfaced
+# as false to the SQL caller).
+query I
+SELECT quack_oauth_check_token('@TOKEN_TAMPERED@');
+----
+false
+
+# Garbage input: not a JWT shape. Keycloak still responds (active=false).
+query I
+SELECT quack_oauth_check_token('not-a-jwt');
+----
+false
+
+# Reset to defaults so peers don't inherit state.
+statement ok
+SET quack_oauth_validation_mode = 'jwks';
+
+statement ok
+DROP SECRET rs_intro;

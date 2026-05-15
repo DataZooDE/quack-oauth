@@ -1,0 +1,55 @@
+# name: oauth_login_keycloak.test
+# description: client_credentials flow via quack_oauth_login against a live Keycloak (S-12).
+# group: [sql]
+#
+# Template -- run via `make integration_keycloak`. Substitutes @ISSUER@,
+# @TOKEN_URL@, @JWKS_URI@, @MACHINE_CLIENT_ID@, @MACHINE_CLIENT_SECRET@.
+
+require quack_oauth
+
+statement ok
+CREATE SECRET cli (
+    TYPE quack_oauth,
+    issuer '@ISSUER@',
+    client_id '@MACHINE_CLIENT_ID@',
+    client_secret '@MACHINE_CLIENT_SECRET@',
+    token_endpoint '@TOKEN_URL@',
+    audience 'account'
+);
+
+# Before login: no access_token on the secret.
+query I
+SELECT secret_string LIKE '%access_token%'
+FROM duckdb_secrets() WHERE name = 'cli';
+----
+false
+
+# Run client_credentials. Returns the new expires_at (ISO-8601 UTC).
+# We assert it parses as a timestamp later than the realm-export's import
+# date (2026-05-14), which is comfortably in the past for any live test.
+query I
+SELECT CAST(quack_oauth_login('cli') AS TIMESTAMP)
+     > CAST('2026-05-14 00:00:00' AS TIMESTAMP);
+----
+true
+
+# After login: the secret has access_token + expires_at populated (the
+# values are redacted in secret_string but the keys appear).
+query I
+SELECT secret_string LIKE '%access_token%'
+   AND secret_string LIKE '%expires_at%'
+FROM duckdb_secrets() WHERE name = 'cli';
+----
+true
+
+# Second login replaces the prior token with a fresh one and again returns
+# a parseable expires_at. The reusable behaviour matters for the renewal
+# path (slice S-12 follow-up: refresh_token).
+query I
+SELECT quack_oauth_login('cli') IS NOT NULL;
+----
+true
+
+# Cleanup.
+statement ok
+DROP SECRET cli;

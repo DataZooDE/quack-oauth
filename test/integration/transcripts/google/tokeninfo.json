@@ -1,0 +1,15 @@
+{
+  "content_type": "application/x-www-form-urlencoded",
+  "method": "POST",
+  "request_body_redacted": "access_token=REDACTED",
+  "response_body": {
+    "access_type": "online",
+    "aud": "105406064300261473362",
+    "azp": "105406064300261473362",
+    "exp": "1778775599",
+    "expires_in": "3599",
+    "scope": "https://www.googleapis.com/auth/cloud-platform.read-only"
+  },
+  "status_code": 200,
+  "url": "https://oauth2.googleapis.com/tokeninfo"
+}

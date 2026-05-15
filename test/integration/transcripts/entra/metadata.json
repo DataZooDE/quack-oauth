@@ -1,0 +1,13 @@
+{
+  "audience": "api://51d3159f-8c51-40bc-a121-efff5dbe5085",
+  "captured_exp": 1778773912,
+  "captured_iat": 1778770012,
+  "client_id": "51d3159f-8c51-40bc-a121-efff5dbe5085",
+  "issuer": "https://sts.windows.net/28c0071d-815c-4ace-a3b5-9a28bde005fd/",
+  "jwks_uri": "https://login.microsoftonline.com/28c0071d-815c-4ace-a3b5-9a28bde005fd/discovery/v2.0/keys",
+  "kid": "Xt-o7hDbpupAz-ZPm6HxCFWS3cI",
+  "note": "Token expires ~10 min after captured_iat; replay tests freeze the clock to captured_iat + 5.",
+  "provider": "entra",
+  "tenant_id": "28c0071d-815c-4ace-a3b5-9a28bde005fd",
+  "token_endpoint": "https://login.microsoftonline.com/28c0071d-815c-4ace-a3b5-9a28bde005fd/oauth2/v2.0/token"
+}

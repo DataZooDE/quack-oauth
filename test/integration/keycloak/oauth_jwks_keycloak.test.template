@@ -1,0 +1,50 @@
+# name: oauth_jwks_keycloak.test
+# description: End-to-end JWKS validation against a live Keycloak (S-7b.3).
+# group: [sql]
+#
+# This file is a template; run via `make integration_keycloak`. The runner
+# script substitutes @ISSUER@, @JWKS_URI@, @TOKEN@, @TOKEN_PREFIX@ with the
+# values it harvested from the docker-compose Keycloak.
+
+require quack_oauth
+
+statement ok
+CREATE SECRET rs (
+    TYPE quack_oauth_server,
+    issuer '@ISSUER@',
+    jwks_uri '@JWKS_URI@'
+);
+
+statement ok
+SET quack_oauth_server_secret_name = 'rs';
+
+# A freshly-issued token from Keycloak MUST validate end-to-end:
+# JWKS fetched → kid cached → RS256 signature verified → iss matches.
+# Audience is intentionally unconfigured (Keycloak doesn't add aud=client_id
+# without a custom audience mapper; that's a config concern for S-11).
+query I
+SELECT quack_oauth_check_token('@TOKEN@');
+----
+true
+
+# A second call uses the cached JWKS -- no HTTP fetch needed. Same outcome.
+query I
+SELECT quack_oauth_check_token('@TOKEN@');
+----
+true
+
+# Tampered token: replace a middle character of the signature segment.
+# Validator MUST reject (R-S-3 signature verification path).
+query I
+SELECT quack_oauth_check_token('@TOKEN_TAMPERED@');
+----
+false
+
+# Obviously not a JWT -- short-circuits at parse, no HTTP touched.
+query I
+SELECT quack_oauth_check_token('not-a-token');
+----
+false
+
+statement ok
+DROP SECRET rs;

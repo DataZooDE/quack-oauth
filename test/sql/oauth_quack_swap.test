@@ -1,0 +1,73 @@
+# name: test/sql/oauth_quack_swap.test
+# description: 3-arg quack_oauth_check_token overload + wiring as quack's authentication callback (S-9, R-S-1 redux).
+# group: [sql]
+#
+# This test relies on the stock `quack` extension being installed locally
+# (it ships from the DuckDB core extension repo: `INSTALL quack;`). Pre-load
+# it before quack_oauth so the auth setting `quack_authentication_function`
+# exists. If quack isn't installed, the explicit LOAD below will fail with
+# a clear error rather than silently skipping.
+
+statement ok
+LOAD quack;
+
+require quack_oauth
+
+# Both overloads of quack_oauth_check_token are registered.
+query II
+SELECT parameter_types::VARCHAR, return_type
+FROM duckdb_functions()
+WHERE function_name = 'quack_oauth_check_token'
+ORDER BY parameter_types::VARCHAR;
+----
+[VARCHAR, VARCHAR, VARCHAR]	BOOLEAN
+[VARCHAR]	BOOLEAN
+
+# Default authentication function is still quack's built-in.
+query I
+SELECT current_setting('quack_authentication_function');
+----
+quack_check_token
+
+# Operator opts in to quack-oauth by pointing the setting at our function.
+# This is the *actual* swap mechanism quack provides -- it's name-based,
+# replacing the draft requirements.md's REPLACE_ON_CONFLICT design.
+statement ok
+SET quack_authentication_function = 'quack_oauth_check_token';
+
+query I
+SELECT current_setting('quack_authentication_function');
+----
+quack_oauth_check_token
+
+# The 3-arg overload exists at the function-set level: it short-circuits
+# on a forbidden algorithm and returns false (the session_id and auth_string
+# args are ignored; only the third VARCHAR drives validation).
+statement ok
+CREATE SECRET rs (
+    TYPE quack_oauth_server,
+    issuer 'https://idp.test',
+    jwks_uri 'https://idp.nonexistent.invalid/jwks'
+);
+
+statement ok
+SET quack_oauth_server_secret_name = 'rs';
+
+query I
+SELECT quack_oauth_check_token('session-abc', 'not-a-jwt', 'server-psk');
+----
+false
+
+# HS256 token -- the 3-arg path goes through the same DisallowedAlgorithm
+# branch the 1-arg path takes (R-S-3); no HTTP touched.
+query I
+SELECT quack_oauth_check_token('s', 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiIxMjM0NTY3ODkwIiwibmFtZSI6IkpvaG4gRG9lIiwiaWF0IjoxNTE2MjM5MDIyfQ.SflKxwRJSMeKKF2QT4fwpMeJf36POk6yJV_adQssw5c', 'server-psk');
+----
+false
+
+# Restore the default so this test doesn't leak state to its peers.
+statement ok
+SET quack_authentication_function = 'quack_check_token';
+
+statement ok
+DROP SECRET rs;

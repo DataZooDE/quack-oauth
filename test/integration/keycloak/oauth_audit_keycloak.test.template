@@ -1,0 +1,106 @@
+# name: oauth_audit_keycloak.test
+# description: Auth event sink + audit_table + quack_oauth_audit_log() (S-15).
+# group: [sql]
+#
+# Template -- run via `make integration_keycloak`. Substitutes @ISSUER@,
+# @JWKS_URI@, @TOKEN@.
+
+require quack_oauth
+
+# The operator creates the audit table; the extension just INSERTs into it.
+statement ok
+CREATE TABLE quack_audit (
+    timestamp_unix_s BIGINT,
+    event_type       VARCHAR,
+    subject          VARCHAR,
+    issuer           VARCHAR,
+    kid              VARCHAR,
+    token_hash       VARCHAR,
+    action           VARCHAR,
+    reason           VARCHAR
+);
+
+statement ok
+CREATE SECRET rs (
+    TYPE quack_oauth_server,
+    issuer '@ISSUER@',
+    jwks_uri '@JWKS_URI@',
+    audit_table 'main.quack_audit'
+);
+
+statement ok
+SET quack_oauth_server_secret_name = 'rs';
+
+# 1. Drive one successful token validation.
+query I
+SELECT quack_oauth_check_token('sess-audit', '@TOKEN@', 'server-psk');
+----
+true
+
+# 2. Drive one denied authorization (default policy denies SELECT for an
+# `email`-scoped principal -- no quack:read scope).
+query I
+SELECT quack_oauth_check_authorization('sess-audit', 'SELECT 1');
+----
+false
+
+# 3. Drive one denied authorization for an unknown session.
+query I
+SELECT quack_oauth_check_authorization('no-such-session', 'SELECT 1');
+----
+false
+
+# The persisted audit table now has at least 3 rows.
+query I
+SELECT count(*) >= 3 FROM quack_audit;
+----
+true
+
+# A token_accepted row exists for the check_token call.
+query I
+SELECT count(*) >= 1 FROM quack_audit WHERE event_type = 'token_accepted';
+----
+true
+
+# An authz_deny row exists for the denied SELECT. Action gets classified
+# as Scan by DetectAction; reason names the missing scope (default policy).
+query I
+SELECT count(*) >= 1 FROM quack_audit
+WHERE event_type = 'authz_deny' AND action = 'Scan' AND reason LIKE '%quack:read%';
+----
+true
+
+# An authz_deny for the unknown-session row carries reason='unknown session'.
+query I
+SELECT count(*) >= 1 FROM quack_audit
+WHERE event_type = 'authz_deny' AND reason = 'unknown session';
+----
+true
+
+# The token_hash is never the raw token (8 hex chars).
+query I
+SELECT count(*) = 0 FROM quack_audit
+WHERE token_hash IS NOT NULL AND length(token_hash) > 8;
+----
+true
+
+# The in-memory ring (quack_oauth_audit_log()) also contains the same events.
+query I
+SELECT count(*) >= 3 FROM quack_oauth_audit_log()
+WHERE event_type IN ('token_accepted', 'authz_deny');
+----
+true
+
+# diagnose() recent_decisions row now reflects actual activity.
+query I
+SELECT detail LIKE '%count=%' AND detail NOT LIKE '%count=0/%'
+FROM quack_oauth_diagnose() WHERE component = 'recent_decisions';
+----
+true
+
+# Cleanup.
+statement ok
+DROP SECRET rs;
+
+statement ok
+DROP TABLE quack_audit;

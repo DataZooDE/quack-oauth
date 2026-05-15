@@ -1,0 +1,59 @@
+# name: oauth_refresh_keycloak.test
+# description: RFC 6749 §6 refresh_token grant via quack_oauth_refresh against live Keycloak (S-12c, R-C-2 / R-C-5).
+# group: [sql]
+#
+# Template -- run via `make integration_keycloak`. Substitutes @ISSUER@,
+# @TOKEN_URL@, @JWKS_URI@, @CLIENT_ID@, @CLIENT_SECRET@,
+# @REFRESH_TOKEN@.
+
+require quack_oauth
+
+# Create a client SECRET pre-populated with a refresh_token acquired via
+# ROPC. We DON'T set access_token / expires_at -- those are what the
+# refresh call will materialise.
+statement ok
+CREATE SECRET cli (
+    TYPE quack_oauth,
+    issuer '@ISSUER@',
+    client_id '@CLIENT_ID@',
+    client_secret '@CLIENT_SECRET@',
+    token_endpoint '@TOKEN_URL@',
+    refresh_token '@REFRESH_TOKEN@',
+    audience 'account'
+);
+
+# Before refresh: no access_token persisted yet.
+query I
+SELECT secret_string LIKE '%access_token%'
+FROM duckdb_secrets() WHERE name = 'cli';
+----
+false
+
+# Run refresh. Returns a new expires_at (ISO-8601 UTC) -- a real,
+# future timestamp from Keycloak.
+query I
+SELECT CAST(quack_oauth_refresh('cli') AS TIMESTAMP)
+     > CAST('2026-05-14 00:00:00' AS TIMESTAMP);
+----
+true
+
+# After refresh: SECRET has access_token + expires_at populated.
+query I
+SELECT secret_string LIKE '%access_token%'
+   AND secret_string LIKE '%expires_at%'
+FROM duckdb_secrets() WHERE name = 'cli';
+----
+true
+
+# A second refresh produces another fresh token -- proves the refresh_token
+# is reusable AND Keycloak rotates correctly when it does (we don't
+# enforce rotation since some IdPs don't).
+query I
+SELECT quack_oauth_refresh('cli') IS NOT NULL;
+----
+true
+
+# Bonus sanity: with the SECRET now carrying a fresh access_token (post
+# refresh), we know the token chain is whole.
+statement ok
+DROP SECRET cli;

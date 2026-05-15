@@ -1,6 +1,9 @@
 {
         "dependencies": [
-                "openssl"
+                "openssl",
+                "jwt-cpp",
+                "picojson",
+                "catch2"
         ],
         "vcpkg-configuration": {
                 "overlay-ports": [

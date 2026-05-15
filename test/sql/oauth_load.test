@@ -1,0 +1,29 @@
+# name: test/sql/oauth_load.test
+# description: Smoke test that the quack_oauth extension loads and registers no surface yet (S-1 skeleton).
+# group: [sql]
+
+# Before the extension is loaded the demo functions from the bootstrap template must already be absent.
+statement error
+SELECT quack_oauth('Sam');
+----
+Catalog Error
+
+require quack_oauth
+
+# After LOAD the extension is reported by duckdb_extensions() as loaded.
+query I
+SELECT loaded FROM duckdb_extensions() WHERE extension_name = 'quack_oauth';
+----
+true
+
+# S-1 invariant: the bootstrap template's demo scalar functions are gone.
+# Settings + SECRET types arrive in later slices (S-2, S-3); for now no quack_oauth_* surface exists.
+statement error
+SELECT quack_oauth('Sam');
+----
+Catalog Error
+
+statement error
+SELECT quack_oauth_openssl_version('Sam');
+----
+Catalog Error

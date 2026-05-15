@@ -1,0 +1,20 @@
+services:
+  keycloak:
+    image: quay.io/keycloak/keycloak:25.0
+    container_name: quack-oauth-keycloak
+    command:
+      - start-dev
+      - --import-realm
+      - --http-port=8080
+    environment:
+      KC_BOOTSTRAP_ADMIN_USERNAME: admin
+      KC_BOOTSTRAP_ADMIN_PASSWORD: admin
+      KC_HEALTH_ENABLED: "true"
+    ports:
+      - "8080:8080"
+      - "9000:9000"
+    volumes:
+      - ./realm-export.json:/opt/keycloak/data/import/realm.json:ro
+    # No container healthcheck -- the Keycloak image's busybox doesn't ship
+    # curl, and the bash-`/dev/tcp` trick isn't dependable across versions.
+    # The integration runner polls realm readiness from the host instead.
