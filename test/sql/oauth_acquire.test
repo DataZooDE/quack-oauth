@@ -1,0 +1,77 @@
+# name: test/sql/oauth_acquire.test
+# description: quack_oauth_acquire(secret_name) one-stop client orchestrator (R-C-2 / R-C-4).
+# group: [sql]
+
+require quack_oauth
+
+# 1. Cached-AT path: a SECRET with a fresh access_token (well past
+# `now + renew_skew_s`) short-circuits without hitting the network.
+# Pin renew_skew to a small value so the test isn't affected by clock
+# drift between this assert and the actual call.
+statement ok
+SET quack_oauth_renew_skew_s = 1;
+
+statement ok
+CREATE SECRET cli_cached (
+    TYPE quack_oauth,
+    token_endpoint 'https://idp.nonexistent.invalid/token',
+    client_id      'cli',
+    access_token   'eyJ-pre-baked-token',
+    expires_at     '2099-01-01T00:00:00Z'
+);
+
+query I
+SELECT quack_oauth_acquire('cli_cached');
+----
+eyJ-pre-baked-token
+
+# 2. Unconfigured path: SECRET with nothing usable → clear error.
+statement ok
+CREATE SECRET cli_empty (
+    TYPE quack_oauth,
+    issuer 'https://idp.test'
+);
+
+statement error
+SELECT quack_oauth_acquire('cli_empty');
+----
+SECRET 'cli_empty' is unconfigured
+
+# 3. Unknown SECRET → clear error.
+statement error
+SELECT quack_oauth_acquire('does_not_exist');
+----
+SECRET 'does_not_exist' not found
+
+# 4. Wrong SECRET type → clear error.
+statement ok
+CREATE SECRET srv (
+    TYPE quack_oauth_server,
+    issuer 'https://idp.test'
+);
+
+statement error
+SELECT quack_oauth_acquire('srv');
+----
+not of TYPE quack_oauth
+
+# 5. Self-documenting -- description + examples are visible.
+query I
+SELECT count(*) >= 1 FROM duckdb_functions()
+WHERE function_name = 'quack_oauth_acquire'
+  AND lower(description) LIKE '%one-stop%';
+----
+true
+
+# Cleanup.
+statement ok
+DROP SECRET cli_cached;
+
+statement ok
+DROP SECRET cli_empty;
+
+statement ok
+DROP SECRET srv;
+
+statement ok
+RESET quack_oauth_renew_skew_s;

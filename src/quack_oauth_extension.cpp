@@ -9,6 +9,7 @@
 // Network-touching scalars are skipped on wasm32 -- duckdb_httplib_openssl
 // is not available there. See S-14 in docs/IMPLEMENTATION.md.
 #ifndef EMSCRIPTEN
+#include "acquire_function.hpp"
 #include "check_token_function.hpp"
 #include "device_login_function.hpp"
 #include "login_function.hpp"
@@ -34,6 +35,7 @@ static void LoadInternal(ExtensionLoader &loader) {
 	RegisterQuackOauthLogout(loader);
 	RegisterQuackOauthRefresh(loader);
 	RegisterQuackOauthDeviceLogin(loader);
+	RegisterQuackOauthAcquire(loader);
 #endif
 }
 

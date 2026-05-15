@@ -178,8 +178,9 @@ def start_server(
 
 
 def open_client() -> duckdb.DuckDBPyConnection:
-    """Open a fresh client-side DuckDB connection with `quack` loaded.
-    The caller is responsible for `ATTACH 'quack:...' AS srv (TYPE quack, token '<JWT>')`.
+    """Open a fresh client-side DuckDB connection with both `quack`
+    (wire protocol) and `quack_oauth` (so the client can use
+    `quack_oauth_acquire(secret)` to mint a token inside ATTACH).
     """
     if not EXTENSION_PATH.exists():
         raise RuntimeError(f"quack_oauth extension not built at {EXTENSION_PATH}")
@@ -194,6 +195,6 @@ def open_client() -> duckdb.DuckDBPyConnection:
     # `quack` is expected to already be installed at
     # ~/.duckdb/extensions/v1.5.2/<platform>/quack.duckdb_extension
     # (operator runs `INSTALL quack;` once via the duckdb CLI).
-    # `LOAD quack` works without re-installing.
     conn.execute("LOAD quack")
+    conn.execute(f"LOAD '{EXTENSION_PATH}'")
     return conn

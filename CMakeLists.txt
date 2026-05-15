@@ -25,6 +25,7 @@ include_directories(./duckdb/third_party/httplib)
 # Pure-logic sources (no DuckDB includes) -- compiled into BOTH the extension
 # and the Catch2 unit-test binary. See docs/IMPLEMENTATION.md section 2.3.
 set(PURE_SOURCES
+    src/acquire_flow.cpp
     src/action_detect.cpp
     src/audit.cpp
     src/authz.cpp
@@ -71,6 +72,7 @@ set(DUCKDB_WASM_SAFE_SOURCES
 # matching Register* calls in quack_oauth_extension.cpp are guarded with
 # `#ifndef EMSCRIPTEN` so the wasm build links cleanly without them.
 set(DUCKDB_NATIVE_ONLY_SOURCES
+    src/acquire_function.cpp
     src/check_token_function.cpp
     src/device_login_function.cpp
     src/http_client_duckdb.cpp
