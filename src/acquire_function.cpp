@@ -11,13 +11,14 @@
 #include "duckdb/execution/expression_executor_state.hpp"
 #include "duckdb/function/scalar_function.hpp"
 #include "duckdb/main/client_context.hpp"
-#include "duckdb/main/connection.hpp"
 #include "duckdb/main/extension/extension_loader.hpp"
-#include "duckdb/main/materialized_query_result.hpp"
 #include "duckdb/parser/parsed_data/create_scalar_function_info.hpp"
 
 #include "acquire_flow.hpp"
+#include "device_login_function.hpp"
+#include "login_function.hpp"
 #include "platform_time.hpp"
+#include "refresh_function.hpp"
 #include "secret_accessor.hpp"
 
 namespace duckdb {
@@ -75,36 +76,23 @@ static int64_t ReadRenewSkew(ClientContext &context) {
 	return static_cast<int64_t>(v.GetValue<int32_t>());
 }
 
-// Quote a SQL string literal: single-quote-delimited, with embedded
-// single-quotes doubled. Robust against secret names that contain `'`
-// or `\`.
-static string SqlQuote(const string &s) {
-	string out = "'";
-	for (char c : s) {
-		if (c == '\'')
-			out += "''";
-		else
-			out += c;
-	}
-	out += "'";
-	return out;
-}
-
-// Invoke one of the existing flow scalars via a short-lived Connection,
-// then re-read the SECRET to fetch the persisted access_token.
-static string RunFlowAndReadToken(ClientContext &context, const string &flow_scalar, const string &secret_name) {
-	Connection conn(*context.db);
-	const auto sql = "SELECT " + flow_scalar + "(" + SqlQuote(secret_name) + ")";
-	auto result = conn.Query(sql);
-	if (result->HasError()) {
-		throw IOException("quack_oauth_acquire: %s failed: %s", flow_scalar, result->GetError());
-	}
-	// The flow scalars updated the SECRET. Re-read to get the access_token.
+// Invoke a flow implementation in-process (same ClientContext, same
+// SecretManager state), then re-read the SECRET to fetch the persisted
+// access_token. Earlier versions ran the flow scalar via a sub-Connection,
+// but the persisted SECRET writes from that Connection's transaction were
+// not visible to the outer context's GetSecretByName re-read -- the
+// re-read saw an empty access_token even though the on-disk SECRET was
+// already updated. Calling the impl directly keeps everything in one
+// transaction scope.
+using FlowFn = string (*)(ClientContext &, const string &);
+static string RunFlowAndReadToken(ClientContext &context, FlowFn flow, const char *flow_name,
+                                  const string &secret_name) {
+	flow(context, secret_name);
 	auto v = LoadClientSecretView(context, secret_name);
 	if (v.access_token.empty()) {
 		throw IOException("quack_oauth_acquire: %s completed but no access_token was "
 		                  "persisted on SECRET '%s'",
-		                  flow_scalar, secret_name);
+		                  flow_name, secret_name);
 	}
 	return v.access_token;
 }
@@ -120,11 +108,11 @@ static string DoAcquire(ClientContext &context, const string &secret_name) {
 	case quack_oauth::AcquireFlow::UseCached:
 		return view.access_token;
 	case quack_oauth::AcquireFlow::RefreshToken:
-		return RunFlowAndReadToken(context, "quack_oauth_refresh", secret_name);
+		return RunFlowAndReadToken(context, &DoRefresh, "quack_oauth_refresh", secret_name);
 	case quack_oauth::AcquireFlow::ClientCredentials:
-		return RunFlowAndReadToken(context, "quack_oauth_login", secret_name);
+		return RunFlowAndReadToken(context, &DoLogin, "quack_oauth_login", secret_name);
 	case quack_oauth::AcquireFlow::DeviceCode:
-		return RunFlowAndReadToken(context, "quack_oauth_device_login", secret_name);
+		return RunFlowAndReadToken(context, &DoDeviceLoginImpl, "quack_oauth_device_login", secret_name);
 	case quack_oauth::AcquireFlow::Unconfigured:
 	default:
 		throw InvalidInputException("quack_oauth_acquire: SECRET '%s' is %s. %s", secret_name,

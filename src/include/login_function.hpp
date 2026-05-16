@@ -1,8 +1,18 @@
 #pragma once
 
+#include <string>
+
+#include "duckdb/main/client_context.hpp"
 #include "duckdb/main/extension/extension_loader.hpp"
 
 namespace duckdb {
+
+// In-process implementation of the client_credentials flow. Returns the
+// `expires_at` ISO timestamp. Exposed so `quack_oauth_acquire` can invoke
+// it inline (same ClientContext, same SecretManager state) -- routing
+// through a sub-Connection causes the persisted access_token to not be
+// visible on re-read.
+string DoLogin(ClientContext &context, const string &secret_name);
 
 // Registers `quack_oauth_login(secret_name VARCHAR) -> VARCHAR` per R-C-7.
 //

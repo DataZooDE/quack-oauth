@@ -1,8 +1,17 @@
 #pragma once
 
+#include <string>
+
+#include "duckdb/main/client_context.hpp"
 #include "duckdb/main/extension/extension_loader.hpp"
 
 namespace duckdb {
+
+// In-process implementation of the RFC 8628 device_code flow. Returns
+// `expires_at` ISO. Exposed for in-process invocation from
+// `quack_oauth_acquire` (avoids the sub-Connection re-read bug; see
+// login_function.hpp).
+string DoDeviceLoginImpl(ClientContext &context, const string &secret_name);
 
 // Registers `quack_oauth_device_login(secret_name VARCHAR) -> VARCHAR` per
 // RFC 8628 / R-C-2. Reads the named TYPE=quack_oauth client SECRET (must

@@ -1,8 +1,17 @@
 #pragma once
 
+#include <string>
+
+#include "duckdb/main/client_context.hpp"
 #include "duckdb/main/extension/extension_loader.hpp"
 
 namespace duckdb {
+
+// In-process implementation of the refresh_token grant. Returns
+// `expires_at` ISO. Exposed for in-process invocation from
+// `quack_oauth_acquire` (avoids the sub-Connection re-read bug; see
+// login_function.hpp).
+string DoRefresh(ClientContext &context, const string &secret_name);
 
 // Registers `quack_oauth_refresh(secret_name VARCHAR) -> VARCHAR` per R-C-2 /
 // R-C-5. Reads the named TYPE=quack_oauth client SECRET (must carry

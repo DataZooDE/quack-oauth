@@ -35,7 +35,7 @@ static void EmitUserNotice(const quack_oauth::DeviceAuthorizationResponse &auth)
 	          << " and enter code: " << auth.user_code << std::endl;
 }
 
-static string DoDeviceLoginImpl(ClientContext &context, const string &secret_name) {
+string DoDeviceLoginImpl(ClientContext &context, const string &secret_name) {
 	auto accessor = OpenSecret(context, secret_name, "quack_oauth", "quack_oauth_device_login");
 
 	const auto device_endpoint = accessor.Get("device_authorization_endpoint");

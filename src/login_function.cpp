@@ -24,7 +24,7 @@ namespace duckdb {
 
 using quack_oauth::FormatUtcIso8601;
 
-static string DoLogin(ClientContext &context, const string &secret_name) {
+string DoLogin(ClientContext &context, const string &secret_name) {
 	auto accessor = OpenSecret(context, secret_name, "quack_oauth", "quack_oauth_login");
 
 	const auto token_endpoint = accessor.Get("token_endpoint");
