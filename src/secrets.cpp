@@ -40,6 +40,24 @@ static unique_ptr<BaseSecret> CreateClientSecret(ClientContext &, CreateSecretIn
 	           {"issuer", "client_id", "client_secret", "audience", "scope", "device_authorization_endpoint",
 	            "token_endpoint", "redirect_listener_port", "access_token", "refresh_token", "expires_at"});
 
+	// DuckDB's `CREATE SECRET (..., scope '...')` parser consumes `scope` as
+	// the SECRET-API's URL-scope vector (input.scope) BEFORE CopyParams sees
+	// it in input.options. We use `scope` as our OAuth scope field, so fall
+	// back to input.scope (space-joined) when the options path didn't
+	// populate secret_map["scope"]. Without this, the AcquireTokenClientCredentials
+	// request lands at IdPs (e.g. Entra v2.0) without a `scope` parameter and
+	// fails with AADSTS90014.
+	if (result->secret_map.find("scope") == result->secret_map.end() && !input.scope.empty()) {
+		string joined;
+		for (const auto &s : input.scope) {
+			if (!joined.empty()) {
+				joined.push_back(' ');
+			}
+			joined += s;
+		}
+		result->secret_map["scope"] = Value(joined);
+	}
+
 	Redact(*result, {kClientSensitiveFields[0], kClientSensitiveFields[1], kClientSensitiveFields[2]});
 	return std::move(result);
 }
