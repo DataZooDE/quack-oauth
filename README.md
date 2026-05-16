@@ -136,11 +136,27 @@ SELECT * FROM quack_serve('quack:0.0.0.0:9494');
 On the **client** side:
 
 ```sql
+-- One-time setup: install + create a persistent client SECRET that
+-- holds the IdP coordinates. Survives DuckDB restarts.
+INSTALL 'quack_oauth' FROM 'http://get.erpl.io';
 LOAD 'quack';
+LOAD 'quack_oauth';
 
+CREATE PERSISTENT SECRET cli (
+    TYPE quack_oauth,
+    token_endpoint 'https://keycloak.example.com/realms/prod/protocol/openid-connect/token',
+    client_id      'my-client-id',
+    client_secret  'my-client-secret',
+    scope          'openid quack:read'
+);
+```
+
+```sql
+-- Every connect: ATTACH calls quack_oauth_acquire() to mint (or reuse)
+-- a fresh access token automatically. No JWT pasting, no manual refresh.
 ATTACH 'quack:server.example.com:9494' AS srv (
     TYPE quack,
-    token 'eyJhbGciOiJSUzI1NiIs…'    -- a real bearer JWT from your IdP
+    token quack_oauth_acquire('cli')
 );
 
 SELECT * FROM srv.main.t;            -- ← policy decides; audit row appended
@@ -181,24 +197,60 @@ Resolved internally to:
 ### Microsoft Entra ID (JWKS)
 
 `tenant_or_realm` is the **tenant GUID** (or `common`, `organizations`,
-`consumers`). For third-party validation the client app **must** expose
-an Application app role and the bearer JWT must carry an `aud` claim of
-`api://<your-client-id>/.default` — Entra tokens minted for
-`graph.microsoft.com` are not third-party-verifiable (see CLAUDE.md).
+`consumers`).
+
+**Two things you'll trip over:**
+
+1. **Custom API + app role required.** Tokens with
+   `scope=https://graph.microsoft.com/.default` are NOT third-party-
+   verifiable — Entra signs them so only Graph can validate. Set up:
+   `App registration → Expose an API → set Application ID URI` and
+   `App registration → App roles → Create app role` (Allowed member
+   types: **Applications**). Request tokens with
+   `scope=api://<your-client-id>/.default` instead.
+2. **v1.0 vs v2.0 audience format.** v2.0 access tokens (default for
+   new app registrations + manifest `requestedAccessTokenVersion: 2`)
+   carry `aud = <client-id-GUID>` — bare GUID, no `api://` prefix.
+   v1.0 tokens carry `aud = api://<client-id-GUID>`. The `audience`
+   field on the SECRET must match exactly whatever the token actually
+   contains.
+
+For v2.0 tokens (recommended):
 
 ```sql
 CREATE SECRET rs (
     TYPE quack_oauth_server,
     tenant_or_realm '12345678-1234-1234-1234-123456789abc',
-    audience        'api://22222222-2222-2222-2222-222222222222'
+    audience        '22222222-2222-2222-2222-222222222222'    -- bare client_id
 );
 SET quack_oauth_provider           = 'entra';
 SET quack_oauth_server_secret_name = 'rs';
 ```
 
-Resolved internally to:
+For v1.0 tokens you also need to override the issuer (preset assumes
+v2.0):
+
+```sql
+CREATE SECRET rs (
+    TYPE quack_oauth_server,
+    tenant_or_realm '12345678-1234-1234-1234-123456789abc',
+    audience        'api://22222222-2222-2222-2222-222222222222',  -- with api:// prefix
+    issuer          'https://sts.windows.net/12345678-1234-1234-1234-123456789abc/'
+);
+```
+
+The preset (v2.0) resolves internally to:
 - `issuer = https://login.microsoftonline.com/<tenant>/v2.0`
 - `jwks_uri = https://login.microsoftonline.com/<tenant>/discovery/v2.0/keys`
+
+**App-only flows (client_credentials) populate `roles`, not `scope`.**
+Policy rules for service-to-service callers therefore name the role:
+
+```sql
+INSERT INTO main.policies VALUES
+    (10, NULL, ['quack.access'], ['Attach', 'Scan'], true);
+    --        ^ the role's `value` from the App roles definition
+```
 
 ### Google (tokeninfo, opaque tokens)
 
@@ -415,11 +467,13 @@ mutations. A cron / DuckDB scheduled `INSERT` (and a matching
 `DELETE`) gives you time-bounded permissions without restarts:
 
 ```sql
--- expire grant: a sidecar process runs this every minute
+-- expire grant: a sidecar process runs this every minute.
+-- Add your own `expires_at TIMESTAMP` column to main.policies first;
+-- this `DELETE` then drops any rule whose expiry has passed.
 DELETE FROM main.policies
 WHERE subject = 'temp-contractor'
   AND priority = 50
-  AND <grant_expiry_column> < now();
+  AND expires_at < now();
 ```
 
 ### Hot reload, fail-closed
@@ -447,8 +501,8 @@ SELECT * FROM quack_oauth_audit_log() ORDER BY timestamp_unix_s DESC LIMIT 10;
 SELECT * FROM main.audit ORDER BY timestamp_unix_s DESC LIMIT 100;
 
 -- DuckDB logger: WARNING for denies, INFO for allows
-PRAGMA enable_logging;
-PRAGMA logging_level = 'INFO';
+CALL enable_logging();
+SET logging_level = 'INFO';
 
 -- one-shot health report
 SELECT * FROM quack_oauth_diagnose();

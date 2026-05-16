@@ -29,6 +29,16 @@ smoke_static: release
 		build/release/extension/quack_oauth/quack_oauth.duckdb_extension
 
 # ---------------------------------------------------------------------------
+# README verifier: extract every ```sql block from README.md, run each
+# through DuckDB with quack_oauth loaded, fail on parse errors or
+# unknown functions / settings / SECRET fields. Catches "the docs got
+# out of sync with the code" before it ships.
+# ---------------------------------------------------------------------------
+.PHONY: verify_readme
+verify_readme: release
+	@python3 scripts/verify_readme.py
+
+# ---------------------------------------------------------------------------
 # Keycloak integration test (S-7b.3). Brings up a docker-compose Keycloak,
 # acquires a real ROPC token, materialises a SQL test from a template, runs
 # it through the DuckDB unittest binary, and tears the container down.
