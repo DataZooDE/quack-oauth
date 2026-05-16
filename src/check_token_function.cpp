@@ -87,22 +87,36 @@ static ServerConfig ReadServerConfigCore(ClientContext &context, const SecretAcc
 // from per-provider templates. Explicit SECRET fields always win.
 // R-S-13: 'github' provider auto-promotes mode 'jwks' → 'github_check'
 // because GitHub tokens are opaque and have no JWKS.
+//
+// `tenant_or_realm` is required for tenant-templated providers
+// (Entra, Keycloak, GitHub) and unused for Google. Earlier this branch
+// short-circuited on empty tenant_or_realm, which silently skipped the
+// Google preset and forced operators to set `introspection_endpoint`
+// explicitly -- contradicting the README and producing a confusing
+// `Authentication failed` at the first token request.
 static void ApplyProviderPreset(ClientContext &context, const SecretAccessor &accessor, ServerConfig &cfg) {
 	const auto provider_name = ReadStringSetting(context, "quack_oauth_provider");
 	if (provider_name.empty() || provider_name == "generic") {
 		return;
 	}
+	const auto provider_id = quack_oauth::ProviderFromString(provider_name);
 	const auto tenant_or_realm = accessor.Get("tenant_or_realm");
-	if (!tenant_or_realm.empty()) {
-		const auto resolved =
-		    quack_oauth::ResolveProvider(quack_oauth::ProviderFromString(provider_name), tenant_or_realm);
-		if (cfg.issuer.empty())
-			cfg.issuer = resolved.issuer;
-		if (cfg.jwks_uri.empty())
-			cfg.jwks_uri = resolved.jwks_uri;
-		if (cfg.introspection_endpoint.empty())
-			cfg.introspection_endpoint = resolved.introspection_endpoint;
+	if (provider_id != quack_oauth::ProviderId::Google && tenant_or_realm.empty()) {
+		// Tenant-templated providers need a tenant/realm to materialise
+		// URLs. Fail fast with a clear message rather than emitting
+		// `https://login.microsoftonline.com//v2.0` and failing at fetch.
+		throw InvalidInputException(
+		    "quack_oauth provider preset '%s' requires `tenant_or_realm` on the active SECRET "
+		    "(set it to the tenant id / realm URL / GitHub App client_id depending on the provider).",
+		    provider_name);
 	}
+	const auto resolved = quack_oauth::ResolveProvider(provider_id, tenant_or_realm);
+	if (cfg.issuer.empty())
+		cfg.issuer = resolved.issuer;
+	if (cfg.jwks_uri.empty())
+		cfg.jwks_uri = resolved.jwks_uri;
+	if (cfg.introspection_endpoint.empty())
+		cfg.introspection_endpoint = resolved.introspection_endpoint;
 	if (provider_name == "github" && cfg.mode == "jwks") {
 		cfg.mode = "github_check";
 	}

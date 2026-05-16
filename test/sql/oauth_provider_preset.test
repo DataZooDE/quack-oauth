@@ -1,0 +1,96 @@
+# name: test/sql/oauth_provider_preset.test
+# description: provider preset wiring (R-S-12): Google fills introspection_endpoint without a tenant; tenant-templated providers require tenant_or_realm and fail loud when it's missing.
+# group: [sql]
+
+require quack_oauth
+
+# Tenant-templated providers (Entra / Keycloak / GitHub) without
+# `tenant_or_realm` on the SECRET MUST fail with an actionable error
+# rather than emitting half-formed URLs (e.g. `https://login.microsoftonline.com//v2.0`)
+# and failing later with a confusing fetch error.
+statement ok
+CREATE SECRET rs_entra_notenant (
+    TYPE quack_oauth_server,
+    audience 'api://quack'
+);
+
+statement ok
+SET quack_oauth_server_secret_name = 'rs_entra_notenant';
+
+statement ok
+SET quack_oauth_provider = 'entra';
+
+statement error
+SELECT quack_oauth_check_token('e.y.J');
+----
+requires `tenant_or_realm`
+
+statement ok
+DROP SECRET rs_entra_notenant;
+
+statement ok
+SET quack_oauth_provider = 'keycloak';
+
+statement ok
+CREATE SECRET rs_kc_notenant (
+    TYPE quack_oauth_server,
+    audience 'api://quack'
+);
+
+statement ok
+SET quack_oauth_server_secret_name = 'rs_kc_notenant';
+
+statement error
+SELECT quack_oauth_check_token('e.y.J');
+----
+requires `tenant_or_realm`
+
+statement ok
+DROP SECRET rs_kc_notenant;
+
+# Google is the exception -- the preset is tenant-free, so the absence
+# of `tenant_or_realm` MUST NOT skip the preset (regression test).
+# Without `introspection_endpoint` explicitly on the SECRET and without
+# the preset, the bind-time check used to error with "missing
+# introspection_endpoint". With the preset applied, the call gets far
+# enough to attempt validation; with a `.invalid` audience and a
+# garbage token the function returns false (Google's tokeninfo at
+# https://oauth2.googleapis.com/tokeninfo isn't actually hit because
+# the JWT-parse short-circuits on a non-JWT token -- but the bind-time
+# config check passes, which is what we're asserting here).
+statement ok
+CREATE SECRET rs_google (
+    TYPE quack_oauth_server,
+    audience '1234567890.apps.googleusercontent.com'
+);
+
+statement ok
+SET quack_oauth_server_secret_name = 'rs_google';
+
+statement ok
+SET quack_oauth_provider = 'google';
+
+statement ok
+SET quack_oauth_validation_mode = 'tokeninfo';
+
+# Garbage input → false (tokeninfo would 400 if reached, but the
+# decision cache may short-circuit either way; the point is the
+# bind-time config check no longer rejects on missing
+# introspection_endpoint).
+query I
+SELECT quack_oauth_check_token('not-a-token') IN (true, false);
+----
+true
+
+# Cleanup.
+statement ok
+DROP SECRET rs_google;
+
+statement ok
+SET quack_oauth_validation_mode = 'jwks';
+
+statement ok
+SET quack_oauth_provider = 'generic';
+
+statement ok
+SET quack_oauth_server_secret_name = '';
