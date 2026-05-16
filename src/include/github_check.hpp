@@ -19,8 +19,14 @@ namespace quack_oauth {
 //   { "access_token": "<the token to validate>" }
 //
 // 200 → token is valid, body has the user record + scopes.
-// 404 → token is unknown / revoked.
-// 401 / 403 → app credentials invalid (treated as InvalidSignature).
+// 404 → token is unknown / revoked. Mapped to InvalidSignature (the
+//       token was rejected by GitHub for this App).
+// 401 / 403 → the App's introspect credentials are wrong. Mapped to
+//       JwksFetchFailed -- this is an operator-config error, not a
+//       token-level rejection, so the audit reason
+//       (`jwks_fetch_failed`) points the operator at their config
+//       instead of blaming the client. Matches how the RFC 7662
+//       introspect path reports the same failure mode.
 // 5xx or transport error → JwksFetchFailed (retryable).
 //
 // Principal mapping (per R-S-13):
@@ -33,6 +39,7 @@ namespace quack_oauth {
 
 struct GithubContext {
 	IHttpClient &http;
+	DecisionCache &decision_cache;
 	std::string check_url; // https://api.github.com/applications/{client_id}/token
 	std::string client_id; // for HTTP Basic
 	std::string client_secret;
@@ -45,6 +52,13 @@ std::optional<Principal> ParseGithubCheckResponse(std::string_view json);
 // Make the HTTP call and map its outcome to a VerifyResult. When
 // `out_principal` is non-null AND the result is Ok, it is filled from the
 // parsed response.
-VerifyResult ValidateTokenViaGithubCheck(std::string_view token, GithubContext &ctx, Principal *out_principal);
+//
+// Positive decisions are cached in `ctx.decision_cache` keyed on SHA-256 of
+// the token, just like the tokeninfo / introspect paths. Negative outcomes
+// are never cached -- a revoked token may flip back to valid only after
+// re-issue, but caching a 404 would lock out the new token for the cache's
+// TTL.
+VerifyResult ValidateTokenViaGithubCheck(std::string_view token, const VerifyOptions &opts, GithubContext &ctx,
+                                         Principal *out_principal);
 
 } // namespace quack_oauth

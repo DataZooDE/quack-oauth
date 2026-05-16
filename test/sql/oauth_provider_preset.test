@@ -89,6 +89,39 @@ DROP SECRET rs_google;
 statement ok
 SET quack_oauth_validation_mode = 'jwks';
 
+# GitHub preset (R-S-13): auto-flips mode to `github_check` and
+# auto-fills `introspect_client_id` from `tenant_or_realm` (both are
+# the same App client_id, so users shouldn't have to repeat it). To
+# observe the wiring without hitting api.github.com we send garbage at
+# a `.invalid` URL: if the preset fired correctly the call won't error
+# at bind time and will return `false` after the HTTP attempt.
+statement ok
+CREATE SECRET rs_github (
+    TYPE quack_oauth_server,
+    tenant_or_realm          'Iv1.fixture',
+    introspect_client_secret 'fixture-secret',
+    introspection_endpoint   'https://api.github.invalid/applications/Iv1.fixture/token',
+    audience                 'my-quack-api'
+);
+
+statement ok
+SET quack_oauth_server_secret_name = 'rs_github';
+
+statement ok
+SET quack_oauth_provider = 'github';
+
+# Bind-time config passes (mode auto-flips to github_check, client_id
+# auto-fills from tenant_or_realm). HTTP fetch against `.invalid`
+# fails, surfacing as `false`.
+query I
+SELECT quack_oauth_check_token('gho_fake_token_for_bind_test') IN (true, false);
+----
+true
+
+# Cleanup.
+statement ok
+DROP SECRET rs_github;
+
 statement ok
 SET quack_oauth_provider = 'generic';
 

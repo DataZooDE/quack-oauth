@@ -8,12 +8,15 @@
 #include "decision_cache.hpp"
 #include "github_check.hpp"
 #include "http_client.hpp"
+#include "jwt_verify.hpp"
 
+using quack_oauth::DecisionCache;
 using quack_oauth::GithubContext;
 using quack_oauth::IHttpClient;
 using quack_oauth::ParseGithubCheckResponse;
 using quack_oauth::Principal;
 using quack_oauth::ValidateTokenViaGithubCheck;
+using quack_oauth::VerifyOptions;
 using quack_oauth::VerifyResult;
 
 namespace {
@@ -72,10 +75,14 @@ TEST_CASE("ParseGithubCheckResponse: malformed JSON returns nullopt", "[github][
 TEST_CASE("ValidateTokenViaGithubCheck: 200 OK populates Principal", "[github]") {
 	FakeHttp http;
 	http.next_post = IHttpClient::Response {200, kHappyResponse};
-	GithubContext ctx {http, "https://api.github.com/applications/Iv1.client/token", "Iv1.client", "github_app_secret"};
+	DecisionCache cache(64, 30);
+	VerifyOptions opts;
+	opts.now_s = 1000;
+	GithubContext ctx {http, cache, "https://api.github.com/applications/Iv1.client/token", "Iv1.client",
+	                   "github_app_secret"};
 
 	Principal out;
-	const auto r = ValidateTokenViaGithubCheck("gho_xyz", ctx, &out);
+	const auto r = ValidateTokenViaGithubCheck("gho_xyz", opts, ctx, &out);
 	CHECK(r == VerifyResult::Ok);
 	CHECK(out.subject == "gh:5645645");
 
@@ -86,45 +93,80 @@ TEST_CASE("ValidateTokenViaGithubCheck: 200 OK populates Principal", "[github]")
 	// HTTP Basic with client_id:client_secret.
 	CHECK(http.last_post.basic_user == "Iv1.client");
 	CHECK(http.last_post.basic_pass == "github_app_secret");
+
+	// Second call hits the decision cache -- no additional POST.
+	const int posts_before = http.post_calls;
+	const auto r2 = ValidateTokenViaGithubCheck("gho_xyz", opts, ctx, &out);
+	CHECK(r2 == VerifyResult::Ok);
+	CHECK(http.post_calls == posts_before);
 }
 
 TEST_CASE("ValidateTokenViaGithubCheck: 404 -> token invalid", "[github]") {
 	FakeHttp http;
 	http.next_post = IHttpClient::Response {404, R"({"message": "Not Found"})"};
-	GithubContext ctx {http, "https://api.github.com/applications/Iv1.client/token", "Iv1.client", "github_app_secret"};
+	DecisionCache cache(64, 30);
+	VerifyOptions opts;
+	opts.now_s = 1000;
+	GithubContext ctx {http, cache, "https://api.github.com/applications/Iv1.client/token", "Iv1.client",
+	                   "github_app_secret"};
 
-	const auto r = ValidateTokenViaGithubCheck("not-a-real-token", ctx, nullptr);
+	const auto r = ValidateTokenViaGithubCheck("not-a-real-token", opts, ctx, nullptr);
 	CHECK(r == VerifyResult::InvalidSignature);
+
+	// Negative outcomes are never cached -- a re-issued token after
+	// revocation must surface, so the next call re-POSTs.
+	const int posts_before = http.post_calls;
+	const auto r2 = ValidateTokenViaGithubCheck("not-a-real-token", opts, ctx, nullptr);
+	CHECK(r2 == VerifyResult::InvalidSignature);
+	CHECK(http.post_calls == posts_before + 1);
 }
 
-TEST_CASE("ValidateTokenViaGithubCheck: 401/403 -> InvalidSignature too", "[github]") {
+TEST_CASE("ValidateTokenViaGithubCheck: 401/403 -> JwksFetchFailed (operator config error)", "[github]") {
+	// 401 / 403 from GitHub means the App's introspect_client_id /
+	// introspect_client_secret are wrong -- an operator-side
+	// configuration bug, not a token-level rejection. Surfacing it as
+	// JwksFetchFailed (audit reason `jwks_fetch_failed`) points the
+	// operator at their App credentials, matching the introspect
+	// path's handling of the same failure mode.
 	FakeHttp http;
-	GithubContext ctx {http, "https://api.github.com/applications/c/token", "c", "s"};
+	DecisionCache cache(64, 30);
+	VerifyOptions opts;
+	opts.now_s = 1000;
+	GithubContext ctx {http, cache, "https://api.github.com/applications/c/token", "c", "s"};
 
 	http.next_post = IHttpClient::Response {401, ""};
-	CHECK(ValidateTokenViaGithubCheck("t", ctx, nullptr) == VerifyResult::InvalidSignature);
+	CHECK(ValidateTokenViaGithubCheck("t1", opts, ctx, nullptr) == VerifyResult::JwksFetchFailed);
 
 	http.next_post = IHttpClient::Response {403, ""};
-	CHECK(ValidateTokenViaGithubCheck("t", ctx, nullptr) == VerifyResult::InvalidSignature);
+	CHECK(ValidateTokenViaGithubCheck("t2", opts, ctx, nullptr) == VerifyResult::JwksFetchFailed);
 }
 
 TEST_CASE("ValidateTokenViaGithubCheck: 5xx -> JwksFetchFailed (retry hint)", "[github]") {
 	FakeHttp http;
 	http.next_post = IHttpClient::Response {503, ""};
-	GithubContext ctx {http, "https://api.github.com/applications/c/token", "c", "s"};
-	CHECK(ValidateTokenViaGithubCheck("t", ctx, nullptr) == VerifyResult::JwksFetchFailed);
+	DecisionCache cache(64, 30);
+	VerifyOptions opts;
+	opts.now_s = 1000;
+	GithubContext ctx {http, cache, "https://api.github.com/applications/c/token", "c", "s"};
+	CHECK(ValidateTokenViaGithubCheck("t", opts, ctx, nullptr) == VerifyResult::JwksFetchFailed);
 }
 
 TEST_CASE("ValidateTokenViaGithubCheck: transport failure -> JwksFetchFailed", "[github]") {
 	FakeHttp http;
 	http.next_post = std::nullopt;
-	GithubContext ctx {http, "https://api.github.com/applications/c/token", "c", "s"};
-	CHECK(ValidateTokenViaGithubCheck("t", ctx, nullptr) == VerifyResult::JwksFetchFailed);
+	DecisionCache cache(64, 30);
+	VerifyOptions opts;
+	opts.now_s = 1000;
+	GithubContext ctx {http, cache, "https://api.github.com/applications/c/token", "c", "s"};
+	CHECK(ValidateTokenViaGithubCheck("t", opts, ctx, nullptr) == VerifyResult::JwksFetchFailed);
 }
 
 TEST_CASE("ValidateTokenViaGithubCheck: empty token -> Malformed without HTTP", "[github]") {
 	FakeHttp http;
-	GithubContext ctx {http, "https://api.github.com/applications/c/token", "c", "s"};
-	CHECK(ValidateTokenViaGithubCheck("", ctx, nullptr) == VerifyResult::Malformed);
+	DecisionCache cache(64, 30);
+	VerifyOptions opts;
+	opts.now_s = 1000;
+	GithubContext ctx {http, cache, "https://api.github.com/applications/c/token", "c", "s"};
+	CHECK(ValidateTokenViaGithubCheck("", opts, ctx, nullptr) == VerifyResult::Malformed);
 	CHECK(http.post_calls == 0);
 }

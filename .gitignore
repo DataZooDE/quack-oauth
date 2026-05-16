@@ -24,6 +24,7 @@ test/integration/google/oauth_tokeninfo_google.test
 # minus `.example` are committed; the real ones are local only.
 .env.entra
 .env.google
+.env.github
 # GCP service-account JSON keys. Match any *.json file with the
 # google-issued naming pattern, plus the convention `.gcp-key.json`.
 .gcp-key.json

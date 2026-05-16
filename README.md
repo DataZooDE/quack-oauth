@@ -281,13 +281,13 @@ Basic. `tenant_or_realm` is the **App's `client_id`**.
 CREATE SECRET rs (
     TYPE quack_oauth_server,
     tenant_or_realm           'Iv1.abc123...',           -- GitHub App client_id
-    introspect_client_id      'Iv1.abc123...',
     introspect_client_secret  '<github-app-client-secret>',
     audience                  'my-quack-api'
 );
 SET quack_oauth_provider           = 'github';
 SET quack_oauth_server_secret_name = 'rs';
--- The 'github' preset auto-flips validation_mode to 'github_check' (R-S-13).
+-- The 'github' preset auto-flips validation_mode to 'github_check'
+-- and auto-fills introspect_client_id from tenant_or_realm (R-S-13).
 ```
 
 ### Generic (no preset)

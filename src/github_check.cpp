@@ -98,9 +98,25 @@ std::optional<Principal> ParseGithubCheckResponse(std::string_view json) {
 	return p;
 }
 
-VerifyResult ValidateTokenViaGithubCheck(std::string_view token, GithubContext &ctx, Principal *out_principal) {
+VerifyResult ValidateTokenViaGithubCheck(std::string_view token, const VerifyOptions &opts, GithubContext &ctx,
+                                         Principal *out_principal) {
 	if (token.empty())
 		return VerifyResult::Malformed;
+
+	// Short-circuit on cache hit. Cache key is SHA-256 of the token so we
+	// never compare raw tokens (R-N-2). The TTL was capped at the
+	// principal's exp on Store -- but GitHub's check-token response uses
+	// ISO-8601 `expires_at` which we don't parse into unix seconds, so
+	// Principal.exp stays 0 and the cache falls back to the default TTL
+	// (`quack_oauth_introspect_cache_s`, 30s by default). That's a fine
+	// upper bound: a revoked token surfaces as a cache miss within 30s.
+	const auto key = DecisionCache::KeyOf(std::string(token));
+	if (const auto cached = ctx.decision_cache.Lookup(key, opts.now_s)) {
+		if (out_principal != nullptr) {
+			*out_principal = *cached;
+		}
+		return VerifyResult::Ok;
+	}
 
 	IHttpClient::PostRequest req;
 	req.url = ctx.check_url;
@@ -118,14 +134,31 @@ VerifyResult ValidateTokenViaGithubCheck(std::string_view token, GithubContext &
 		return VerifyResult::JwksFetchFailed;
 	if (resp->status_code >= 500)
 		return VerifyResult::JwksFetchFailed;
-	if (resp->status_code == 404)
+	if (resp->status_code == 404) {
+		// 404 = "token not recognised by this OAuth App". This is a
+		// genuine token-level rejection (it wasn't issued by this App or
+		// has been revoked), so the audit-side reason `invalid_signature`
+		// is the right answer for the operator.
 		return VerifyResult::InvalidSignature;
-	if (resp->status_code != 200)
-		return VerifyResult::InvalidSignature;
+	}
+	if (resp->status_code != 200) {
+		// 401 / 403 = the App's own credentials (introspect_client_id /
+		// introspect_client_secret) were rejected by GitHub. That's an
+		// operator configuration bug, NOT a token-level issue -- so we
+		// report it the same way ValidateTokenViaIntrospection reports a
+		// failed introspection call (validator.cpp ~L174): the validator
+		// couldn't determine the token's validity, so it returns
+		// JwksFetchFailed and the audit reason becomes
+		// `jwks_fetch_failed`. That guides operators toward checking
+		// their App credentials rather than chasing tampered-token red
+		// herrings.
+		return VerifyResult::JwksFetchFailed;
+	}
 
 	const auto principal = ParseGithubCheckResponse(resp->body);
 	if (!principal.has_value())
 		return VerifyResult::Malformed;
+	ctx.decision_cache.Store(key, *principal, opts.now_s);
 	if (out_principal != nullptr)
 		*out_principal = *principal;
 	return VerifyResult::Ok;

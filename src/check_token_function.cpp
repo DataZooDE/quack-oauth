@@ -117,8 +117,16 @@ static void ApplyProviderPreset(ClientContext &context, const SecretAccessor &ac
 		cfg.jwks_uri = resolved.jwks_uri;
 	if (cfg.introspection_endpoint.empty())
 		cfg.introspection_endpoint = resolved.introspection_endpoint;
-	if (provider_name == "github" && cfg.mode == "jwks") {
-		cfg.mode = "github_check";
+	if (provider_id == quack_oauth::ProviderId::Github) {
+		// For the github preset, `tenant_or_realm` IS the App's client_id
+		// (same value goes into HTTP Basic auth user against
+		// /applications/{client_id}/token). Default introspect_client_id
+		// to it so users don't have to repeat the value -- removing the
+		// redundancy in the documented SECRET shape.
+		if (cfg.introspect_client_id.empty())
+			cfg.introspect_client_id = tenant_or_realm;
+		if (cfg.mode == "jwks")
+			cfg.mode = "github_check";
 	}
 }
 
@@ -373,6 +381,7 @@ static void ValidateChunk(Vector &tokens, idx_t count, Vector &result, ClientCon
 	} else if (cfg.mode == "github_check") {
 		quack_oauth::GithubContext gctx {
 		    http,
+		    shared_state.decision_cache,
 		    cfg.introspection_endpoint,
 		    cfg.introspect_client_id,
 		    cfg.introspect_client_secret,
@@ -380,7 +389,8 @@ static void ValidateChunk(Vector &tokens, idx_t count, Vector &result, ClientCon
 		RunValidationLoop(tokens, count, result, context, session_ids, opts.now_s, shared_state,
 		                  [&](string &token_str) -> RowValidation {
 			                  RowValidation r;
-			                  r.outcome = quack_oauth::ValidateTokenViaGithubCheck(token_str, gctx, &r.principal);
+			                  r.outcome =
+			                      quack_oauth::ValidateTokenViaGithubCheck(token_str, opts, gctx, &r.principal);
 			                  r.have_principal = r.outcome == quack_oauth::VerifyResult::Ok;
 			                  return r;
 		                  });
