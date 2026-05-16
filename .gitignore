@@ -25,6 +25,10 @@ test/integration/google/oauth_tokeninfo_google.test
 .env.entra
 .env.google
 .env.github
+example/.env.demo
+example/.env.demo.smoke
+example/cache/
+example/**/__pycache__/
 # GCP service-account JSON keys. Match any *.json file with the
 # google-issued naming pattern, plus the convention `.gcp-key.json`.
 .gcp-key.json

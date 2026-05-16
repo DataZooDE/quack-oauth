@@ -1,0 +1,56 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <title>quack-oauth demo · NYC taxi pivot</title>
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <link rel="stylesheet" href="/static/style.css" />
+    <!-- Perspective viewer custom element + plugin styles -->
+    <link
+      rel="stylesheet"
+      crossorigin="anonymous"
+      href="https://cdn.jsdelivr.net/npm/@finos/perspective-viewer@3/dist/css/themes.css"
+    />
+  </head>
+  <body>
+    <header>
+      <h1>NYC yellow-taxi pivot</h1>
+      <div id="status">
+        <span id="principal">not signed in</span>
+        <button id="sign-out" hidden>sign out</button>
+      </div>
+    </header>
+
+    <section id="signin-pane">
+      <p>
+        This is a live demo of <code>quack-oauth</code>: the data on display
+        is hosted by an in-process DuckDB on this machine, served over the
+        <a href="https://duckdb.org/docs/current/quack/overview">quack</a>
+        wire protocol, and gated by your GitHub identity.
+      </p>
+      <p>
+        The browser runs DuckDB-Wasm with the <code>quack</code> and
+        <code>quack_oauth</code> extensions. Authentication uses the GitHub
+        OAuth Web Flow; the resulting user-to-server token is validated on
+        the server via GitHub's <code>/applications/&hellip;/token</code>
+        endpoint.
+      </p>
+      <a id="signin" class="btn" href="/oauth/login">sign in with GitHub</a>
+    </section>
+
+    <section id="app" hidden>
+      <div id="boot-log" class="log"></div>
+      <perspective-viewer id="viewer"></perspective-viewer>
+    </section>
+
+    <footer>
+      <small>
+        <span id="isolation-state"></span>
+        &middot;
+        <a href="https://github.com/DataZooDE/quack-oauth">quack-oauth on GitHub</a>
+      </small>
+    </footer>
+
+    <script type="module" src="/static/app.js"></script>
+  </body>
+</html>

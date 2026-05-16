@@ -1,0 +1,82 @@
+:root {
+  --bg: #0b0d12;
+  --panel: #161922;
+  --ink: #e6e9ef;
+  --dim: #8a92a3;
+  --accent: #ffe066;
+  --good: #58d18a;
+  --bad: #ff6b6b;
+  font-family: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+}
+html, body { height: 100%; margin: 0; background: var(--bg); color: var(--ink); }
+body { display: flex; flex-direction: column; }
+header {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  padding: 12px 24px;
+  border-bottom: 1px solid #2a2f3c;
+}
+header h1 { font-size: 1.1rem; font-weight: 600; margin: 0; letter-spacing: 0.01em; }
+#status { display: flex; gap: 12px; align-items: center; font-size: 0.9rem; color: var(--dim); }
+#principal { color: var(--ink); }
+
+#signin-pane {
+  max-width: 720px;
+  margin: 64px auto;
+  padding: 0 24px;
+  line-height: 1.55;
+}
+#signin-pane p { color: var(--dim); }
+#signin-pane code { color: var(--accent); }
+.btn {
+  display: inline-block;
+  background: var(--accent);
+  color: #1a1a1a;
+  padding: 10px 16px;
+  border-radius: 6px;
+  text-decoration: none;
+  font-weight: 600;
+  margin-top: 16px;
+}
+.btn:hover { filter: brightness(1.1); }
+
+#app { flex: 1; display: flex; flex-direction: column; min-height: 0; }
+.log {
+  font-family: ui-monospace, "JetBrains Mono", Menlo, monospace;
+  font-size: 0.78rem;
+  padding: 8px 24px;
+  color: var(--dim);
+  border-bottom: 1px solid #2a2f3c;
+  max-height: 7em;
+  overflow-y: auto;
+  background: var(--panel);
+}
+.log .ok { color: var(--good); }
+.log .err { color: var(--bad); }
+
+perspective-viewer {
+  flex: 1;
+  min-height: 0;
+  --theme-name: "Pro Dark";
+}
+
+footer {
+  padding: 6px 24px;
+  border-top: 1px solid #2a2f3c;
+  color: var(--dim);
+  font-size: 0.8rem;
+}
+footer a { color: var(--accent); }
+#isolation-state.good { color: var(--good); }
+#isolation-state.bad  { color: var(--bad); }
+
+button#sign-out {
+  background: transparent;
+  color: var(--dim);
+  border: 1px solid #2a2f3c;
+  border-radius: 4px;
+  padding: 3px 8px;
+  cursor: pointer;
+}
+button#sign-out:hover { color: var(--ink); border-color: var(--ink); }
