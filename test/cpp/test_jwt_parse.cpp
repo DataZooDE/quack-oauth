@@ -31,12 +31,31 @@ constexpr const char *kFixtureArrayAudEntra =
     "LCJhdWQiOlsiYXBpOi8vcXVhY2siLCJhcGk6Ly9vdGhlciJdLCJleHAiOjE3MzU2ODk2MDAsInNjcCI6WyJx"
     "dWFjay5yZWFkIiwicXVhY2sud3JpdGUiXX0.sig";
 
+// Header  : {"alg":"RS256","typ":"JWT","kid":"key-3"}
+// Payload : {"sub":"sp-12345","iss":"https://login.microsoftonline.com/tid/v2.0",
+//            "aud":"api://quack","exp":1735689600,
+//            "roles":["quack.access","quack.admin"]}
+//
+// Shape Entra returns for client_credentials (app-only) tokens: NO
+// `scope`/`scp`, just `roles`. Drives the test for the Principal builder
+// merging `roles` into `scopes` so the policy table's `any_scope` predicate
+// can match Entra app roles.
+constexpr const char *kFixtureRolesOnlyEntraAppOnly =
+    "eyJhbGciOiAiUlMyNTYiLCAidHlwIjogIkpXVCIsICJraWQiOiAia2V5LTMifQ."
+    "eyJzdWIiOiAic3AtMTIzNDUiLCAiaXNzIjogImh0dHBzOi8vbG9naW4ubWljcm9zb2Z0b25saW5lLmNvbS90"
+    "aWQvdjIuMCIsICJhdWQiOiAiYXBpOi8vcXVhY2siLCAiZXhwIjogMTczNTY4OTYwMCwgInJvbGVzIjogWyJx"
+    "dWFjay5hY2Nlc3MiLCAicXVhY2suYWRtaW4iXX0.sig";
+
 bool ContainsAudience(const JwtParsed &p, const std::string &needle) {
 	return std::find(p.audience.begin(), p.audience.end(), needle) != p.audience.end();
 }
 
 bool ContainsScope(const JwtParsed &p, const std::string &needle) {
 	return std::find(p.scp.begin(), p.scp.end(), needle) != p.scp.end();
+}
+
+bool ContainsRole(const JwtParsed &p, const std::string &needle) {
+	return std::find(p.roles.begin(), p.roles.end(), needle) != p.roles.end();
 }
 
 } // namespace
@@ -83,6 +102,17 @@ TEST_CASE("ParseJwt extracts Entra-style scp[] array", "[jwt][parse][scope]") {
 	CHECK(ContainsScope(*p, "quack.write"));
 	// scope (space-delimited) is absent on the Entra fixture.
 	CHECK(p->scope.empty());
+}
+
+TEST_CASE("ParseJwt extracts Entra app-only `roles` claim", "[jwt][parse][roles][entra]") {
+	const auto p = ParseJwt(kFixtureRolesOnlyEntraAppOnly);
+	REQUIRE(p.has_value());
+	REQUIRE(p->roles.size() == 2);
+	CHECK(ContainsRole(*p, "quack.access"));
+	CHECK(ContainsRole(*p, "quack.admin"));
+	// App-only tokens don't have scope/scp.
+	CHECK(p->scope.empty());
+	CHECK(p->scp.empty());
 }
 
 TEST_CASE("ParseJwt returns nullopt for malformed tokens", "[jwt][parse][error]") {

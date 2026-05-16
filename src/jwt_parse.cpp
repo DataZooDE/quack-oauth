@@ -69,6 +69,19 @@ static void ExtractScopes(const jwt::decoded_jwt<TraitsT> &decoded, JwtParsed &o
 			}
 		}
 	}
+	// `roles` (Entra app roles, Auth0 RBAC): array of strings. Required
+	// for client_credentials flows -- those tokens carry NO `scope`/`scp`,
+	// only `roles` from the App registration's "App roles" definitions.
+	if (decoded.has_payload_claim("roles")) {
+		const auto claim = decoded.get_payload_claim("roles");
+		if (claim.get_type() == jwt::json::type::array) {
+			for (const auto &v : claim.as_array()) {
+				if (v.is<std::string>()) {
+					out.roles.push_back(v.get<std::string>());
+				}
+			}
+		}
+	}
 }
 
 std::optional<JwtParsed> ParseJwt(std::string_view token) {

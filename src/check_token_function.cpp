@@ -175,7 +175,10 @@ static ServerConfig LoadServerConfig(ClientContext &context) {
 }
 
 // (cont'd) Build a Principal from a parsed JWT for the authz path.
-// `scope` (space-delimited) and `scp[]` are merged into a single vector.
+// `scope` (space-delimited), `scp[]` (Microsoft delegated) and `roles[]`
+// (Entra app roles / Auth0 RBAC) are merged into a single vector. The
+// policy table's `any_scope` predicate then matches either OAuth scopes
+// or app roles uniformly.
 static quack_oauth::Principal PrincipalFromJwt(const quack_oauth::JwtParsed &jwt) {
 	quack_oauth::Principal p;
 	p.subject = jwt.subject;
@@ -195,6 +198,9 @@ static quack_oauth::Principal PrincipalFromJwt(const quack_oauth::JwtParsed &jwt
 	}
 	for (const auto &s : jwt.scp) {
 		p.scopes.push_back(s);
+	}
+	for (const auto &r : jwt.roles) {
+		p.scopes.push_back(r);
 	}
 	return p;
 }

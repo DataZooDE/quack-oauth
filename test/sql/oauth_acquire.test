@@ -43,6 +43,36 @@ SELECT quack_oauth_acquire('does_not_exist');
 ----
 SECRET 'does_not_exist' not found
 
+# 3b. Cold-acquire path (regression for the sub-Connection re-read bug):
+# A SECRET with client_id + client_secret + token_endpoint but no cached
+# access_token triggers the ClientCredentials flow. Before the fix that
+# routed acquire's flow calls through `Connection.Query(...)`, the inner
+# Connection's persisted SECRET write was not visible to the outer
+# context's re-read, and acquire surfaced
+# "quack_oauth_login completed but no access_token was persisted".
+#
+# Now that acquire calls DoLogin in-process, the failure surfaces as a
+# clean IOException from the HTTP layer (the test endpoint is
+# unresolvable on purpose). Crucially: the error message must NOT be
+# the "completed but no access_token persisted" string -- that would
+# mean the sub-Connection bug came back.
+statement ok
+CREATE SECRET cli_cold (
+    TYPE quack_oauth,
+    token_endpoint 'https://idp.nonexistent.invalid/token',
+    client_id 'cli',
+    client_secret 'shh',
+    scope 'api://foo/.default'
+);
+
+statement error
+SELECT quack_oauth_acquire('cli_cold');
+----
+did not return a valid response
+
+statement ok
+DROP SECRET cli_cold;
+
 # 4. Wrong SECRET type → clear error.
 statement ok
 CREATE SECRET srv (

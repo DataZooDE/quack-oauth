@@ -34,6 +34,12 @@ struct JwtParsed {
 	// can normalise without re-parsing.
 	std::string scope;
 	std::vector<std::string> scp;
+
+	// App-role claims from the `roles` array. Used by Entra client_credentials
+	// flows (where the JWT carries no `scope`/`scp` -- only `roles`) and by
+	// Auth0-style RBAC. The Principal builder merges these into `scopes` so
+	// policy rules can match either delegated scopes or app roles uniformly.
+	std::vector<std::string> roles;
 };
 
 // Decode a compact-serialized JWT (`header.payload.signature`).
