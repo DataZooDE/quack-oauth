@@ -97,6 +97,11 @@ static unique_ptr<FunctionData> DiagnoseBind(ClientContext &context, TableFuncti
 	// R-N-13 IdP reachability: live GET on jwks_uri (or introspection_endpoint
 	// when there's no JWKS, e.g. GitHub). No-op when there's no configured
 	// SECRET -- emits an `unconfigured` row.
+	//
+	// On WASM the network-touching `DuckdbHttpClient` is excluded from the
+	// build (it's in DUCKDB_NATIVE_ONLY_SOURCES), so the probe itself can't
+	// run. We still emit a row so `diagnose()`'s output shape is stable
+	// across builds; the status just reports the path is unavailable.
 	{
 		const auto secret_name = ReadSetting(context, "quack_oauth_server_secret_name");
 		auto accessor = TryOpenSecret(context, secret_name, "quack_oauth_server");
@@ -105,11 +110,12 @@ static unique_ptr<FunctionData> DiagnoseBind(ClientContext &context, TableFuncti
 			probe_uri = accessor.Get("introspection_endpoint");
 		}
 
+		std::ostringstream detail;
+#ifndef EMSCRIPTEN
 		DuckdbHttpClient base_http;
 		quack_oauth::RetryingHttpClient http(base_http, /*max_retries=*/0);
 		const auto probe = quack_oauth::ProbeIdpReachability(http, probe_uri);
 
-		std::ostringstream detail;
 		if (probe.probed_uri.empty()) {
 			Append(detail, "uri", "(none)");
 		} else {
@@ -119,6 +125,19 @@ static unique_ptr<FunctionData> DiagnoseBind(ClientContext &context, TableFuncti
 			Append(detail, "http_status", std::to_string(probe.http_status));
 		}
 		data->rows.push_back({"idp_reachability", quack_oauth::StatusName(probe.status), detail.str()});
+#else
+		// Wasm clients let the host page own the network. Surface the
+		// configured probe URI for visibility but report status as
+		// `skipped_wasm` so operators can tell at a glance why no
+		// http_status is attached.
+		if (probe_uri.empty()) {
+			Append(detail, "uri", "(none)");
+		} else {
+			Append(detail, "uri", probe_uri);
+		}
+		Append(detail, "reason", "network probe excluded from wasm build");
+		data->rows.push_back({"idp_reachability", "skipped_wasm", detail.str()});
+#endif
 	}
 
 	// 5. Audit ring: count + decision split
