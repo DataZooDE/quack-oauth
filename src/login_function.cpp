@@ -81,7 +81,7 @@ void RegisterQuackOauthLogin(ExtensionLoader &loader) {
 	                   "named quack_oauth SECRET. POSTs the SECRET's token_endpoint with "
 	                   "grant_type=client_credentials, persists the resulting access_token, "
 	                   "refresh_token (if any), and expires_at back onto the SECRET, and returns the "
-	                   "access token. Use for machine-to-machine (service account) flows.";
+	                   "ISO-8601 expires_at timestamp. Use for machine-to-machine (service account) flows.";
 	desc.parameter_names = {"secret_name"};
 	desc.parameter_types = {LogicalType::VARCHAR};
 	desc.examples = {"SELECT quack_oauth_login('my_client_secret')"};

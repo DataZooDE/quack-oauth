@@ -37,6 +37,20 @@ SELECT quack_oauth_acquire('cli_empty');
 ----
 SECRET 'cli_empty' is unconfigured
 
+# Malformed cached expiry is treated as unknown/stale, not as a parser
+# exception escaping from the ISO timestamp helper.
+statement ok
+CREATE SECRET cli_bad_expiry (
+    TYPE quack_oauth,
+    access_token 'eyJ-stale-token',
+    expires_at 'not-a-timestamp'
+);
+
+statement error
+SELECT quack_oauth_acquire('cli_bad_expiry');
+----
+SECRET 'cli_bad_expiry' is unconfigured
+
 # 3. Unknown SECRET → clear error.
 statement error
 SELECT quack_oauth_acquire('does_not_exist');

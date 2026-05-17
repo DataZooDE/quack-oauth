@@ -2,6 +2,7 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <list>
 #include <optional>
 #include <string>
 #include <unordered_map>
@@ -50,7 +51,7 @@ struct JwksLookup {
 // deterministic in tests.
 class JwksCache {
 public:
-	explicit JwksCache(std::int64_t min_refresh_s);
+	explicit JwksCache(std::int64_t min_refresh_s, std::size_t max_entries = 1000);
 
 	// Look up a kid. Does not mutate the cache.
 	JwksLookup Lookup(const std::string &kid, std::int64_t now_s) const;
@@ -64,17 +65,23 @@ public:
 	void OnFetchMiss(const std::string &kid, std::int64_t now_s);
 
 	std::size_t Size() const noexcept;
+	std::size_t MissSize() const noexcept;
 
 private:
 	struct Entry {
 		Jwk jwk;
 		std::int64_t fetched_at_s = 0;
+		std::list<std::string>::iterator lru_it;
 	};
 	struct MissEntry {
 		std::int64_t recorded_at_s = 0;
+		std::list<std::string>::iterator lru_it;
 	};
 
 	std::int64_t min_refresh_s_;
+	std::size_t max_entries_;
+	std::list<std::string> hit_lru_;
+	std::list<std::string> miss_lru_;
 	std::unordered_map<std::string, Entry> hits_;
 	std::unordered_map<std::string, MissEntry> misses_;
 };

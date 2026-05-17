@@ -27,10 +27,15 @@ namespace duckdb {
 // resulting Principal keyed by quack's session_id. The companion
 // `quack_oauth_check_authorization(session_id, query_string)` looks it up
 // to apply the policy.
+struct SessionPrincipal {
+	quack_oauth::Principal principal;
+	int64_t updated_at_s = 0;
+};
+
 struct QuackOauthState {
 	quack_oauth::JwksCache jwks_cache;
 	quack_oauth::DecisionCache decision_cache;
-	std::unordered_map<string, quack_oauth::Principal> session_principals;
+	std::unordered_map<string, SessionPrincipal> session_principals;
 	quack_oauth::AuditRing audit_ring;
 	std::mutex mu;
 

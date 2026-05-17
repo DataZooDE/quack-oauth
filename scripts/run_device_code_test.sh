@@ -44,7 +44,7 @@ CREATE SECRET cli (
     token_endpoint                '$TOKEN_URL',
     client_id                     '$DEVICE_CLIENT_ID'
 );
-SELECT length(quack_oauth_device_login('cli')) > 0 AS got_token;
+SELECT length(quack_oauth_device_login('cli')) > 0 AS got_expires_at;
 SQL
     echo $! > "$TMPDIR_S17/duckdb.pid"
     wait

@@ -3,6 +3,7 @@
 #include <chrono>
 #include <cstdint>
 #include <mutex>
+#include <thread>
 #include <string>
 
 #include "duckdb/common/exception.hpp"
@@ -278,13 +279,68 @@ struct RowValidation {
 	quack_oauth::Principal principal;
 };
 
+class UnlockingHttpClient : public quack_oauth::IHttpClient {
+public:
+	UnlockingHttpClient(quack_oauth::IHttpClient &inner, std::unique_lock<std::mutex> &guard)
+	    : inner_(inner), guard_(guard) {
+	}
+
+	std::optional<Response> Get(std::string_view url) override {
+		guard_.unlock();
+		try {
+			auto result = inner_.Get(url);
+			guard_.lock();
+			return result;
+		} catch (...) {
+			guard_.lock();
+			throw;
+		}
+	}
+
+	std::optional<Response> Post(const PostRequest &req) override {
+		guard_.unlock();
+		try {
+			auto result = inner_.Post(req);
+			guard_.lock();
+			return result;
+		} catch (...) {
+			guard_.lock();
+			throw;
+		}
+	}
+
+private:
+	quack_oauth::IHttpClient &inner_;
+	std::unique_lock<std::mutex> &guard_;
+};
+
+static void StoreSessionPrincipal(QuackOauthState &shared_state, const string &sid,
+                                  const quack_oauth::Principal &principal, int64_t now_s) {
+	static constexpr std::size_t kMaxSessionPrincipals = 1000;
+	shared_state.session_principals[sid] = SessionPrincipal {principal, now_s};
+	while (shared_state.session_principals.size() > kMaxSessionPrincipals) {
+		auto victim = shared_state.session_principals.begin();
+		for (auto it = shared_state.session_principals.begin(); it != shared_state.session_principals.end(); ++it) {
+			const auto victim_exp = victim->second.principal.exp;
+			const auto it_exp = it->second.principal.exp;
+			if ((it_exp > 0 && victim_exp <= 0) ||
+			    (it_exp > 0 && victim_exp > 0 && it_exp < victim_exp) ||
+			    (it_exp == victim_exp && it->second.updated_at_s < victim->second.updated_at_s)) {
+				victim = it;
+			}
+		}
+		shared_state.session_principals.erase(victim);
+	}
+}
+
 // Drive a chunk through a per-row validator. Centralises the boilerplate
 // (UnifiedVectorFormat parallel iteration, principal caching, audit
 // emission, R-N-3 secure scrub) that was previously copy-pasted across
 // 4 modes × 2 (with/without session_ids).
 template <class Fn>
 static void RunValidationLoop(Vector &tokens, idx_t count, Vector &result, ClientContext &context, Vector *session_ids,
-                              int64_t now_s, QuackOauthState &shared_state, Fn &&validate_row) {
+                              int64_t now_s, QuackOauthState &shared_state, std::unique_lock<std::mutex> &guard,
+                              Fn &&validate_row) {
 	if (session_ids != nullptr) {
 		UnifiedVectorFormat tok_format;
 		UnifiedVectorFormat sid_format;
@@ -297,16 +353,22 @@ static void RunValidationLoop(Vector &tokens, idx_t count, Vector &result, Clien
 		for (idx_t i = 0; i < count; ++i) {
 			const auto tok_idx = tok_format.sel->get_index(i);
 			const auto sid_idx = sid_format.sel->get_index(i);
+			if (!tok_format.validity.RowIsValid(tok_idx) || !sid_format.validity.RowIsValid(sid_idx)) {
+				FlatVector::Validity(result).SetInvalid(i);
+				continue;
+			}
 			auto token_str = tok_data[tok_idx].GetString();
 			const auto sid_str = sid_data[sid_idx].GetString();
 			const auto row = validate_row(token_str);
 			const bool ok = row.outcome == quack_oauth::VerifyResult::Ok;
 			out_data[i] = ok;
 			if (ok && row.have_principal && !sid_str.empty()) {
-				shared_state.session_principals[sid_str] = row.principal;
+				StoreSessionPrincipal(shared_state, sid_str, row.principal, now_s);
 			}
+			guard.unlock();
 			EmitTokenAudit(context, token_str, row.outcome, now_s,
 			               (ok && row.have_principal) ? &row.principal : nullptr);
+			guard.lock();
 			quack_oauth::SecureScrub(token_str); // R-N-3
 		}
 	} else {
@@ -314,8 +376,10 @@ static void RunValidationLoop(Vector &tokens, idx_t count, Vector &result, Clien
 			auto token_str = token.GetString();
 			const auto row = validate_row(token_str);
 			const bool ok = row.outcome == quack_oauth::VerifyResult::Ok;
+			guard.unlock();
 			EmitTokenAudit(context, token_str, row.outcome, now_s,
 			               (ok && row.have_principal) ? &row.principal : nullptr);
+			guard.lock();
 			quack_oauth::SecureScrub(token_str); // R-N-3
 			return ok;
 		});
@@ -342,9 +406,15 @@ static void ValidateChunk(Vector &tokens, idx_t count, Vector &result, ClientCon
 	auto &shared_state = GetQuackOauthState();
 	// R-N-7: wrap with one retry on transient failure (5xx / transport).
 	DuckdbHttpClient base_http;
-	quack_oauth::RetryingHttpClient http(base_http);
 
-	std::lock_guard<std::mutex> guard(shared_state.mu);
+	std::unique_lock<std::mutex> guard(shared_state.mu);
+	UnlockingHttpClient unlocking_http(base_http, guard);
+	quack_oauth::RetryingHttpClient http(unlocking_http, /*max_retries=*/1, std::chrono::milliseconds(1000),
+	                                      [&](std::chrono::milliseconds delay) {
+		                                      guard.unlock();
+		                                      std::this_thread::sleep_for(delay);
+		                                      guard.lock();
+	                                      });
 
 	if (cfg.mode == "introspect") {
 		quack_oauth::IntrospectContext ictx {
@@ -356,7 +426,7 @@ static void ValidateChunk(Vector &tokens, idx_t count, Vector &result, ClientCon
 		    cfg.issuer,
 		    cfg.audience,
 		};
-		RunValidationLoop(tokens, count, result, context, session_ids, opts.now_s, shared_state,
+		RunValidationLoop(tokens, count, result, context, session_ids, opts.now_s, shared_state, guard,
 		                  [&](string &token_str) -> RowValidation {
 			                  RowValidation r;
 			                  r.outcome =
@@ -371,7 +441,7 @@ static void ValidateChunk(Vector &tokens, idx_t count, Vector &result, ClientCon
 		    cfg.introspection_endpoint,
 		    cfg.audience,
 		};
-		RunValidationLoop(tokens, count, result, context, session_ids, opts.now_s, shared_state,
+		RunValidationLoop(tokens, count, result, context, session_ids, opts.now_s, shared_state, guard,
 		                  [&](string &token_str) -> RowValidation {
 			                  RowValidation r;
 			                  r.outcome = quack_oauth::ValidateTokenViaTokeninfo(token_str, opts, tctx, &r.principal);
@@ -386,7 +456,7 @@ static void ValidateChunk(Vector &tokens, idx_t count, Vector &result, ClientCon
 		    cfg.introspect_client_id,
 		    cfg.introspect_client_secret,
 		};
-		RunValidationLoop(tokens, count, result, context, session_ids, opts.now_s, shared_state,
+		RunValidationLoop(tokens, count, result, context, session_ids, opts.now_s, shared_state, guard,
 		                  [&](string &token_str) -> RowValidation {
 			                  RowValidation r;
 			                  r.outcome =
@@ -396,7 +466,7 @@ static void ValidateChunk(Vector &tokens, idx_t count, Vector &result, ClientCon
 		                  });
 	} else { // jwks
 		quack_oauth::ValidateContext vctx {http, shared_state.jwks_cache, cfg.jwks_uri};
-		RunValidationLoop(tokens, count, result, context, session_ids, opts.now_s, shared_state,
+		RunValidationLoop(tokens, count, result, context, session_ids, opts.now_s, shared_state, guard,
 		                  [&](string &token_str) -> RowValidation {
 			                  RowValidation r;
 			                  r.outcome = quack_oauth::ValidateToken(token_str, opts, vctx);

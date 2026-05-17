@@ -1,5 +1,6 @@
 #include "audit_sink.hpp"
 
+#include <mutex>
 #include <sstream>
 
 #include "duckdb/common/types/value.hpp"
@@ -79,8 +80,12 @@ static bool IsDenialEvent(quack_oauth::AuditEventType t) {
 }
 
 void EmitAuditEvent(ClientContext &context, const quack_oauth::AuditEvent &event) {
-	// Sink 1: in-memory ring (assumed: caller holds the state mutex).
-	GetQuackOauthState().audit_ring.Push(event);
+	// Sink 1: in-memory ring.
+	{
+		auto &state = GetQuackOauthState();
+		std::lock_guard<std::mutex> guard(state.mu);
+		state.audit_ring.Push(event);
+	}
 
 	// Sink 2: DuckDB Logger. Denials at WARNING, accepts/allows at INFO.
 	const auto line = quack_oauth::FormatAuditLine(event);

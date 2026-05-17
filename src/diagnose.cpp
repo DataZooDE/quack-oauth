@@ -284,12 +284,13 @@ static unique_ptr<FunctionData> CurrentPrincipalBind(ClientContext &, TableFunct
 	std::lock_guard<std::mutex> guard(state.mu);
 	data->rows.reserve(state.session_principals.size());
 	for (const auto &kv : state.session_principals) {
+		const auto &principal = kv.second.principal;
 		PrincipalRow row;
 		row.session_id = kv.first;
-		row.subject = kv.second.subject;
-		row.issuer = kv.second.issuer;
-		row.scopes.assign(kv.second.scopes.begin(), kv.second.scopes.end());
-		row.exp = kv.second.exp;
+		row.subject = principal.subject;
+		row.issuer = principal.issuer;
+		row.scopes.assign(principal.scopes.begin(), principal.scopes.end());
+		row.exp = principal.exp;
 		data->rows.push_back(std::move(row));
 	}
 	return std::move(data);

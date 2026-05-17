@@ -59,7 +59,6 @@ static int64_t LookupClockSkew(ClientContext &context) {
 static void CheckAuthorizationScalarFun(DataChunk &args, ExpressionState &state, Vector &result) {
 	auto &context = state.GetContext();
 	auto &shared_state = GetQuackOauthState();
-	std::lock_guard<std::mutex> guard(shared_state.mu);
 
 	// Resolve the policy once per chunk: same SECRET applies to every row.
 	// If policy_table is set but the query fails (table missing, wrong
@@ -97,20 +96,32 @@ static void CheckAuthorizationScalarFun(DataChunk &args, ExpressionState &state,
 		    // We log the action + reason instead so operators can audit policy
 		    // outcomes without seeing user SQL in clear text.
 
-		    const auto it = shared_state.session_principals.find(sid);
-		    if (it == shared_state.session_principals.end()) {
+		    quack_oauth::Principal principal;
+		    bool found_session = false;
+		    {
+			    std::lock_guard<std::mutex> guard(shared_state.mu);
+			    const auto it = shared_state.session_principals.find(sid);
+			    if (it != shared_state.session_principals.end()) {
+				    principal = it->second.principal;
+				    found_session = true;
+			    }
+		    }
+		    if (!found_session) {
 			    e.event_type = quack_oauth::AuditEventType::AuthzDeny;
 			    e.reason = "unknown session";
 			    EmitAuditEvent(context, e);
 			    return false;
 		    }
-		    e.subject = it->second.subject;
-		    e.issuer = it->second.issuer;
+		    e.subject = principal.subject;
+		    e.issuer = principal.issuer;
 		    // R-S-9: every check_authorization re-evaluates token validity.
 		    // The principal cache from check_token gives us `exp`; if the
 		    // wall clock is past it (plus skew), drop the entry and deny.
-		    if (quack_oauth::IsPrincipalExpired(it->second, now_s, clock_skew_s)) {
-			    shared_state.session_principals.erase(it);
+		    if (quack_oauth::IsPrincipalExpired(principal, now_s, clock_skew_s)) {
+			    {
+				    std::lock_guard<std::mutex> guard(shared_state.mu);
+				    shared_state.session_principals.erase(sid);
+			    }
 			    e.event_type = quack_oauth::AuditEventType::AuthzDeny;
 			    e.reason = "principal expired";
 			    EmitAuditEvent(context, e);
@@ -133,8 +144,8 @@ static void CheckAuthorizationScalarFun(DataChunk &args, ExpressionState &state,
 			    return false;
 		    }
 		    const auto outcome = policy.has_value()
-		                             ? quack_oauth::EvaluatePolicy(*policy, it->second, request)
-		                             : quack_oauth::EvaluateDefaultPolicy(it->second, request.action);
+		                             ? quack_oauth::EvaluatePolicy(*policy, principal, request)
+		                             : quack_oauth::EvaluateDefaultPolicy(principal, request.action);
 		    const bool allow = outcome.decision == quack_oauth::Decision::Allow;
 		    e.event_type = allow ? quack_oauth::AuditEventType::AuthzAllow : quack_oauth::AuditEventType::AuthzDeny;
 		    e.reason = outcome.reason;

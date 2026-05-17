@@ -14,15 +14,22 @@
 #include <openssl/pem.h>
 
 #include "http_client.hpp"
+#include "decision_cache.hpp"
 #include "jwks_cache.hpp"
 #include "jwt_verify.hpp"
 #include "validator.hpp"
 
+using quack_oauth::DecisionCache;
 using quack_oauth::IHttpClient;
+using quack_oauth::IntrospectContext;
 using quack_oauth::Jwk;
 using quack_oauth::JwksCache;
+using quack_oauth::Principal;
+using quack_oauth::TokeninfoContext;
 using quack_oauth::ValidateContext;
 using quack_oauth::ValidateToken;
+using quack_oauth::ValidateTokenViaIntrospection;
+using quack_oauth::ValidateTokenViaTokeninfo;
 using quack_oauth::VerifyOptions;
 using quack_oauth::VerifyResult;
 
@@ -130,11 +137,17 @@ public:
 	int call_count = 0;
 	std::optional<Response> next_response;
 	std::optional<std::string> last_url;
+	int post_call_count = 0;
 
 	std::optional<Response> Get(std::string_view url) override {
 		++call_count;
 		last_url = std::string(url);
 		return next_response;
+	}
+
+	std::optional<Response> Post(const PostRequest &) override {
+		++post_call_count;
+		return std::nullopt;
 	}
 };
 
@@ -256,4 +269,48 @@ TEST_CASE("Validator: malformed token rejected before any cache access", "[valid
 
 	CHECK(ValidateToken("not-a-jwt", BaseOpts(), ctx) == VerifyResult::Malformed);
 	CHECK(http.call_count == 0);
+}
+
+TEST_CASE("Validator: tokeninfo cache hit returns cached Principal", "[validator][tokeninfo][cache-hit]") {
+	DecisionCache cache(64, 30);
+	const auto key = DecisionCache::KeyOf("opaque-token");
+	Principal cached;
+	cached.subject = "cached-sub";
+	cached.issuer = "https://accounts.google.com";
+	cached.scopes = {"scope-a"};
+	cached.exp = 1700003600;
+	cache.Store(key, cached, 1700000000);
+
+	FakeHttpClient http;
+	TokeninfoContext ctx {http, cache, "https://oauth2.googleapis.com/tokeninfo", ""};
+
+	Principal out;
+	CHECK(ValidateTokenViaTokeninfo("opaque-token", BaseOpts(), ctx, &out) == VerifyResult::Ok);
+	CHECK(http.post_call_count == 0);
+	CHECK(out.subject == "cached-sub");
+	CHECK(out.issuer == "https://accounts.google.com");
+	REQUIRE(out.scopes.size() == 1);
+	CHECK(out.scopes[0] == "scope-a");
+}
+
+TEST_CASE("Validator: introspection cache hit returns cached Principal", "[validator][introspect][cache-hit]") {
+	DecisionCache cache(64, 30);
+	const auto key = DecisionCache::KeyOf("opaque-token");
+	Principal cached;
+	cached.subject = "cached-sub";
+	cached.issuer = "https://idp.test";
+	cached.scopes = {"quack:read"};
+	cached.exp = 1700003600;
+	cache.Store(key, cached, 1700000000);
+
+	FakeHttpClient http;
+	IntrospectContext ctx {http, cache, "https://idp.test/introspect", "client", "secret", "https://idp.test", ""};
+
+	Principal out;
+	CHECK(ValidateTokenViaIntrospection("opaque-token", BaseOpts(), ctx, &out) == VerifyResult::Ok);
+	CHECK(http.post_call_count == 0);
+	CHECK(out.subject == "cached-sub");
+	CHECK(out.issuer == "https://idp.test");
+	REQUIRE(out.scopes.size() == 1);
+	CHECK(out.scopes[0] == "quack:read");
 }

@@ -29,12 +29,20 @@ static int64_t ParseIso8601ToUnixSeconds(const string &iso) {
 	if (iso.size() < 20 || iso[10] != 'T' || iso[19] != 'Z')
 		return 0;
 	std::tm tm_buf {};
-	tm_buf.tm_year = std::stoi(iso.substr(0, 4)) - 1900;
-	tm_buf.tm_mon = std::stoi(iso.substr(5, 2)) - 1;
-	tm_buf.tm_mday = std::stoi(iso.substr(8, 2));
-	tm_buf.tm_hour = std::stoi(iso.substr(11, 2));
-	tm_buf.tm_min = std::stoi(iso.substr(14, 2));
-	tm_buf.tm_sec = std::stoi(iso.substr(17, 2));
+	try {
+		tm_buf.tm_year = std::stoi(iso.substr(0, 4)) - 1900;
+		tm_buf.tm_mon = std::stoi(iso.substr(5, 2)) - 1;
+		tm_buf.tm_mday = std::stoi(iso.substr(8, 2));
+		tm_buf.tm_hour = std::stoi(iso.substr(11, 2));
+		tm_buf.tm_min = std::stoi(iso.substr(14, 2));
+		tm_buf.tm_sec = std::stoi(iso.substr(17, 2));
+	} catch (...) {
+		return 0;
+	}
+	if (tm_buf.tm_mon < 0 || tm_buf.tm_mon > 11 || tm_buf.tm_mday < 1 || tm_buf.tm_mday > 31 || tm_buf.tm_hour < 0 ||
+	    tm_buf.tm_hour > 23 || tm_buf.tm_min < 0 || tm_buf.tm_min > 59 || tm_buf.tm_sec < 0 || tm_buf.tm_sec > 60) {
+		return 0;
+	}
 	// timegm is POSIX-only; do the conversion manually using days since
 	// epoch. The Y-2038 problem is irrelevant for our 64-bit return.
 	static constexpr int kDaysBeforeMonth[] = {0, 31, 59, 90, 120, 151, 181, 212, 243, 273, 304, 334};

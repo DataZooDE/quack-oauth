@@ -120,3 +120,27 @@ TEST_CASE("JwksCache: re-fetching the same kid overwrites the cached JWK", "[jwk
 	CHECK(r.jwk->n == "rotated-modulus");
 	CHECK(cache.Size() == 1);
 }
+
+TEST_CASE("JwksCache: successful fetches are bounded by capacity", "[jwks][cache][capacity]") {
+	JwksCache cache(kRefresh, /*max_entries=*/2);
+	cache.OnFetchSuccess(MakeRsaJwk("k1"), 0);
+	cache.OnFetchSuccess(MakeRsaJwk("k2"), 1);
+	cache.OnFetchSuccess(MakeRsaJwk("k3"), 2);
+
+	CHECK(cache.Size() == 2);
+	CHECK(cache.Lookup("k1", 3).status == JwksLookupStatus::Miss);
+	CHECK(cache.Lookup("k2", 3).status == JwksLookupStatus::Hit);
+	CHECK(cache.Lookup("k3", 3).status == JwksLookupStatus::Hit);
+}
+
+TEST_CASE("JwksCache: miss rate-limit entries are bounded by capacity", "[jwks][cache][capacity]") {
+	JwksCache cache(kRefresh, /*max_entries=*/2);
+	cache.OnFetchMiss("k1", 0);
+	cache.OnFetchMiss("k2", 1);
+	cache.OnFetchMiss("k3", 2);
+
+	CHECK(cache.MissSize() == 2);
+	CHECK(cache.Lookup("k1", 3).status == JwksLookupStatus::Miss);
+	CHECK(cache.Lookup("k2", 3).status == JwksLookupStatus::RateLimited);
+	CHECK(cache.Lookup("k3", 3).status == JwksLookupStatus::RateLimited);
+}

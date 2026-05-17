@@ -67,6 +67,13 @@ SELECT quack_oauth_check_token('session-abc', 'not-a-jwt', 'server-psk');
 ----
 false
 
+# NULLs on the manual 3-arg vector path must propagate as SQL NULL rather
+# than reading undefined string payloads from the vector.
+query I
+SELECT quack_oauth_check_token('session-null', NULL, 'server-psk') IS NULL;
+----
+true
+
 # HS256 token -- the 3-arg path goes through the same DisallowedAlgorithm
 # branch the 1-arg path takes (R-S-3); no HTTP touched.
 query I

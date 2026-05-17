@@ -161,7 +161,7 @@ Runs an RFC 6749 §4.4 `client_credentials` grant. POSTs the SECRET's
 `token_endpoint` with `grant_type=client_credentials` (plus `scope` if
 present), parses the JSON response, **persists** `access_token`,
 `refresh_token` (if returned), and `expires_at` (UTC ISO 8601) back
-onto the SECRET, and returns the access token.
+onto the SECRET, and returns the new `expires_at` timestamp.
 
 Use for machine-to-machine (service-account) flows.
 
@@ -188,7 +188,8 @@ SELECT quack_oauth_login('cli');
 
 Runs an RFC 6749 §6 `refresh_token` grant. POSTs `grant_type=refresh_token`,
 persists the rotated `access_token` + `refresh_token` (if rotated) + new
-`expires_at` back onto the SECRET, and returns the new access token.
+`expires_at` back onto the SECRET, and returns the new `expires_at`
+timestamp.
 Public and confidential clients both supported.
 
 ```sql
@@ -215,7 +216,7 @@ Runs the full RFC 8628 device authorization flow:
    honouring RFC 8628 §3.5 errors (`authorization_pending`, `slow_down`
    back-off, `access_denied`, `expired_token`).
 4. On success, persist `access_token` + `refresh_token` + `expires_at`
-   back onto the SECRET and return the access token.
+   back onto the SECRET and return the new `expires_at` timestamp.
 
 Use for interactive authentication on input-constrained devices.
 

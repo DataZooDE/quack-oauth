@@ -107,6 +107,9 @@ VerifyResult ValidateTokenViaTokeninfo(std::string_view token, const VerifyOptio
 
 	const auto key = DecisionCache::KeyOf(std::string(token));
 	if (const auto cached = ctx.decision_cache.Lookup(key, opts.now_s)) {
+		if (out_principal != nullptr) {
+			*out_principal = *cached;
+		}
 		return VerifyResult::Ok;
 	}
 
@@ -167,6 +170,9 @@ VerifyResult ValidateTokenViaIntrospection(std::string_view token, const VerifyO
 	// path target). Keyed on sha256(token); TTL was capped at exp on Store.
 	const auto key = DecisionCache::KeyOf(std::string(token));
 	if (const auto cached = ctx.decision_cache.Lookup(key, opts.now_s)) {
+		if (out_principal != nullptr) {
+			*out_principal = *cached;
+		}
 		return VerifyResult::Ok;
 	}
 
