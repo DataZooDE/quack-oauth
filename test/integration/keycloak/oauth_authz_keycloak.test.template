@@ -60,12 +60,12 @@ SELECT quack_oauth_check_authorization('sess-1', 'SELECT * FROM t');
 ----
 false
 
-# 4. Action routing exercise (S-13c): different query shapes route to
-#    different Actions, but all deny because the principal lacks the
-#    write-class scope `quack:write` per R-S-8. We verify that the
-#    DetectAction path runs by hitting each shape; a SQL-table policy
-#    (see oauth_policy_table_keycloak.test) distinguishes allow/deny
-#    by action.
+# 4. Action routing exercise (S-13e): different query shapes route to
+#    different Actions via the parser-driven InspectSql, but all deny
+#    because the principal lacks the write-class scope `quack:write`
+#    per R-S-8. We verify that the parser path runs by hitting each
+#    shape; a SQL-table policy (see oauth_policy_table_keycloak.test)
+#    distinguishes allow/deny by action / object / column.
 query I
 SELECT quack_oauth_check_authorization('sess-1', 'ATTACH ''quack:rs'' AS r');
 ----

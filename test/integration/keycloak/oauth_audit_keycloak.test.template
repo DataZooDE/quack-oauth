@@ -63,7 +63,8 @@ SELECT count(*) >= 1 FROM quack_audit WHERE event_type = 'token_accepted';
 true
 
 # An authz_deny row exists for the denied SELECT. Action gets classified
-# as Scan by DetectAction; reason names the missing scope (default policy).
+# as Scan by the parser-driven InspectSql; reason names the missing
+# scope (default policy).
 query I
 SELECT count(*) >= 1 FROM quack_audit
 WHERE event_type = 'authz_deny' AND action = 'Scan' AND reason LIKE '%quack:read%';

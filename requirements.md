@@ -130,30 +130,50 @@ Requirements use the convention **MUST / SHOULD / MAY** (RFC 2119).
   table is named per resource-server via the `policy_table` field on
   the `quack_oauth_server` SECRET; the fallback decision when no rule
   matches is controlled by the `quack_oauth_policy_default` setting
-  (default `'deny'`). The expected table schema is:
+  (default `'deny'`). The full table schema is:
   ```
   CREATE TABLE <policy_table> (
-      priority  INTEGER NOT NULL,        -- ASC, first match wins
-      subject   VARCHAR,                 -- NULL = any subject
-      any_scope VARCHAR[],               -- NULL/[] = any scope
-      actions   VARCHAR[],               -- NULL/[] = any action
-      allow     BOOLEAN NOT NULL
+      priority       INTEGER NOT NULL,   -- ASC, first match wins
+      subject        VARCHAR,            -- NULL = any subject
+      any_scope      VARCHAR[],          -- NULL/[] = any scope
+      actions        VARCHAR[],          -- NULL/[] = any action
+      object_pattern VARCHAR,            -- NULL = any object; glob: 'main.*'
+      column_pattern VARCHAR,            -- NULL = any column; glob: 'pii_*'
+      allow          BOOLEAN NOT NULL
   );
   ```
-  Action strings MUST be one of: `Attach`, `Scan`, `CopyTo`, `CopyFrom`,
-  `ServeAdmin`. The policy MUST support, at minimum:
+  Action strings MUST be one of: `Attach`, `Scan`, `Insert`, `Update`,
+  `Delete`, `Ddl`, `Pragma`, `CopyTo`, `CopyFrom`, `ServeAdmin`. The
+  policy MUST support, at minimum:
   - allow/deny by `sub` (via the `subject` column),
   - allow/deny by required `scope` set (via `any_scope`),
-  - allow/deny by quack operation (via `actions`).
-  Allow/deny by referenced object (`schema.table` glob) is reserved
-  for a future schema extension.
+  - allow/deny by quack operation (via `actions`),
+  - allow/deny by referenced object glob (via `object_pattern`),
+  - allow/deny by projected column glob (via `column_pattern`).
+
+  `object_pattern` and `column_pattern` are optional from the loader's
+  perspective: tables that predate this requirement (5-column schema
+  without these fields) MUST continue to load and behave as if both
+  columns were NULL (match any object / any column). This is the
+  backward-compatibility contract for operators upgrading.
+
+  The action MUST be derived by parsing the incoming SQL with DuckDB's
+  parser (`duckdb::Parser`); referenced objects and projected columns
+  are extracted from the parse tree by walking `BaseTableRef` /
+  `JoinRef` / `SubqueryRef` / `ColumnRefExpression`. Multi-statement
+  queries enumerate all statements; system metadata
+  (`information_schema.*`, `pg_catalog.*`, `duckdb_*`) MUST be filtered
+  from the object set so meta-queries don't need explicit rules.
 - **R-S-8** When `policy_table` is unset on the active SECRET, the
   default policy MUST be "any token with scope `quack:read` may
   attach + scan; any token with scope `quack:write` may also
-  copy_to/copy_from (and implies read); no implicit admin". When
-  `policy_table` is set but the table is missing, has the wrong
-  schema, or contains an invalid action name, `check_authorization`
-  MUST fail closed (return false for every session).
+  insert/update/delete/copy_to/copy_from (and implies read); no
+  implicit admin, no DDL, no raw PRAGMA, no ServeAdmin". The default
+  policy is action-only -- object and column gating is reserved for
+  the SQL-table policy (R-S-7). When `policy_table` is set but the
+  table is missing, has the wrong schema, or contains an invalid
+  action name, `check_authorization` MUST fail closed (return false
+  for every session).
 - **R-S-9** The extension MUST re-evaluate token validity (signature
   not yet checked OR `exp` past) on each call to
   `check_authorization`, not only at connection time. Validation

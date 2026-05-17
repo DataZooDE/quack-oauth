@@ -61,7 +61,12 @@ stays on the server.
   appear in the log on the left.
 - **Authentication**: any signed-in Google account with the
   `openid` scope on the project's OAuth consent screen is granted
-  Attach + Scan via a single policy rule. No per-user authz.
+  Attach + Scan via a single policy rule. The policy is the legacy
+  5-column form — kept deliberately simple so the demo's focus stays
+  on the OAuth wire + the Perspective pivot. The repo-root README's
+  "Authorization → Examples" section walks the upgrade path to
+  object-/column-level rules (`object_pattern`, `column_pattern`,
+  fine-grained DML actions) if you want to extend this demo.
 - **Audit**: every token validation + authz decision lands in
   `main.audit` server-side.
 
