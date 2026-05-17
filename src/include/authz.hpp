@@ -7,13 +7,27 @@
 
 namespace quack_oauth {
 
-// The five quack operations the policy can gate, mirroring R-S-7's list.
+// Operations the policy can gate. Originally a five-element enum
+// (R-S-7); extended once the SQL parser-driven AuthzRequest landed
+// so policy can target finer-grained DML and DDL separately.
+//
+// Backward-compatibility: `Scan` remains the canonical action for
+// any read (SELECT / EXPLAIN / SHOW / WITH / DESCRIBE / RELATION).
+// Existing policy rows with `actions=['Scan']` continue to match
+// SELECTs without modification. The new `Insert` / `Update` /
+// `Delete` / `Ddl` / `Pragma` values carve writes out of the old
+// "everything-falls-back-to-Scan" model that DetectAction used.
 enum class Action {
 	Attach,
-	Scan,
+	Scan, // SELECT / EXPLAIN / SHOW / WITH / RELATION (read)
 	CopyTo,
 	CopyFrom,
 	ServeAdmin,
+	Insert,
+	Update,
+	Delete,
+	Ddl,    // CREATE / DROP / ALTER / TRANSACTION (any DDL)
+	Pragma, // non-quack PRAGMA (e.g. PRAGMA version, PRAGMA threads=…)
 };
 
 // Stable string form, matching the action-string spelling expected by the
@@ -37,13 +51,14 @@ struct PolicyOutcome {
 // Default authorization per R-S-8 (applied when no `policy_table` field is
 // set on the active quack_oauth_server SECRET):
 //   - any token with scope `quack:read` may Attach + Scan;
-//   - any token with scope `quack:write` may also CopyTo + CopyFrom;
-//   - ServeAdmin is always denied (no implicit admin);
+//   - any token with scope `quack:write` may also CopyTo + CopyFrom + Insert
+//     + Update + Delete;
+//   - Ddl / ServeAdmin / Pragma are always denied (no implicit admin);
 //   - `quack:write` implies `quack:read`.
 //
-// The `object` argument is reserved for future glob-based filtering (R-S-7
-// "allow/deny by referenced object `schema.table` glob"). The default policy
-// ignores it; a future schema extension of the policy table can use it.
-PolicyOutcome EvaluateDefaultPolicy(const Principal &principal, Action action, std::string_view object);
+// The default policy is action-only; operators who want object / column
+// gating must promote to a SQL-table policy via the `policy_table` SECRET
+// field (R-S-7, post-parser extension).
+PolicyOutcome EvaluateDefaultPolicy(const Principal &principal, Action action);
 
 } // namespace quack_oauth

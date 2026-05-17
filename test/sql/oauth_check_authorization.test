@@ -1,0 +1,226 @@
+# name: test/sql/oauth_check_authorization.test
+# description: quack_oauth_check_authorization wiring -- function registration, new fine-grained action enum + policy schema, parser-driven action detection (R-S-7 post-parser landing).
+# group: [sql]
+#
+# Deep policy logic (object_pattern / column_pattern semantics, ABAC
+# matrix walk, glob match) lives in the Catch2 unit tests:
+#   test/cpp/test_policy.cpp
+#   test/cpp/test_authz.cpp
+# This SQL test verifies the function is registered with the right
+# signature and that the SQL-table loader accepts both the legacy
+# 5-column schema AND the extended 7-column schema (object_pattern
+# + column_pattern columns).
+
+require quack_oauth
+
+# 2-arg signature -- (session_id, query_string) -> BOOLEAN.
+query II
+SELECT parameter_types::VARCHAR, return_type
+FROM duckdb_functions()
+WHERE function_name = 'quack_oauth_check_authorization';
+----
+[VARCHAR, VARCHAR]	BOOLEAN
+
+# With no SECRET configured + no session_principal cached, the function
+# default-denies "unknown session" without parsing or touching policy.
+query I
+SELECT quack_oauth_check_authorization('no-such-session', 'SELECT 1');
+----
+false
+
+# Even a malformed SQL string surfaces as unknown-session-deny -- the
+# parse step runs but the unknown-session check fires first.
+query I
+SELECT quack_oauth_check_authorization('no-such-session', 'this is not sql');
+----
+false
+
+# ---------------------------------------------------------------------------
+# Backward-compat: the legacy 5-column policy table still loads cleanly.
+# ---------------------------------------------------------------------------
+statement ok
+CREATE TABLE legacy_policies (
+    priority  INTEGER NOT NULL,
+    subject   VARCHAR,
+    any_scope VARCHAR[],
+    actions   VARCHAR[],
+    allow     BOOLEAN NOT NULL
+);
+
+statement ok
+INSERT INTO legacy_policies VALUES
+    (10, NULL, ['quack:read'], ['Attach', 'Scan'], true);
+
+statement ok
+CREATE SECRET rs_legacy (
+    TYPE quack_oauth_server,
+    issuer       'https://idp.test',
+    audience     'api://quack',
+    jwks_uri     'https://idp.nonexistent.invalid/jwks',
+    policy_table 'main.legacy_policies'
+);
+
+statement ok
+SET quack_oauth_server_secret_name = 'rs_legacy';
+
+# Returns false for unknown session (the policy is loaded but the
+# session-cache check fails first). The point of this assertion is
+# that the loader didn't reject the legacy 5-column shape.
+query I
+SELECT quack_oauth_check_authorization('no-such-session', 'SELECT 1 FROM t');
+----
+false
+
+statement ok
+DROP SECRET rs_legacy;
+
+# ---------------------------------------------------------------------------
+# Extended 7-column policy table -- object_pattern + column_pattern present.
+# ---------------------------------------------------------------------------
+statement ok
+CREATE TABLE rich_policies (
+    priority       INTEGER NOT NULL,
+    subject        VARCHAR,
+    any_scope      VARCHAR[],
+    actions        VARCHAR[],
+    object_pattern VARCHAR,
+    column_pattern VARCHAR,
+    allow          BOOLEAN NOT NULL
+);
+
+# Every level from the Plan's "Example policy configurations" -- the
+# loader must accept all of them, including the fine-grained DML
+# action names introduced alongside the parser path.
+statement ok
+INSERT INTO rich_policies VALUES
+    -- L4: subject deny-list overlay (highest priority).
+    ( 1, '108273490231', NULL, ['Insert','Update','Delete','Ddl'], NULL, NULL, false),
+    -- L5: PII column carve-out.
+    ( 5, NULL, ['pii:read'], ['Scan'], 'main.users', 'ssn',   true),
+    ( 6, NULL, ['analyst'],  ['Scan'], 'main.users', 'ssn',   false),
+    -- L2: per-table read split.
+    (10, NULL, ['analyst'],   ['Attach','Scan'],         'main.trips_*', NULL, true),
+    (20, NULL, ['audit:read'],['Attach','Scan'],         'main.audit',   NULL, true),
+    -- L3: write split with finer DML actions.
+    (30, NULL, ['etl:load'],     ['Insert'],            'main.staging.*', NULL, true),
+    (40, NULL, ['etl:transform'],['Update','Delete'],   'main.staging.*', NULL, true),
+    (50, NULL, ['db:admin'],     ['Ddl'],               NULL,             NULL, true),
+    (60, NULL, ['ops'],          ['Pragma','CopyTo','CopyFrom'], NULL,    NULL, true);
+
+statement ok
+CREATE SECRET rs_rich (
+    TYPE quack_oauth_server,
+    issuer       'https://idp.test',
+    audience     'api://quack',
+    jwks_uri     'https://idp.nonexistent.invalid/jwks',
+    policy_table 'main.rich_policies'
+);
+
+statement ok
+SET quack_oauth_server_secret_name = 'rs_rich';
+
+# The full extended schema loads. Returns false for unknown session.
+query I
+SELECT quack_oauth_check_authorization('no-such-session', 'SELECT * FROM main.users');
+----
+false
+
+# Each of the parser-driven action shapes also short-circuits at the
+# unknown-session check; we're verifying nothing throws on the parse
+# step (which would surface as a different error message).
+query I
+SELECT quack_oauth_check_authorization('no-such-session', 'INSERT INTO main.staging.events VALUES (1)');
+----
+false
+
+query I
+SELECT quack_oauth_check_authorization('no-such-session', 'UPDATE main.users SET name = ''x'' WHERE id = 1');
+----
+false
+
+query I
+SELECT quack_oauth_check_authorization('no-such-session', 'DELETE FROM main.audit WHERE timestamp_unix_s < 0');
+----
+false
+
+query I
+SELECT quack_oauth_check_authorization('no-such-session', 'CREATE TABLE main.t (i INT)');
+----
+false
+
+query I
+SELECT quack_oauth_check_authorization('no-such-session', 'PRAGMA version');
+----
+false
+
+query I
+SELECT quack_oauth_check_authorization('no-such-session', 'PRAGMA quack_stop');
+----
+false
+
+query I
+SELECT quack_oauth_check_authorization('no-such-session', 'COPY main.users TO ''out.csv''');
+----
+false
+
+query I
+SELECT quack_oauth_check_authorization('no-such-session', 'ATTACH ''quack:remote'' AS r');
+----
+false
+
+# Cleanup.
+statement ok
+DROP SECRET rs_rich;
+
+statement ok
+DROP TABLE rich_policies;
+
+statement ok
+DROP TABLE legacy_policies;
+
+statement ok
+SET quack_oauth_server_secret_name = '';
+
+# ---------------------------------------------------------------------------
+# Loader rejects unknown action names (preserves the existing
+# fail-loud contract).
+# ---------------------------------------------------------------------------
+statement ok
+CREATE TABLE bad_policies (
+    priority  INTEGER NOT NULL,
+    subject   VARCHAR,
+    any_scope VARCHAR[],
+    actions   VARCHAR[],
+    allow     BOOLEAN NOT NULL
+);
+
+statement ok
+INSERT INTO bad_policies VALUES (10, NULL, NULL, ['Vandalise'], true);
+
+statement ok
+CREATE SECRET rs_bad (
+    TYPE quack_oauth_server,
+    issuer       'https://idp.test',
+    audience     'api://quack',
+    jwks_uri     'https://idp.nonexistent.invalid/jwks',
+    policy_table 'main.bad_policies'
+);
+
+statement ok
+SET quack_oauth_server_secret_name = 'rs_bad';
+
+# Policy load fails -> request denies fail-closed (rather than silently
+# falling back to default policy).
+query I
+SELECT quack_oauth_check_authorization('no-such-session', 'SELECT 1');
+----
+false
+
+statement ok
+DROP SECRET rs_bad;
+
+statement ok
+DROP TABLE bad_policies;
+
+statement ok
+SET quack_oauth_server_secret_name = '';

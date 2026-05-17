@@ -337,18 +337,36 @@ the SQL of the incoming request, and a policy decides allow / deny.
 
 ### Actions
 
-The action is parsed from the request's SQL by `DetectAction()`:
+The action is parsed from the request's SQL by DuckDB's own parser
+(no regex / keyword sniffing — the same parser DuckDB itself uses
+when executing the statement). The classified `Action` enum gates
+the policy:
 
-| Action | Triggered by SQL like… |
+| Action | Triggered by |
 |---|---|
 | `Attach` | `ATTACH 'quack:…' AS …` |
-| `Scan` *(default)* | `SELECT`, `WITH`, `EXPLAIN`, anything that reads |
+| `Scan` *(default for reads)* | `SELECT`, `WITH`, `EXPLAIN`, `SHOW`, `RELATION` |
+| `Insert` | `INSERT INTO …` |
+| `Update` | `UPDATE … SET …` |
+| `Delete` | `DELETE FROM …` |
+| `Ddl` | `CREATE`, `DROP`, `ALTER`, `TRANSACTION`, `CREATE FUNCTION` |
 | `CopyTo` | `COPY <t> TO '…'` |
 | `CopyFrom` | `COPY <t> FROM '…'` |
-| `ServeAdmin` | `PRAGMA quack_serve` / `PRAGMA quack_stop` / `PRAGMA quack_restart` |
+| `Pragma` | `PRAGMA <not-quack>`, `SET`, `LOAD` |
+| `ServeAdmin` | `PRAGMA quack_serve` / `quack_stop` / `quack_restart` |
 
-Leading whitespace, `-- line` and `/* block */` comments are
-stripped before classification.
+In addition to the action, the parser walks the statement and
+collects:
+
+- **`objects`** — the schema-qualified tables / views the statement
+  touches (`main.audit`, `main.trips_enriched`, …). System tables
+  (`information_schema.*`, `pg_catalog.*`, `duckdb_*`) are filtered
+  out. Subqueries, CTEs, and JOINs are walked recursively.
+- **`columns`** — the unqualified column names a SELECT projects.
+  `SELECT *` produces the sentinel `*`.
+
+Policy rules can target these. See "SQL-table policy: schema"
+below.
 
 ### Two layers of policy
 
@@ -360,11 +378,12 @@ There are two policies; the SECRET decides which is active:
    | Scope on the JWT | Allowed actions |
    |---|---|
    | `quack:read` | `Attach`, `Scan` |
-   | `quack:write` | `Attach`, `Scan`, `CopyTo`, `CopyFrom` |
+   | `quack:write` | `Attach`, `Scan`, `Insert`, `Update`, `Delete`, `CopyTo`, `CopyFrom` |
    | (anything else) | nothing |
-   | (`ServeAdmin`) | **always denied** |
+   | (`Ddl` / `Pragma` / `ServeAdmin`) | **always denied** |
 
-   Good for prototyping; locked at compile time.
+   Good for prototyping; locked at compile time. Object + column
+   gating is not available here — that's the SQL-table policy below.
 
 2. **SQL-table policy** — set `policy_table` on the SECRET to a
    qualified table name (e.g. `main.policies`). Rules are rows. Hot-
@@ -374,61 +393,192 @@ There are two policies; the SECRET decides which is active:
 
 ```sql
 CREATE TABLE main.policies (
-    priority  INTEGER NOT NULL,    -- ascending; lower = earlier
-    subject   VARCHAR,             -- NULL = match any subject
-    any_scope VARCHAR[],           -- NULL/empty = match any scope set
-    actions   VARCHAR[],           -- NULL/empty = match any action
-    allow     BOOLEAN NOT NULL     -- true = allow, false = deny
+    priority       INTEGER NOT NULL, -- ascending; lower = earlier
+    subject        VARCHAR,          -- NULL = match any subject
+    any_scope      VARCHAR[],        -- NULL/empty = match any scope set
+    actions        VARCHAR[],        -- NULL/empty = match any action
+    object_pattern VARCHAR,          -- NULL = match any object; glob: 'main.*'
+    column_pattern VARCHAR,          -- NULL = match any column; glob: 'pii_*'
+    allow          BOOLEAN NOT NULL  -- true = allow, false = deny
 );
 ```
 
-A rule matches the (principal, action) pair when **every non-empty
-condition** matches:
+The **`object_pattern`** and **`column_pattern`** columns are
+optional. If you skip them (5-column schema, the original shape),
+all rules match any object / any column — the table behaves exactly
+like before. You can `ALTER TABLE main.policies ADD COLUMN
+object_pattern VARCHAR; ADD COLUMN column_pattern VARCHAR;` later
+without re-inserting any rules.
+
+A rule matches a (principal, action, object, column) **cell** when
+every non-empty condition matches:
 
 - `subject` — if set, the principal's `sub` claim must equal it
   **exactly**. NULL means "any subject".
 - `any_scope` — if non-empty, the principal must hold **at least one**
-  of the listed scopes (set intersection ≥ 1). NULL/empty means "any
-  scope set".
-- `actions` — if non-empty, the detected action must be in the list.
-  NULL/empty means "any action".
+  of the listed scopes. NULL/empty means "any scope set".
+- `actions` — if non-empty, the request's action must be in the
+  list. NULL/empty means "any action".
+- `object_pattern` — if set, the touched object name must glob-match
+  the pattern. `*` is the only wildcard; comparison is
+  case-insensitive (`main.*` matches `main.audit`, `MAIN.AUDIT`,
+  `main.trips_enriched`). NULL = match any object.
+- `column_pattern` — same shape, but matches against each column
+  name the SELECT projects. `*` (literal star) is treated as a name
+  too — a rule with `column_pattern='*'` allows `SELECT *`, while
+  a rule with `column_pattern='ssn'` only matches when the SELECT
+  list includes `ssn`. NULL = match any column.
 
-Evaluation: rules sorted by ascending `priority`, **first match wins**.
-If no rule matches, the `quack_oauth_policy_default` setting
-(`'allow'` or `'deny'`, default `'deny'`) decides.
+Evaluation: rules sorted by ascending `priority`, **first match
+wins per cell**. The ABAC matrix walk is "every (object × column)
+cell the request touches must end in allow"; first deny
+short-circuits and the audit row names the failing object /
+column.
 
-Action strings must come from the action vocabulary above (`Attach`,
-`Scan`, `CopyTo`, `CopyFrom`, `ServeAdmin`). Unknown action names make
-the load fail closed — the whole policy is rejected and every request
-denies. See the **fail-closed** note below.
+Action strings: `Attach`, `Scan`, `Insert`, `Update`, `Delete`,
+`Ddl`, `Pragma`, `CopyTo`, `CopyFrom`, `ServeAdmin`. Unknown names
+make the load fail closed — the whole policy is rejected and every
+request denies. See the **fail-closed** note below.
 
 ### Examples
 
-#### Allow any reader, allow writers extra ops
+The policy table is one shape; the configurations below walk from
+"zero rules" through column-level PII gating. **Simple things stay
+simple; complicated things become possible.**
+
+#### Level 0 — no policy table (the default)
+
+Skip the `policy_table` field on the SECRET entirely. The default
+scope-based policy applies (`quack:read` allows reads,
+`quack:write` adds writes, admin actions always deny).
+
+#### Level 1 — one scope, blanket allow
 
 ```sql
 INSERT INTO main.policies VALUES
-    (10, NULL, ['quack:read'],  ['Attach', 'Scan'],                       true),
-    (20, NULL, ['quack:write'], ['Attach', 'Scan', 'CopyTo', 'CopyFrom'], true);
+    (10, NULL, ['analyst'], ['Attach', 'Scan'], NULL, NULL, true);
 ```
 
-This is what the demo ships. Any principal with `quack:read` can
-attach and scan; principals with `quack:write` additionally get
-COPY in/out. `ServeAdmin` and `CopyFrom` for read-only roles fall
-through to the default → deny.
+Anyone presenting a token with the `analyst` scope can attach and
+read everything. The trailing two `NULL`s are `object_pattern` and
+`column_pattern` — both unset means "any object, any column". **Old
+5-column policy rows still work unchanged** — just drop those two
+columns and use the 5-column form.
 
-#### Restrict a specific subject to read-only
+#### Level 2 — per-table read split
 
 ```sql
 INSERT INTO main.policies VALUES
-    (5,  '8493df4b-b692-4581-a291-7be11cd1b6bd', NULL, ['CopyTo', 'CopyFrom'], false),
-    (10, NULL, ['quack:read'],  ['Attach', 'Scan'],                            true),
-    (20, NULL, ['quack:write'], ['Attach', 'Scan', 'CopyTo', 'CopyFrom'],      true);
+    (10, NULL, ['analyst'],    ['Attach', 'Scan'], 'main.trips_*', NULL, true),
+    (20, NULL, ['audit:read'], ['Attach', 'Scan'], 'main.audit',   NULL, true);
 ```
 
-Priority 5 fires before 20: alice (that `sub`) is **denied** COPY
-even if she has `quack:write`. Ordering matters — deny-overrides
-patterns are simply lower-priority deny rules.
+Analysts can read the `trips_*` tables but not `audit`; auditors can
+read `audit` but not `trips_*`. Object globs support `*` only.
+
+#### Level 3 — read vs write split with finer DML actions
+
+```sql
+INSERT INTO main.policies VALUES
+    (10, NULL, ['analyst'],       ['Scan'],            'main.*',          NULL, true),
+    (20, NULL, ['etl:load'],      ['Insert'],          'main.staging.*',  NULL, true),
+    (30, NULL, ['etl:transform'], ['Update','Delete'], 'main.staging.*',  NULL, true),
+    (40, NULL, ['db:admin'],      ['Ddl'],             NULL,              NULL, true);
+```
+
+`Insert` / `Update` / `Delete` / `Ddl` are the new fine-grained
+actions the parser produces. Previously they all collapsed into
+`Scan`.
+
+#### Level 4 — per-subject override (named superuser + role default)
+
+```sql
+INSERT INTO main.policies VALUES
+    -- Specific subject: god mode regardless of scope.
+    ( 1, '108273490231', NULL, ['Attach','Scan','Insert','Update','Delete','Ddl'],
+         NULL, NULL, true),
+    -- Everyone else: scope-gated read.
+    (10, NULL, ['analyst'], ['Attach','Scan'], 'main.*', NULL, true);
+```
+
+Rules are evaluated in priority order; first match wins per cell.
+
+#### Level 5 — column-level PII protection
+
+```sql
+INSERT INTO main.policies VALUES
+    -- Override: pii:read grants the carved-out columns (high priority).
+    ( 5, NULL, ['pii:read'], ['Scan'], 'main.users', 'ssn',   true),
+    ( 6, NULL, ['pii:read'], ['Scan'], 'main.users', 'email', true),
+    ( 7, NULL, ['pii:read'], ['Scan'], 'main.users', 'dob',   true),
+    -- Carve out sensitive columns for analysts.
+    (20, NULL, ['analyst'],  ['Scan'], 'main.users', 'ssn',   false),
+    (21, NULL, ['analyst'],  ['Scan'], 'main.users', 'email', false),
+    (22, NULL, ['analyst'],  ['Scan'], 'main.users', 'dob',   false),
+    -- Baseline: analysts can Select main.users.
+    (30, NULL, ['analyst'],  ['Scan'], 'main.users', NULL,    true);
+```
+
+`SELECT id, name FROM main.users` works for any analyst. `SELECT
+id, email FROM main.users` requires `pii:read`. `SELECT * FROM
+main.users` is denied because `*` (the sentinel) only matches a
+rule with `column_pattern='*'` — add one to permit it.
+
+#### Level 6 — row-level filtering via operator-defined views
+
+`quack-oauth` does not rewrite queries. Row-level security is
+achieved by **operator-defined views** that the policy then
+targets:
+
+```sql
+-- Server admin defines (once):
+CREATE VIEW main.users_safe AS
+  SELECT id, name, signup_at FROM main.users WHERE is_active;
+
+CREATE VIEW main.audit_recent AS
+  SELECT * FROM main.audit WHERE timestamp_unix_s > epoch(now()) - 86400;
+
+-- Policy:
+INSERT INTO main.policies VALUES
+    (10, NULL, ['analyst'],     ['Scan'], 'main.users_safe',  NULL, true),
+    (11, NULL, ['ops'],         ['Scan'], 'main.audit_recent', NULL, true),
+    (12, NULL, ['audit:admin'], ['Scan'], 'main.audit',        NULL, true);
+```
+
+Analysts see `users_safe` only (no inactive accounts). Ops see
+24-hour-fresh audit rows via `audit_recent`. Audit admins see the
+raw `main.audit`.
+
+#### Level 7 — subject deny-list overlay
+
+```sql
+INSERT INTO main.policies VALUES
+    -- Highest priority: compromised subjects locked out of writes.
+    ( 1, '108273490231', NULL, ['Insert','Update','Delete','Ddl'], NULL, NULL, false),
+    ( 2, '108273490299', NULL, ['Insert','Update','Delete','Ddl'], NULL, NULL, false),
+    -- Everyone else with etl:writer can write to staging.
+    (10, NULL, ['etl:writer'], ['Insert','Update','Delete'], 'main.staging.*',
+         NULL, true);
+```
+
+`subject IS NOT NULL` with `any_scope` NULL means "this rule fires
+for that subject regardless of their scopes". A deny here trumps
+any later allow.
+
+#### Migration from the 5-column schema
+
+Existing operators don't need to migrate — the loader introspects
+the policy table's column set; missing `object_pattern` /
+`column_pattern` columns are read as NULL (match any). When you're
+ready:
+
+```sql
+ALTER TABLE main.policies ADD COLUMN object_pattern VARCHAR;
+ALTER TABLE main.policies ADD COLUMN column_pattern VARCHAR;
+```
+
+All existing rules continue to match every object / column, exactly
+as before. New rules can use the new columns.
 
 #### Open default + explicit denies
 
@@ -438,27 +588,13 @@ patterns are simply lower-priority deny rules.
 SET quack_oauth_policy_default = 'allow';
 
 INSERT INTO main.policies VALUES
-    (10, NULL, NULL, ['ServeAdmin'],         false),                  -- nobody admins
-    (20, NULL, NULL, ['CopyFrom'],           false);                  -- nobody bulk-loads
+    (10, NULL, NULL, ['ServeAdmin'], NULL, NULL, false), -- nobody admins
+    (20, NULL, NULL, ['CopyFrom'],   NULL, NULL, false); -- nobody bulk-loads
 ```
 
 The `quack_oauth_policy_default = 'allow'` flips the no-match
-fallback. Use this only when **every** principal you trust is already
-filtered by the JWT validator.
-
-#### Multi-tenant: subject-scoped allow
-
-```sql
-INSERT INTO main.policies VALUES
-    (10, '5e3c-tenant-alice', ['quack:read'],  ['Attach', 'Scan'], true),
-    (11, '5e3c-tenant-alice', ['quack:write'], ['CopyTo'],         true),
-    (20, '7a91-tenant-bob',   ['quack:read'],  ['Attach', 'Scan'], true),
-    (21, '7a91-tenant-bob',   ['quack:write'], ['CopyTo'],         true);
-    -- … one row pair per tenant
-```
-
-Without a matching `subject` row, requests fall through to the default
-→ deny. Pre-seed your subjects from your IdP's user table.
+fallback. Use this only when **every** principal you trust is
+already filtered by the JWT validator.
 
 #### Time-bounded grant (rolling)
 
@@ -522,8 +658,13 @@ The `token_hash` column is always the first 8 hex of `sha256(token)` —
   `refresh_token` (RFC 6749 §6), `device_code` (RFC 8628 with
   `slow_down` back-off + full §3.5 error mapping).
 - **SQL-native authorization** with hot reload + fail-closed semantics.
-- **SQL action detection** (Attach / Scan / CopyTo / CopyFrom /
-  ServeAdmin) so the policy can gate per-action.
+- **Parser-driven action detection** (Attach / Scan / Insert / Update /
+  Delete / Ddl / Pragma / CopyTo / CopyFrom / ServeAdmin) via DuckDB's
+  own parser — handles CTEs, subqueries, JOINs, multi-statement scripts.
+- **Object- and column-level policy** — rules target schema-qualified
+  tables (`main.audit`, `main.trips_*`) and projected columns
+  (`pii:read` to access `users.ssn`). Backward-compatible: the legacy
+  5-column policy table still loads.
 - **Audit trail** for every decision: in-memory ring +
   `DUCKDB_LOG_*` + optional SQL audit table. Bearer always redacted.
 - **Self-documenting**: every function carries `description`,

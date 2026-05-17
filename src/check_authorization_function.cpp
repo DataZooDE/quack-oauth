@@ -15,7 +15,6 @@
 
 #include <chrono>
 
-#include "action_detect.hpp"
 #include "audit.hpp"
 #include "audit_sink.hpp"
 #include "authz.hpp"
@@ -25,6 +24,7 @@
 #include "principal_expiry.hpp"
 #include "quack_oauth_state.hpp"
 #include "secret_accessor.hpp"
+#include "sql_inspect.hpp"
 #include "tracing.hpp"
 
 namespace duckdb {
@@ -88,11 +88,11 @@ static void CheckAuthorizationScalarFun(DataChunk &args, ExpressionState &state,
 	    [&](string_t session_id_str, string_t query_string_str) -> bool {
 		    const auto sid = session_id_str.GetString();
 		    const auto query = query_string_str.GetString();
-		    const auto action = quack_oauth::DetectAction(query);
+		    const auto request = quack_oauth::InspectSql(query);
 
 		    quack_oauth::AuditEvent e;
 		    e.timestamp_unix_s = now_s;
-		    e.action = string(quack_oauth::ActionName(action));
+		    e.action = string(quack_oauth::ActionName(request.action));
 		    // `query` is not redacted here -- it is intentionally NOT logged.
 		    // We log the action + reason instead so operators can audit policy
 		    // outcomes without seeing user SQL in clear text.
@@ -122,8 +122,19 @@ static void CheckAuthorizationScalarFun(DataChunk &args, ExpressionState &state,
 			    EmitAuditEvent(context, e);
 			    return false;
 		    }
-		    const auto outcome = policy.has_value() ? quack_oauth::EvaluatePolicy(*policy, it->second, action, "")
-		                                            : quack_oauth::EvaluateDefaultPolicy(it->second, action, "");
+		    if (request.unsafe) {
+			    // Parser failure / unsupported shape: fail closed and
+			    // surface a short error rather than echoing parser
+			    // internals (which could leak SQL fragments back to
+			    // wire clients).
+			    e.event_type = quack_oauth::AuditEventType::AuthzDeny;
+			    e.reason = "parse_error";
+			    EmitAuditEvent(context, e);
+			    return false;
+		    }
+		    const auto outcome = policy.has_value()
+		                             ? quack_oauth::EvaluatePolicy(*policy, it->second, request)
+		                             : quack_oauth::EvaluateDefaultPolicy(it->second, request.action);
 		    const bool allow = outcome.decision == quack_oauth::Decision::Allow;
 		    e.event_type = allow ? quack_oauth::AuditEventType::AuthzAllow : quack_oauth::AuditEventType::AuthzDeny;
 		    e.reason = outcome.reason;
@@ -140,14 +151,18 @@ void RegisterQuackOauthCheckAuthorization(ExtensionLoader &loader) {
 	fn.SetVolatile();
 	CreateScalarFunctionInfo info(std::move(fn));
 	FunctionDescription desc;
-	desc.description = "Authorize a query for a session whose Principal was previously cached by "
-	                   "quack_oauth_check_token(). Detects the action from the SQL "
-	                   "(ATTACH/Scan/CopyTo/CopyFrom/ServeAdmin) and evaluates the policy: either the "
-	                   "SQL-native rules in the table named by `policy_table` on the active "
-	                   "quack_oauth_server SECRET, or the default scope-based policy (quack:read → "
-	                   "Attach + Scan; quack:write → also CopyTo + CopyFrom; ServeAdmin always denied). "
-	                   "Returns false for unknown session_id or fail-closed policy loading. Wired into "
-	                   "quack via `SET quack_authorization_function = 'quack_oauth_check_authorization'`.";
+	desc.description =
+	    "Authorize a query for a session whose Principal was previously cached by "
+	    "quack_oauth_check_token(). Parses the SQL with DuckDB's parser, classifies the "
+	    "action (Attach / Scan / Insert / Update / Delete / Ddl / Pragma / CopyTo / CopyFrom / "
+	    "ServeAdmin) and enumerates the referenced objects + columns, then evaluates the "
+	    "policy: either the SQL-native rules in the table named by `policy_table` on the "
+	    "active quack_oauth_server SECRET (rules can target subject / scope / action / "
+	    "object_pattern / column_pattern), or the default scope-based policy (quack:read → "
+	    "Attach + Scan; quack:write → also Insert/Update/Delete/CopyTo/CopyFrom; admin "
+	    "actions always denied). Returns false for unknown session_id, policy_table load "
+	    "failure, parser failure, or any policy deny. Wired into quack via "
+	    "`SET quack_authorization_function = 'quack_oauth_check_authorization'`.";
 	desc.parameter_names = {"session_id", "query_string"};
 	desc.parameter_types = {LogicalType::VARCHAR, LogicalType::VARCHAR};
 	desc.examples = {"SELECT quack_oauth_check_authorization('sess-1', 'SELECT * FROM t')",

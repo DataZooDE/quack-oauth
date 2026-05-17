@@ -26,7 +26,6 @@ include_directories(./duckdb/third_party/httplib)
 # and the Catch2 unit-test binary. See docs/IMPLEMENTATION.md section 2.3.
 set(PURE_SOURCES
     src/acquire_flow.cpp
-    src/action_detect.cpp
     src/audit.cpp
     src/authz.cpp
     src/decision_cache.cpp
@@ -66,6 +65,7 @@ set(DUCKDB_WASM_SAFE_SOURCES
     src/secret_accessor.cpp
     src/secrets.cpp
     src/settings.cpp
+    src/sql_inspect.cpp
     src/tracing_log.cpp
 )
 
