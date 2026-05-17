@@ -74,15 +74,19 @@ def _open_db() -> duckdb.DuckDBPyConnection:
     return conn
 
 
-def _configure_oauth_server(
-    conn: duckdb.DuckDBPyConnection, client_id: str, client_secret: str
-) -> None:
+def _configure_oauth_server(conn: duckdb.DuckDBPyConnection, client_id: str) -> None:
     """Server-side SECRET + policy + audit + global callback wiring.
 
-    `tenant_or_realm` carries the GitHub OAuth App's client_id.
-    `introspect_client_id` is intentionally OMITTED -- the github
-    preset (commit d5d5cb5) defaults it to `tenant_or_realm`, so the
-    SECRET shape is one field shorter than the README's pre-fix form.
+    Google access tokens are opaque (`ya29.*`), so validation runs
+    through https://oauth2.googleapis.com/tokeninfo (validation_mode
+    = `tokeninfo`). Google's tokeninfo returns `aud = <client_id>`
+    for OAuth Web Flow tokens (different from the SA-JWT-bearer flow,
+    where `aud = <sa-numeric-id>`), so the SECRET's `audience` is
+    the OAuth client_id itself.
+
+    `tenant_or_realm` is unused for Google -- the preset (per the fix
+    in commit 89a39d7) fires regardless. `introspect_client_secret`
+    is also unused: tokeninfo is unauthenticated, no Basic auth.
     """
     conn.execute(
         """
@@ -109,25 +113,26 @@ def _configure_oauth_server(
         );
         """
     )
-    # User-token scope `read:user` is the one we ask for in the OAuth flow.
+    # Any token with `openid` is granted Attach + Scan. The OAuth Web
+    # Flow asks for `openid email profile`, so every successfully
+    # signed-in user lands here.
     conn.execute(
         "INSERT INTO main.policies VALUES "
-        "(10, NULL, ['read:user'], ['Attach', 'Scan'], true);"
+        "(10, NULL, ['openid'], ['Attach', 'Scan'], true);"
     )
 
     conn.execute(
         f"""
         CREATE SECRET rs (
             TYPE quack_oauth_server,
-            tenant_or_realm          '{client_id}',
-            introspect_client_secret '{client_secret}',
-            audience                 'quack-oauth-demo',
-            policy_table             'main.policies',
-            audit_table              'main.audit'
+            audience     '{client_id}',
+            policy_table 'main.policies',
+            audit_table  'main.audit'
         );
         """
     )
-    conn.execute("SET quack_oauth_provider = 'github'")
+    conn.execute("SET quack_oauth_provider = 'google'")
+    conn.execute("SET quack_oauth_validation_mode = 'tokeninfo'")
     conn.execute("SET quack_oauth_server_secret_name = 'rs'")
     conn.execute("SET quack_authentication_function = 'quack_oauth_check_token'")
     conn.execute("SET quack_authorization_function  = 'quack_oauth_check_authorization'")
@@ -141,13 +146,13 @@ def main() -> int:
 
     # Load .env.demo (cwd or example/) -- python-dotenv tolerates absence.
     load_dotenv(Path(__file__).resolve().parents[1] / ".env.demo")
-    client_id = os.environ.get("GITHUB_DEMO_CLIENT_ID", "").strip()
-    client_secret = os.environ.get("GITHUB_DEMO_CLIENT_SECRET", "").strip()
-    front_port = int(os.environ.get("GITHUB_DEMO_PORT", "8000"))
+    client_id = os.environ.get("GOOGLE_DEMO_CLIENT_ID", "").strip()
+    client_secret = os.environ.get("GOOGLE_DEMO_CLIENT_SECRET", "").strip()
+    front_port = int(os.environ.get("GOOGLE_DEMO_PORT", "8000"))
 
     if not client_id or not client_secret:
         print(
-            "FAIL: GITHUB_DEMO_CLIENT_ID and GITHUB_DEMO_CLIENT_SECRET must be set\n"
+            "FAIL: GOOGLE_DEMO_CLIENT_ID and GOOGLE_DEMO_CLIENT_SECRET must be set\n"
             "      Copy example/.env.demo.example to example/.env.demo and fill in",
             file=sys.stderr,
         )
@@ -159,8 +164,8 @@ def main() -> int:
     log.info("[boot] loading NYC taxi data")
     taxi_data.ensure_loaded(conn)
 
-    log.info("[boot] wiring github auth + policy + audit")
-    _configure_oauth_server(conn, client_id, client_secret)
+    log.info("[boot] wiring google auth + policy + audit")
+    _configure_oauth_server(conn, client_id)
 
     quack_port = _find_free_port()
     quack_uri = f"quack:127.0.0.1:{quack_port}"
@@ -176,8 +181,8 @@ def main() -> int:
 
     redirect_uri = f"http://localhost:{front_port}/oauth/callback"
     cfg = http_app.AppConfig(
-        github_client_id=client_id,
-        github_client_secret=client_secret,
+        oauth_client_id=client_id,
+        oauth_client_secret=client_secret,
         redirect_uri=redirect_uri,
         quack_port=quack_port,
     )

@@ -4,17 +4,37 @@
     <meta charset="utf-8" />
     <title>quack-oauth demo · NYC taxi pivot</title>
     <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <link rel="stylesheet" href="/static/style.css" />
-    <!-- Perspective viewer custom element + plugin styles -->
+    <!-- Perspective's themes.css FIRST so our /static/style.css (loaded
+         after) wins at the cascade tiebreaker for same-specificity
+         `perspective-viewer[theme="..."]` rules. -->
     <link
       rel="stylesheet"
       crossorigin="anonymous"
       href="https://cdn.jsdelivr.net/npm/@finos/perspective-viewer@3/dist/css/themes.css"
     />
+    <link rel="stylesheet" href="/static/style.css" />
+    <!-- Perspective custom elements + plugins. These MUST be loaded as
+         classic <script type="module"> tags so the side effects
+         (customElements.define) fire reliably. The all-d3fc plugin
+         registers many chart types in one go (X Bar, Y Bar, X/Y Line,
+         X/Y Area, X/Y Scatter, Heatmap, Treemap, Sunburst, Candlestick,
+         OHLC). -->
+    <script
+      type="module"
+      src="https://cdn.jsdelivr.net/npm/@finos/perspective-viewer@3/dist/cdn/perspective-viewer.js"
+    ></script>
+    <script
+      type="module"
+      src="https://cdn.jsdelivr.net/npm/@finos/perspective-viewer-datagrid@3/dist/cdn/perspective-viewer-datagrid.js"
+    ></script>
+    <script
+      type="module"
+      src="https://cdn.jsdelivr.net/npm/@finos/perspective-viewer-d3fc@3/dist/cdn/perspective-viewer-d3fc.js"
+    ></script>
   </head>
   <body>
     <header>
-      <h1>NYC yellow-taxi pivot</h1>
+      <h1><span class="brand">quack-oauth</span> · nyc-taxi live pivot</h1>
       <div id="status">
         <span id="principal">not signed in</span>
         <button id="sign-out" hidden>sign out</button>
@@ -26,28 +46,35 @@
         This is a live demo of <code>quack-oauth</code>: the data on display
         is hosted by an in-process DuckDB on this machine, served over the
         <a href="https://duckdb.org/docs/current/quack/overview">quack</a>
-        wire protocol, and gated by your GitHub identity.
+        wire protocol, and gated by your Google identity.
       </p>
       <p>
         The browser runs DuckDB-Wasm with the <code>quack</code> and
-        <code>quack_oauth</code> extensions. Authentication uses the GitHub
-        OAuth Web Flow; the resulting user-to-server token is validated on
-        the server via GitHub's <code>/applications/&hellip;/token</code>
-        endpoint.
+        <code>quack_oauth</code> extensions. Authentication uses the Google
+        OAuth 2.0 Web Server flow; the resulting opaque access token is
+        validated on the server via Google's
+        <code>oauth2.googleapis.com/tokeninfo</code> endpoint.
       </p>
-      <a id="signin" class="btn" href="/oauth/login">sign in with GitHub</a>
+      <a id="signin" class="btn" href="/oauth/login">sign in with Google</a>
     </section>
 
     <section id="app" hidden>
       <div id="boot-log" class="log"></div>
+      <div id="resize-handle" title="Drag to resize the log pane"></div>
       <perspective-viewer id="viewer"></perspective-viewer>
     </section>
 
     <footer>
       <small>
         <span id="isolation-state"></span>
+      </small>
+      <small>
+        powered by
+        <a href="https://erpl.io">erpl.io</a>
         &middot;
-        <a href="https://github.com/DataZooDE/quack-oauth">quack-oauth on GitHub</a>
+        <a href="https://github.com/DataZooDE/quack-oauth">quack-oauth</a>
+        &middot;
+        <a href="https://perspective.finos.org">perspective</a>
       </small>
     </footer>
 

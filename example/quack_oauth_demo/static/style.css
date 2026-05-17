@@ -1,82 +1,293 @@
+/* erpl.io-aligned theme for the quack-oauth demo. */
 :root {
-  --bg: #0b0d12;
-  --panel: #161922;
-  --ink: #e6e9ef;
-  --dim: #8a92a3;
-  --accent: #ffe066;
-  --good: #58d18a;
-  --bad: #ff6b6b;
-  font-family: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  --erpl-bg:        #1f240e;  /* dark olive-green */
+  --erpl-bg-2:      #272d12;  /* slightly lighter for panels */
+  --erpl-line:      #3a4218;
+  --erpl-ink:       #f5f5f0;
+  --erpl-dim:       #a8a89b;
+  --erpl-yellow:    #ffe066;  /* primary brand accent */
+  --erpl-yellow-hi: #fff39a;
+  --erpl-green:     #b5e853;
+  --erpl-pink:      #f93366;
+  --erpl-blue:      #5fb3ff;
+  --erpl-good:      #b5e853;
+  --erpl-bad:       #ff6b6b;
+  font-family: ui-sans-serif, system-ui, -apple-system, "Inter", "Segoe UI",
+    Roboto, sans-serif;
 }
-html, body { height: 100%; margin: 0; background: var(--bg); color: var(--ink); }
-body { display: flex; flex-direction: column; }
+
+html, body {
+  height: 100%;
+  margin: 0;
+  background: var(--erpl-bg);
+  color: var(--erpl-ink);
+}
+
+body {
+  display: flex;
+  flex-direction: column;
+  /* Subtle hex-grid pattern overlay to echo the erpl.io landing page. */
+  background-image:
+    radial-gradient(
+      circle at 25% 25%,
+      rgba(255, 224, 102, 0.04) 0,
+      transparent 28%
+    ),
+    radial-gradient(
+      circle at 75% 75%,
+      rgba(181, 232, 83, 0.03) 0,
+      transparent 32%
+    );
+}
+
+/* -- Header --------------------------------------------------------------- */
 header {
   display: flex;
   justify-content: space-between;
-  align-items: baseline;
-  padding: 12px 24px;
-  border-bottom: 1px solid #2a2f3c;
+  align-items: center;
+  padding: 14px 28px;
+  border-bottom: 1px solid var(--erpl-line);
+  background: rgba(0, 0, 0, 0.18);
+  backdrop-filter: blur(6px);
 }
-header h1 { font-size: 1.1rem; font-weight: 600; margin: 0; letter-spacing: 0.01em; }
-#status { display: flex; gap: 12px; align-items: center; font-size: 0.9rem; color: var(--dim); }
-#principal { color: var(--ink); }
+header h1 {
+  font-size: 1.05rem;
+  font-weight: 800;
+  margin: 0;
+  letter-spacing: 0.02em;
+  text-transform: lowercase;
+}
+header h1::before {
+  content: "🦆 ";
+  filter: hue-rotate(-20deg);
+}
+header h1 .brand {
+  color: var(--erpl-yellow);
+}
+#status {
+  display: flex;
+  gap: 14px;
+  align-items: center;
+  font-size: 0.88rem;
+  color: var(--erpl-dim);
+}
+#principal {
+  color: var(--erpl-ink);
+  font-weight: 500;
+}
 
+/* -- Sign-in pane --------------------------------------------------------- */
 #signin-pane {
-  max-width: 720px;
+  max-width: 760px;
   margin: 64px auto;
-  padding: 0 24px;
-  line-height: 1.55;
+  padding: 32px 28px;
+  line-height: 1.6;
+  background: var(--erpl-bg-2);
+  border: 1px solid var(--erpl-line);
+  border-radius: 12px;
+  box-shadow: 0 24px 60px rgba(0, 0, 0, 0.5);
 }
-#signin-pane p { color: var(--dim); }
-#signin-pane code { color: var(--accent); }
+#signin-pane p { color: var(--erpl-dim); }
+#signin-pane code {
+  color: var(--erpl-yellow);
+  background: rgba(255, 224, 102, 0.08);
+  padding: 1px 6px;
+  border-radius: 3px;
+  font-size: 0.92em;
+}
 .btn {
   display: inline-block;
-  background: var(--accent);
+  background: var(--erpl-yellow);
   color: #1a1a1a;
-  padding: 10px 16px;
+  padding: 11px 22px;
   border-radius: 6px;
   text-decoration: none;
-  font-weight: 600;
+  font-weight: 700;
   margin-top: 16px;
+  box-shadow: 0 4px 0 0 rgba(0, 0, 0, 0.25);
+  transition: transform 0.05s ease, box-shadow 0.05s ease;
 }
-.btn:hover { filter: brightness(1.1); }
+.btn:hover {
+  background: var(--erpl-yellow-hi);
+}
+.btn:active {
+  transform: translateY(2px);
+  box-shadow: 0 2px 0 0 rgba(0, 0, 0, 0.25);
+}
 
-#app { flex: 1; display: flex; flex-direction: column; min-height: 0; }
+/* -- App layout: log on the left, viewer on the right --------------------- */
+#app {
+  flex: 1;
+  display: flex;
+  flex-direction: row;
+  min-height: 0;
+}
+
+/* Log styled like an erpl.io "terminal" panel. */
 .log {
   font-family: ui-monospace, "JetBrains Mono", Menlo, monospace;
   font-size: 0.78rem;
-  padding: 8px 24px;
-  color: var(--dim);
-  border-bottom: 1px solid #2a2f3c;
-  max-height: 7em;
+  padding: 12px 16px;
+  color: var(--erpl-dim);
+  width: 380px; /* JS overrides via inline style; this is the default */
+  flex-shrink: 0;
+  flex-grow: 0;
   overflow-y: auto;
-  background: var(--panel);
+  background: linear-gradient(180deg, #161a08 0%, #1a1f0b 100%);
+  white-space: pre-wrap;
+  word-break: break-word;
+  position: relative;
 }
-.log .ok { color: var(--good); }
-.log .err { color: var(--bad); }
+
+/* Draggable column-resizer between the log pane and the viewer. */
+#resize-handle {
+  width: 6px;
+  flex-shrink: 0;
+  cursor: col-resize;
+  background: var(--erpl-line);
+  border-left: 1px solid #0c0f04;
+  border-right: 1px solid #0c0f04;
+  transition: background 0.15s ease;
+  position: relative;
+}
+#resize-handle:hover,
+#resize-handle.dragging {
+  background: var(--erpl-yellow);
+}
+#resize-handle::after {
+  /* Triple-dot grip glyph in the middle. */
+  content: "⋮";
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  transform: translate(-50%, -50%);
+  color: var(--erpl-dim);
+  font-size: 0.9rem;
+  pointer-events: none;
+}
+body.is-resizing {
+  cursor: col-resize;
+  user-select: none;
+}
+.log::before {
+  content: "TERMINAL";
+  display: block;
+  font-size: 0.66rem;
+  letter-spacing: 0.18em;
+  font-weight: 700;
+  color: var(--erpl-yellow);
+  background: rgba(255, 224, 102, 0.08);
+  border: 1px solid rgba(255, 224, 102, 0.18);
+  padding: 3px 10px;
+  border-radius: 4px;
+  width: max-content;
+  margin: 0 0 12px 0;
+}
+.log .ok { color: var(--erpl-good); }
+.log .err { color: var(--erpl-bad); }
+
+/* Highlight SQL-ish tokens in log entries via crude regex CSS:
+   we tag SELECT / FROM / GROUP BY etc. server-side? No, here we just
+   colour numeric and quoted-identifier-ish slices by repurposing the
+   `<span>` tags that `log()` can emit. The text-only fast path
+   stays readable. */
 
 perspective-viewer {
   flex: 1;
+  min-width: 0;
   min-height: 0;
-  --theme-name: "Pro Dark";
 }
 
-footer {
-  padding: 6px 24px;
-  border-top: 1px solid #2a2f3c;
-  color: var(--dim);
-  font-size: 0.8rem;
+/* erpl.io theming for Perspective.
+ *
+ * Perspective ships several built-in themes (Pro, Pro Dark, ...) as
+ * `[theme="..."]` attribute selectors in themes.css. We compose our
+ * own colour tokens on top of "Pro Dark" so the dark base is kept
+ * (high contrast, all icon glyphs designed for dark) but the
+ * highlights flip to erpl yellow + olive.
+ *
+ * Specificity note: themes.css uses `[theme="Pro Dark"]` (0,1,0).
+ * `perspective-viewer[theme="Pro Dark"]` is (0,1,1) -> wins. We
+ * also redundantly target `perspective-viewer` itself so it works
+ * even if `theme` is unset.
+ */
+perspective-viewer,
+perspective-viewer[theme="Pro Dark"],
+perspective-viewer[theme="Pro"] {
+  /* base palette ------------------------------------------------- */
+  --color:                              var(--erpl-ink);
+  --background:                         var(--erpl-bg);
+  --plugin--background:                 var(--erpl-bg);
+  --inactive--color:                    var(--erpl-dim);
+  --icon--color:                        var(--erpl-dim);
+  --active--color:                      var(--erpl-yellow);
+
+  /* toolbar + column-drop chrome -------------------------------- */
+  --button--color:                      var(--erpl-yellow);
+  --column-drop-container--background:  var(--erpl-bg-2);
+  --column-drop-container--border:      1px solid var(--erpl-line);
+  --column-drop-label--text-color:      var(--erpl-dim);
+
+  /* datagrid cells ---------------------------------------------- */
+  --rt-pos-cell--color:                 var(--erpl-yellow-hi);
+  --rt-neg-cell--color:                 var(--erpl-pink);
+  --rt-column-header--color:            var(--erpl-yellow);
+  --row-hover--background:              rgba(255, 224, 102, 0.06);
+  --plugin--background-modal:           var(--erpl-bg-2);
+
+  /* tree-grid (row groups in pivoted datagrids) ----------------- */
+  --tree-line--color:                   var(--erpl-line);
+
+  /* expressions / column-style dialogs -------------------------- */
+  --column-style-pos-color:             var(--erpl-yellow);
+  --column-style-neg-color:             var(--erpl-pink);
+
+  /* d3fc charts: axes + grid ------------------------------------ */
+  --d3fc-axis--lines:                   var(--erpl-line);
+  --d3fc-axis-grid--lines:              rgba(255, 224, 102, 0.06);
+  --d3fc-positive--color:               var(--erpl-yellow);
+  --d3fc-negative--color:               var(--erpl-pink);
+  --d3fc-series-1:                      var(--erpl-yellow);
+  --d3fc-series-2:                      var(--erpl-green);
+  --d3fc-series-3:                      var(--erpl-blue);
+  --d3fc-series-4:                      var(--erpl-pink);
+  --d3fc-series-5:                      #ff9d00;
+  --d3fc-series-6:                      #b08bff;
+  --d3fc-series-7:                      #79d9ff;
+  --d3fc-series-8:                      #d6e88a;
+  --d3fc-series-9:                      #ffae9d;
+  --d3fc-series-10:                     #9bf3c1;
 }
-footer a { color: var(--accent); }
-#isolation-state.good { color: var(--good); }
-#isolation-state.bad  { color: var(--bad); }
+
+/* -- Footer --------------------------------------------------------------- */
+footer {
+  padding: 8px 28px;
+  border-top: 1px solid var(--erpl-line);
+  color: var(--erpl-dim);
+  font-size: 0.78rem;
+  background: rgba(0, 0, 0, 0.18);
+  display: flex;
+  justify-content: space-between;
+  gap: 16px;
+}
+footer a {
+  color: var(--erpl-yellow);
+  text-decoration: none;
+}
+footer a:hover { text-decoration: underline; }
+#isolation-state.good { color: var(--erpl-good); }
+#isolation-state.bad  { color: var(--erpl-bad); }
 
 button#sign-out {
   background: transparent;
-  color: var(--dim);
-  border: 1px solid #2a2f3c;
+  color: var(--erpl-dim);
+  border: 1px solid var(--erpl-line);
   border-radius: 4px;
-  padding: 3px 8px;
+  padding: 4px 10px;
   cursor: pointer;
+  font-size: 0.82rem;
 }
-button#sign-out:hover { color: var(--ink); border-color: var(--ink); }
+button#sign-out:hover {
+  color: var(--erpl-ink);
+  border-color: var(--erpl-yellow);
+}

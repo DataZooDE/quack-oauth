@@ -62,36 +62,95 @@ def ensure_loaded(conn: duckdb.DuckDBPyConnection) -> None:
 
     # Project to the columns the pivot UI needs. Filter obviously-bad rows
     # so the pivot's default aggregates aren't dominated by outliers.
+    # Airport zones per the TLC zone lookup -- used to flag airport
+    # trips (a popular pivot dimension and a classic source of high-
+    # fare outliers).
+    #   132 = JFK Airport
+    #   138 = LaGuardia Airport
+    #     1 = Newark Airport (EWR)
+    airport_ids = "(132, 138, 1)"
+
     conn.execute(
         f"""
         CREATE OR REPLACE TABLE main.trips_enriched AS
         SELECT
-            t.tpep_pickup_datetime                              AS pickup_ts,
-            EXTRACT(HOUR FROM t.tpep_pickup_datetime)::INTEGER  AS hour_of_day,
-            DAYNAME(t.tpep_pickup_datetime)                     AS day_of_week,
-            t.passenger_count::INTEGER                          AS passengers,
-            t.trip_distance::DOUBLE                             AS trip_miles,
-            t.fare_amount::DOUBLE                               AS fare_usd,
-            t.tip_amount::DOUBLE                                AS tip_usd,
-            t.total_amount::DOUBLE                              AS total_usd,
+            -- time dimensions
+            t.tpep_pickup_datetime                                                AS pickup_ts,
+            EXTRACT(HOUR  FROM t.tpep_pickup_datetime)::INTEGER                   AS hour_of_day,
+            DAYNAME(t.tpep_pickup_datetime)                                       AS day_of_week,
+            DATE_DIFF('minute', t.tpep_pickup_datetime, t.tpep_dropoff_datetime)::INTEGER AS trip_minutes,
+
+            -- trip shape
+            t.passenger_count::INTEGER                                            AS passengers,
+            t.trip_distance::DOUBLE                                               AS trip_miles,
+            CASE WHEN DATE_DIFF('second', t.tpep_pickup_datetime, t.tpep_dropoff_datetime) > 0
+                 THEN t.trip_distance / (DATE_DIFF('second', t.tpep_pickup_datetime, t.tpep_dropoff_datetime) / 3600.0)
+                 ELSE NULL END::DOUBLE                                            AS avg_mph,
+
+            -- cab data-source vendor: closest yellow-taxi field to a
+            -- "cab company"; only two values exist.
+            CASE t.VendorID
+                WHEN 1 THEN 'Creative Mobile Technologies'
+                WHEN 2 THEN 'VeriFone Inc.'
+                ELSE 'unknown'
+            END                                                                   AS vendor,
+
+            -- rate code: how the fare was computed (standard meter,
+            -- airport-flat, negotiated, etc.). A great pivot dimension.
+            CASE t.RatecodeID
+                WHEN 1 THEN 'standard'
+                WHEN 2 THEN 'JFK_flat_fare'
+                WHEN 3 THEN 'Newark'
+                WHEN 4 THEN 'Nassau_or_Westchester'
+                WHEN 5 THEN 'negotiated'
+                WHEN 6 THEN 'group_ride'
+                ELSE 'unknown'
+            END                                                                   AS rate_code,
+
             CASE t.payment_type
                 WHEN 1 THEN 'credit_card'
                 WHEN 2 THEN 'cash'
                 WHEN 3 THEN 'no_charge'
                 WHEN 4 THEN 'dispute'
                 ELSE 'other'
-            END                                                  AS payment,
-            pu.Borough                                           AS pickup_borough,
-            pu.Zone                                              AS pickup_zone,
-            dz.Borough                                           AS dropoff_borough,
-            dz.Zone                                              AS dropoff_zone
+            END                                                                   AS payment,
+
+            -- fare breakdown (USD). Sums of these come ≈ total_usd.
+            t.fare_amount::DOUBLE                                                 AS fare_usd,
+            t.extra::DOUBLE                                                       AS extra_usd,
+            t.mta_tax::DOUBLE                                                     AS mta_tax_usd,
+            t.tolls_amount::DOUBLE                                                AS tolls_usd,
+            t.tip_amount::DOUBLE                                                  AS tip_usd,
+            COALESCE(t.congestion_surcharge, 0)::DOUBLE                           AS congestion_usd,
+            COALESCE(t.airport_fee, 0)::DOUBLE                                    AS airport_fee_usd,
+            t.total_amount::DOUBLE                                                AS total_usd,
+
+            -- derived: tip rate as percent of fare (credit-card only,
+            -- since cash tips aren't logged accurately).
+            CASE WHEN t.payment_type = 1 AND t.fare_amount > 0
+                 THEN ROUND(100.0 * t.tip_amount / t.fare_amount, 1)
+                 ELSE NULL END::DOUBLE                                            AS tip_pct,
+
+            -- airport flags (JFK, LGA, EWR)
+            (t.PULocationID IN {airport_ids})                                     AS is_airport_pickup,
+            (t.DOLocationID IN {airport_ids})                                     AS is_airport_dropoff,
+
+            -- zone enrichment
+            pu.Borough                                                            AS pickup_borough,
+            pu.Zone                                                               AS pickup_zone,
+            pu.service_zone                                                       AS pickup_service_zone,
+            dz.Borough                                                            AS dropoff_borough,
+            dz.Zone                                                               AS dropoff_zone,
+            dz.service_zone                                                       AS dropoff_service_zone
+
         FROM read_parquet('{TRIPS_FILE.as_posix()}') t
         JOIN main.zones pu ON t.PULocationID = pu.LocationID
         JOIN main.zones dz ON t.DOLocationID = dz.LocationID
-        WHERE t.trip_distance BETWEEN 0.1 AND 50
-          AND t.fare_amount  BETWEEN 0   AND 200
-          AND t.total_amount BETWEEN 0   AND 500
-          AND t.passenger_count BETWEEN 1 AND 6
+        WHERE t.trip_distance     BETWEEN 0.1 AND 50
+          AND t.fare_amount       BETWEEN 0   AND 200
+          AND t.total_amount      BETWEEN 0   AND 500
+          AND t.passenger_count   BETWEEN 1   AND 6
+          AND DATE_DIFF('second', t.tpep_pickup_datetime, t.tpep_dropoff_datetime) BETWEEN 30 AND 7200
         """
     )
 

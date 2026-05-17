@@ -29,6 +29,10 @@ example/.env.demo
 example/.env.demo.smoke
 example/cache/
 example/**/__pycache__/
+# Google OAuth 2.0 Web Application client JSON downloaded from
+# console.cloud.google.com/apis/credentials. Filename is
+# client_secret_<client_id>.apps.googleusercontent.com.json.
+client_secret_*.json
 # GCP service-account JSON keys. Match any *.json file with the
 # google-issued naming pattern, plus the convention `.gcp-key.json`.
 .gcp-key.json

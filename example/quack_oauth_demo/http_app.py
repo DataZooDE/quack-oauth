@@ -28,18 +28,21 @@ from aiohttp import web
 log = logging.getLogger(__name__)
 
 STATIC_DIR = Path(__file__).resolve().parent / "static"
-GITHUB_AUTH_URL = "https://github.com/login/oauth/authorize"
-GITHUB_TOKEN_URL = "https://github.com/login/oauth/access_token"
-# OAuth Web Flow user-to-server tokens carry `repo` by default; the
-# server-side policy grants Attach + Scan to any token with that scope.
-OAUTH_SCOPE = "read:user"
+# Google OAuth 2.0 Web Server flow. The authorize endpoint redirects
+# the user, the token endpoint takes (code, client_secret) and returns
+# an opaque `ya29.*` access_token. The server-side policy then grants
+# Attach + Scan to any token carrying `openid` (every Web Flow token
+# we request does).
+GOOGLE_AUTH_URL = "https://accounts.google.com/o/oauth2/v2/auth"
+GOOGLE_TOKEN_URL = "https://oauth2.googleapis.com/token"
+OAUTH_SCOPE = "openid email profile"
 STATE_TTL_S = 300
 
 
 @dataclass
 class AppConfig:
-    github_client_id: str
-    github_client_secret: str
+    oauth_client_id: str
+    oauth_client_secret: str
     redirect_uri: str
     quack_port: int
 
@@ -73,14 +76,22 @@ async def oauth_login(request: web.Request) -> web.Response:
     cfg: AppConfig = request.app["cfg"]
     state = secrets.token_urlsafe(24)
     request.app["oauth_state"][state] = time.time()
+    # Minimal authorize parameters. We deliberately do NOT pass
+    # `include_granted_scopes=true` -- that flag can pull previously-
+    # consented scopes (from the same client, or from other apps in
+    # the same project's OAuth consent screen) into the prompt,
+    # producing a wall-of-scopes display even when our `scope` only
+    # asks for openid+email+profile.
     params = {
-        "client_id": cfg.github_client_id,
+        "client_id": cfg.oauth_client_id,
         "redirect_uri": cfg.redirect_uri,
+        "response_type": "code",
         "scope": OAUTH_SCOPE,
         "state": state,
-        "allow_signup": "false",
+        "access_type": "online",
+        "prompt": "select_account",
     }
-    return web.HTTPFound(f"{GITHUB_AUTH_URL}?{urlencode(params)}")
+    return web.HTTPFound(f"{GOOGLE_AUTH_URL}?{urlencode(params)}")
 
 
 async def oauth_callback(request: web.Request) -> web.Response:
@@ -100,14 +111,15 @@ async def oauth_callback(request: web.Request) -> web.Response:
         return web.Response(status=400, text="unknown or stale state")
 
     body = {
-        "client_id": cfg.github_client_id,
-        "client_secret": cfg.github_client_secret,
+        "client_id": cfg.oauth_client_id,
+        "client_secret": cfg.oauth_client_secret,
         "code": code,
         "redirect_uri": cfg.redirect_uri,
+        "grant_type": "authorization_code",
     }
     async with aiohttp.ClientSession() as session:
         async with session.post(
-            GITHUB_TOKEN_URL,
+            GOOGLE_TOKEN_URL,
             data=body,
             headers={"Accept": "application/json"},
         ) as r:
@@ -115,7 +127,7 @@ async def oauth_callback(request: web.Request) -> web.Response:
     token = payload.get("access_token")
     if not token:
         return web.Response(
-            status=400, text=f"github did not return access_token: {payload}"
+            status=400, text=f"google did not return access_token: {payload}"
         )
 
     # Land the token in sessionStorage and bounce back to /. The
@@ -123,7 +135,7 @@ async def oauth_callback(request: web.Request) -> web.Response:
     html = (
         "<!doctype html><meta charset='utf-8'><title>OAuth callback</title>"
         "<script>"
-        f"sessionStorage.setItem('gh_token', {token!r});"
+        f"sessionStorage.setItem('oauth_token', {token!r});"
         "location.replace('/');"
         "</script>"
     )
