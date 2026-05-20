@@ -121,7 +121,7 @@ void RegisterQuackOauthDeviceLogin(ExtensionLoader &loader) {
 	// Side-effecting (mutates SECRET state, emits audit events) AND
 	// non-idempotent (each call mints a NEW device_code with the IdP).
 	// MUST NOT be constant-folded or memoised across rows.
-	fn.SetVolatile();
+	fn.stability = FunctionStability::VOLATILE;
 	CreateScalarFunctionInfo info(std::move(fn));
 	FunctionDescription desc;
 	desc.description = "Run an RFC 8628 device authorization flow against the named quack_oauth SECRET. "

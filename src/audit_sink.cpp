@@ -9,6 +9,13 @@
 #include "duckdb/main/connection.hpp"
 #include "duckdb/main/prepared_statement.hpp"
 
+// DuckDB 1.4 spells this `DUCKDB_LOG_WARN`; 1.5+ renamed it to
+// `DUCKDB_LOG_WARNING`. Map the new spelling to the old one when only
+// the latter is available.
+#if !defined(DUCKDB_LOG_WARNING) && defined(DUCKDB_LOG_WARN)
+#define DUCKDB_LOG_WARNING DUCKDB_LOG_WARN
+#endif
+
 #include "quack_oauth_state.hpp"
 #include "secret_accessor.hpp"
 

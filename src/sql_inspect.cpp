@@ -26,6 +26,17 @@
 #include "duckdb/parser/parsed_data/copy_info.hpp"
 #include "duckdb/parser/parsed_data/pragma_info.hpp"
 #include "duckdb/common/exception.hpp"
+#include "duckdb/logging/logger.hpp"
+
+// DuckDB 1.5 restructured `SetOperationNode` from `left`/`right`
+// unique_ptrs into a flat `children` vector. We probe a known 1.5-only
+// macro from <duckdb/logging/logger.hpp> as the version sentinel
+// (1.5 has `DUCKDB_LOG_WARNING`, 1.4 has `DUCKDB_LOG_WARN`).
+#if defined(DUCKDB_LOG_WARNING)
+#define QUACK_OAUTH_SETOP_HAS_CHILDREN 1
+#else
+#define QUACK_OAUTH_SETOP_HAS_CHILDREN 0
+#endif
 
 namespace quack_oauth {
 
@@ -122,15 +133,24 @@ void WalkQueryNode(const duckdb::QueryNode &qn, AuthzRequest &req) {
 		break;
 	}
 	case duckdb::QueryNodeType::SET_OPERATION_NODE: {
-		// In current DuckDB the set-operation node stores its arms as
-		// a `children` vector; the legacy `left` / `right` accessors
-		// were removed.
+		// DuckDB 1.5 flattened the set-operation arms into a `children`
+		// vector; 1.4 LTS still exposes them as separate `left` / `right`
+		// unique_ptrs.
 		const auto &son = qn.Cast<duckdb::SetOperationNode>();
+#if QUACK_OAUTH_SETOP_HAS_CHILDREN
 		for (const auto &child : son.children) {
 			if (child) {
 				WalkQueryNode(*child, req);
 			}
 		}
+#else
+		if (son.left) {
+			WalkQueryNode(*son.left, req);
+		}
+		if (son.right) {
+			WalkQueryNode(*son.right, req);
+		}
+#endif
 		break;
 	}
 	default:

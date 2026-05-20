@@ -553,11 +553,11 @@ void RegisterQuackOauthCheckToken(ExtensionLoader &loader) {
 	ScalarFunction fn1({LogicalType::VARCHAR}, LogicalType::BOOLEAN, CheckTokenScalarFun1);
 	// Each call may issue an HTTP fetch (JWKS / introspect / tokeninfo) and
 	// always emits audit events. MUST NOT be constant-folded.
-	fn1.SetVolatile();
+	fn1.stability = FunctionStability::VOLATILE;
 	set.AddFunction(fn1);
 	ScalarFunction fn3({LogicalType::VARCHAR, LogicalType::VARCHAR, LogicalType::VARCHAR}, LogicalType::BOOLEAN,
 	                   CheckTokenScalarFun3);
-	fn3.SetVolatile();
+	fn3.stability = FunctionStability::VOLATILE;
 	set.AddFunction(fn3);
 
 	CreateScalarFunctionInfo info(std::move(set));

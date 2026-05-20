@@ -75,7 +75,7 @@ static void RefreshScalarFun(DataChunk &args, ExpressionState &state, Vector &re
 void RegisterQuackOauthRefresh(ExtensionLoader &loader) {
 	ScalarFunction fn("quack_oauth_refresh", {LogicalType::VARCHAR}, LogicalType::VARCHAR, RefreshScalarFun);
 	// Side-effecting (rotates tokens on the SECRET) and HTTP-bound.
-	fn.SetVolatile();
+	fn.stability = FunctionStability::VOLATILE;
 	CreateScalarFunctionInfo info(std::move(fn));
 	FunctionDescription desc;
 	desc.description = "Run an RFC 6749 §6 refresh_token grant against the token endpoint of the named "

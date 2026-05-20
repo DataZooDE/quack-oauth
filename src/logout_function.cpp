@@ -48,7 +48,7 @@ static void LogoutScalarFun(DataChunk &args, ExpressionState &state, Vector &res
 void RegisterQuackOauthLogout(ExtensionLoader &loader) {
 	ScalarFunction fn("quack_oauth_logout", {LogicalType::VARCHAR}, LogicalType::BOOLEAN, LogoutScalarFun);
 	// Side-effecting (mutates the SECRET): never fold or memoise.
-	fn.SetVolatile();
+	fn.stability = FunctionStability::VOLATILE;
 	CreateScalarFunctionInfo info(std::move(fn));
 	FunctionDescription desc;
 	desc.description = "Clears access_token, refresh_token, and expires_at on the named "

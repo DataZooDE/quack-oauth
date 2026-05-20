@@ -159,7 +159,7 @@ void RegisterQuackOauthCheckAuthorization(ExtensionLoader &loader) {
 	                  LogicalType::BOOLEAN, CheckAuthorizationScalarFun);
 	// Emits an audit event per call AND reads from session-keyed in-memory
 	// state that may change between rows. MUST NOT be constant-folded.
-	fn.SetVolatile();
+	fn.stability = FunctionStability::VOLATILE;
 	CreateScalarFunctionInfo info(std::move(fn));
 	FunctionDescription desc;
 	desc.description =
