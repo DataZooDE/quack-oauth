@@ -4,7 +4,7 @@ version = "0.1.0"
 description = "End-to-end harness: real duckdb-quack server with quack_oauth swapped in, exercised by a Python DuckDB client."
 requires-python = ">=3.10"
 dependencies = [
-    "duckdb>=1.5.2",
+    "duckdb>=1.5.3",
     "pytest>=8.0",
     "pytest-timeout>=2.3",
 ]

@@ -14,7 +14,7 @@ by a Python DuckDB client over the quack wire protocol.
   duckdb -c "INSTALL quack;"
   ```
 
-  This drops `quack.duckdb_extension` into `~/.duckdb/extensions/v1.5.2/<platform>/`
+  This drops `quack.duckdb_extension` into `~/.duckdb/extensions/v1.5.3/<platform>/`
   where the Python `duckdb` package and our harness pick it up via `LOAD quack`.
 
 ## Run

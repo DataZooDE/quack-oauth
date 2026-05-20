@@ -175,7 +175,7 @@ The data model exposed by `main.trips_enriched`:
 | Google provider preset (R-S-12) | server SECRET has no `tenant_or_realm` (preset-fix from commit `89a39d7`) |
 | `tokeninfo` decision cache | repeated identical queries: only the first hits `oauth2.googleapis.com/tokeninfo` |
 | Quack wire protocol over HTTP | browser devtools: `POST /quack` per query |
-| DuckDB-Wasm + custom extension repo | first page load: 200 from `/ext-repo/v1.5.2/wasm_eh/quack_oauth.duckdb_extension.wasm` (which the aiohttp app proxies from `get.erpl.io` with CORS injected) |
+| DuckDB-Wasm + custom extension repo | first page load: 200 from `/ext-repo/v1.5.3/wasm_eh/quack_oauth.duckdb_extension.wasm` (which the aiohttp app proxies from `get.erpl.io` with CORS injected) |
 | **Server-side SQL pivot** | each drag in the viewer → new SQL line in the log; aggregate computed by DuckDB, not the browser |
 
 ## Inspect the server side
