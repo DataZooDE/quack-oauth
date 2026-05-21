@@ -74,7 +74,7 @@ void RegisterQuackOauthLogin(ExtensionLoader &loader) {
 	ScalarFunction fn("quack_oauth_login", {LogicalType::VARCHAR}, LogicalType::VARCHAR, LoginScalarFun);
 	// Side-effecting (writes access_token + expires_at back onto the SECRET)
 	// and HTTP-bound: never fold or memoise across calls.
-	fn.SetVolatile();
+	fn.stability = FunctionStability::VOLATILE;
 	CreateScalarFunctionInfo info(std::move(fn));
 	FunctionDescription desc;
 	desc.description = "Run an RFC 6749 §4.4 client_credentials flow against the token endpoint of the "

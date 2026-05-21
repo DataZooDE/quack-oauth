@@ -140,7 +140,7 @@ void RegisterQuackOauthAcquire(ExtensionLoader &loader) {
 	ScalarFunction fn("quack_oauth_acquire", {LogicalType::VARCHAR}, LogicalType::VARCHAR, AcquireScalarFun);
 	// Side-effecting + HTTP-bound + idempotent only in the UseCached
 	// branch. Never fold or memoise.
-	fn.SetVolatile();
+	fn.stability = FunctionStability::VOLATILE;
 	CreateScalarFunctionInfo info(std::move(fn));
 	FunctionDescription desc;
 	desc.description = "One-stop client-side OAuth orchestrator (R-C-2 + R-C-4). Reads the "

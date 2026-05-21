@@ -36,8 +36,8 @@ saved an hour if this had been written down?"* If yes, write it.
 │   └── include/
 │       └── quack_oauth_extension.hpp
 ├── test/sql/                   # SQLLogicTest *.test files
-├── duckdb/                     # submodule, pinned to v1.5.2
-├── extension-ci-tools/         # submodule, pinned to v1.5.2
+├── duckdb/                     # submodule, pinned to v1.5.3
+├── extension-ci-tools/         # submodule, pinned to v1.5.3
 ├── requirements.md             # functional spec
 ├── architecture.md             # arc42 design doc
 └── docs/UPDATING.md            # how to bump the DuckDB target version
@@ -323,7 +323,7 @@ Explicit baselines (consistent with the references above):
   the base `jwt.h`. The defaults header brings in picojson and
   defaults `jwt::decode<>` to the kazuho-picojson traits. See
   `src/jwt_parse.cpp` for the live wiring.
-- **`DESCRIBE FROM <table_function()>` gotcha**: in DuckDB 1.5.2 this
+- **`DESCRIBE FROM <table_function()>` gotcha**: in DuckDB 1.5.x this
   returns a *single* `Describe` column with pre-formatted text
   ("`component varchar`"), not the separate `column_name` /
   `data_type` / `ordinal_position` columns that some clients expect.
@@ -344,17 +344,25 @@ Explicit baselines (consistent with the references above):
 
 ## Submodules
 
-Both pinned to `v1.5.2`:
+Both pinned to `v1.5.3` (current stable):
 
 ```
-duckdb              → tag      v1.5.2   (8a5851971f…)
-extension-ci-tools  → branch   v1.5.2   (344397bb84…, tip of v1.5.2)
+duckdb              → tag      v1.5.3   (14eca11bd9…)
+extension-ci-tools  → branch   v1.5.3   (4b3b37b0c9…, tip of v1.5.3)
 ```
 
-Bumping the DuckDB target is a coordinated change — both submodules
-move together, plus the `duckdb_version` / `ci_tools_version` inputs
-in `.github/workflows/MainDistributionPipeline.yml`. The procedure
-is in `docs/UPDATING.md`.
+CI **also** builds against the 1.4 LTS line (currently `v1.4.4`)
+in a parallel job pair. The LTS jobs override the version via
+workflow inputs — submodules are not multi-pinned, so local dev
+defaults to stable. To build against LTS locally, check the
+submodules out to the LTS tag/branch and `make clean && GEN=ninja
+make`.
+
+Bumping the DuckDB stable target is a coordinated change — both
+submodules move together, plus the `duckdb_version` /
+`ci_tools_version` inputs in
+`.github/workflows/MainDistributionPipeline.yml`. Bumping the LTS
+pin is workflow-only. The procedure is in `docs/UPDATING.md`.
 
 When CI breaks after a bump, check DuckDB's release notes and the
 [core extension patches](https://github.com/duckdb/duckdb/commits/main/.github/patches/extensions)

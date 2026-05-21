@@ -5,7 +5,7 @@ description = "Live demo: uv-launched quack + quack-oauth server with NYC taxi d
 requires-python = ">=3.11"
 dependencies = [
     "aiohttp>=3.10",
-    "duckdb==1.5.2",
+    "duckdb==1.5.3",
     "python-dotenv>=1.0",
 ]
 

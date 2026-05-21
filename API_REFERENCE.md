@@ -2,7 +2,7 @@
 
 > Complete function, SECRET, and setting reference.
 
-**DuckDB version:** >= v1.5.2
+**DuckDB version:** v1.4.x LTS or v1.5.3+
 **Extension target:** `quack_oauth`
 
 The same per-function metadata (description, parameters, examples) is
