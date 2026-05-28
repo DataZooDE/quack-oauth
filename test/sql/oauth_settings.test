@@ -16,6 +16,8 @@ require quack_oauth
 #   R-C-2  quack_oauth_renew_skew_s = 60
 #   R-N-4  quack_oauth_trust_plaintext = false
 #   S-7b.2 quack_oauth_server_secret_name = '' (validator's server-SECRET selector)
+#          quack_oauth_telemetry_enabled = true  (opt-out via SET = false)
+#          quack_oauth_telemetry_key = '<DataZoo PostHog project key>'
 query II
 SELECT name, value FROM duckdb_settings() WHERE name LIKE 'quack_oauth%' ORDER BY name;
 ----
@@ -27,6 +29,8 @@ quack_oauth_policy_default	deny
 quack_oauth_provider	generic
 quack_oauth_renew_skew_s	60
 quack_oauth_server_secret_name	(empty)
+quack_oauth_telemetry_enabled	true
+quack_oauth_telemetry_key	phc_t3wwRLtpyEmLHYaZCSszG0MqVr74J6wnCrj9D41zk2t
 quack_oauth_trust_plaintext	false
 quack_oauth_validation_mode	jwks
 

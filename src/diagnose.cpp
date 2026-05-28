@@ -17,6 +17,10 @@
 #include "retry_http_client.hpp"
 #include "secret_accessor.hpp"
 
+#ifndef EMSCRIPTEN
+#include "telemetry.hpp"
+#endif
+
 namespace duckdb {
 
 struct DiagnoseRow {
@@ -50,6 +54,9 @@ static string ReadSetting(ClientContext &context, const string &key) {
 
 static unique_ptr<FunctionData> DiagnoseBind(ClientContext &context, TableFunctionBindInput &,
                                              vector<LogicalType> &return_types, vector<string> &names) {
+#ifndef EMSCRIPTEN
+	PostHogTelemetry::Instance().CaptureFunctionExecution("quack_oauth_diagnose");
+#endif
 	return_types = {LogicalType::VARCHAR, LogicalType::VARCHAR, LogicalType::VARCHAR};
 	names = {"component", "status", "detail"};
 
@@ -207,6 +214,9 @@ struct AuditLogGlobalState : public GlobalTableFunctionState {
 
 static unique_ptr<FunctionData> AuditLogBind(ClientContext &, TableFunctionBindInput &,
                                              vector<LogicalType> &return_types, vector<string> &names) {
+#ifndef EMSCRIPTEN
+	PostHogTelemetry::Instance().CaptureFunctionExecution("quack_oauth_audit_log");
+#endif
 	return_types = {LogicalType::BIGINT,  LogicalType::VARCHAR, LogicalType::VARCHAR, LogicalType::VARCHAR,
 	                LogicalType::VARCHAR, LogicalType::VARCHAR, LogicalType::VARCHAR, LogicalType::VARCHAR};
 	names = {"timestamp_unix_s", "event_type", "subject", "issuer", "kid", "token_hash", "action", "reason"};
@@ -275,6 +285,9 @@ struct CurrentPrincipalGlobalState : public GlobalTableFunctionState {
 
 static unique_ptr<FunctionData> CurrentPrincipalBind(ClientContext &, TableFunctionBindInput &,
                                                      vector<LogicalType> &return_types, vector<string> &names) {
+#ifndef EMSCRIPTEN
+	PostHogTelemetry::Instance().CaptureFunctionExecution("quack_oauth_current_principal");
+#endif
 	return_types = {LogicalType::VARCHAR, LogicalType::VARCHAR, LogicalType::VARCHAR,
 	                LogicalType::LIST(LogicalType::VARCHAR), LogicalType::BIGINT};
 	names = {"session_id", "subject", "issuer", "scopes", "exp"};

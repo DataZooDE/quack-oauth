@@ -647,6 +647,34 @@ SELECT * FROM quack_oauth_diagnose();
 The `token_hash` column is always the first 8 hex of `sha256(token)` —
 **never** the raw bearer.
 
+## Telemetry
+
+The extension sends anonymous usage events to a DataZoo-owned PostHog
+project so we can see which OAuth flows and provider presets get
+exercised in practice. Two event types ship: one `extension_load`
+when DuckDB first loads `quack_oauth`, and one `function_execution`
+each time a user-facing function (`quack_oauth_login`,
+`quack_oauth_acquire`, `quack_oauth_diagnose`, …) is invoked. Each
+event carries the extension name + version, DuckDB version, host
+platform, and a stable anonymous identifier derived from the
+machine's first physical MAC address. **No tokens, no claims, no
+SQL, no SECRET fields, no IdP URLs are sent.**
+
+This is on by default and can be disabled two ways — either is
+enough:
+
+```sql
+-- per-database, runtime
+SET quack_oauth_telemetry_enabled = false;
+```
+
+```bash
+# machine-wide, env var (also honoured by ../erpl and ../erpl-web)
+export DATAZOO_DISABLE_TELEMETRY=1
+```
+
+Full policy: <https://erpl.io/telemetry>.
+
 ## Features
 
 - **Four validation modes** (`jwks` / `introspect` / `tokeninfo` /

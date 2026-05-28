@@ -6,3 +6,6 @@
 	path = extension-ci-tools
 	url = https://github.com/duckdb/extension-ci-tools
 	branch = v1.5.3
+[submodule "posthog-telemetry"]
+	path = posthog-telemetry
+	url = https://github.com/DataZooDE/posthog-telemetry.git

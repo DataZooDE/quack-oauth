@@ -17,6 +17,7 @@
 #include "duckdb/parser/parsed_data/create_scalar_function_info.hpp"
 
 #include "secret_accessor.hpp"
+#include "telemetry.hpp"
 
 namespace duckdb {
 
@@ -39,6 +40,7 @@ static bool DoLogout(ClientContext &context, const string &secret_name) {
 }
 
 static void LogoutScalarFun(DataChunk &args, ExpressionState &state, Vector &result) {
+	PostHogTelemetry::Instance().CaptureFunctionExecution("quack_oauth_logout");
 	auto &context = state.GetContext();
 	UnaryExecutor::Execute<string_t, bool>(args.data[0], result, args.size(), [&](string_t secret_name_str) {
 		return DoLogout(context, secret_name_str.GetString());
