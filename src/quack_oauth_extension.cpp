@@ -15,6 +15,7 @@
 #include "login_function.hpp"
 #include "logout_function.hpp"
 #include "refresh_function.hpp"
+#include "telemetry.hpp"
 #endif
 
 #include "duckdb/main/config.hpp"
@@ -25,6 +26,14 @@ namespace duckdb {
 
 static void LoadInternal(ExtensionLoader &loader) {
 	auto &config = DBConfig::GetConfig(loader.GetDatabaseInstance());
+#ifndef EMSCRIPTEN
+	// Anonymous usage telemetry. Same key, same library, same opt-out paths
+	// as ../erpl and ../erpl-web. SetAPIKey must precede CaptureExtensionLoad;
+	// settings registration follows so that user-supplied
+	// `quack_oauth_telemetry_key` overrides the default via OnTelemetryKey.
+	PostHogTelemetry::Instance().SetAPIKey("phc_t3wwRLtpyEmLHYaZCSszG0MqVr74J6wnCrj9D41zk2t");
+	PostHogTelemetry::Instance().CaptureExtensionLoad("quack_oauth", QuackOauthExtension().Version());
+#endif
 	RegisterQuackOauthSettings(config);
 	RegisterQuackOauthSecrets(loader);
 	RegisterQuackOauthDiagnose(loader);

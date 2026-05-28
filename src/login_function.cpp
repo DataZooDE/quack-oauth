@@ -18,6 +18,7 @@
 #include "platform_time.hpp"
 #include "retry_http_client.hpp"
 #include "secret_accessor.hpp"
+#include "telemetry.hpp"
 #include "token_endpoint.hpp"
 
 namespace duckdb {
@@ -63,6 +64,7 @@ string DoLogin(ClientContext &context, const string &secret_name) {
 }
 
 static void LoginScalarFun(DataChunk &args, ExpressionState &state, Vector &result) {
+	PostHogTelemetry::Instance().CaptureFunctionExecution("quack_oauth_login");
 	auto &context = state.GetContext();
 	UnaryExecutor::Execute<string_t, string_t>(args.data[0], result, args.size(), [&](string_t secret_name_str) {
 		const auto iso = DoLogin(context, secret_name_str.GetString());

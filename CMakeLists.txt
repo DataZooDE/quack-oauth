@@ -22,6 +22,18 @@ include_directories(src/include)
 # the DUCKDB_SOURCES module `http_client_duckdb.cpp` uses it.
 include_directories(./duckdb/third_party/httplib)
 
+# Anonymous usage telemetry (shared library with ../erpl and ../erpl-web).
+# Native only -- the lib uses `duckdb_httplib_openssl::SSLClient` which is
+# not portable to wasm. The matching `PostHogTelemetry::Instance().*` calls
+# in src/ are guarded with `#ifndef EMSCRIPTEN`. Opt-out is documented in
+# README.md ("Telemetry") and exposed as the `quack_oauth_telemetry_enabled`
+# setting + the `DATAZOO_DISABLE_TELEMETRY` env var.
+# The submodule's own CMakeLists.txt finds + links OpenSSL itself.
+if(NOT EMSCRIPTEN)
+    include_directories(posthog-telemetry/include)
+    add_subdirectory(posthog-telemetry)
+endif()
+
 # Pure-logic sources (no DuckDB includes) -- compiled into BOTH the extension
 # and the Catch2 unit-test binary. See docs/IMPLEMENTATION.md section 2.3.
 set(PURE_SOURCES
@@ -100,8 +112,13 @@ build_loadable_extension(${TARGET_NAME} " " ${EXTENSION_SOURCES})
 target_compile_features(${EXTENSION_NAME} PRIVATE cxx_std_17)
 target_compile_features(${LOADABLE_EXTENSION_NAME} PRIVATE cxx_std_17)
 
-target_link_libraries(${EXTENSION_NAME} OpenSSL::SSL OpenSSL::Crypto jwt-cpp::jwt-cpp)
-target_link_libraries(${LOADABLE_EXTENSION_NAME} OpenSSL::SSL OpenSSL::Crypto jwt-cpp::jwt-cpp)
+if(NOT EMSCRIPTEN)
+  target_link_libraries(${EXTENSION_NAME} OpenSSL::SSL OpenSSL::Crypto jwt-cpp::jwt-cpp posthog_telemetry)
+  target_link_libraries(${LOADABLE_EXTENSION_NAME} OpenSSL::SSL OpenSSL::Crypto jwt-cpp::jwt-cpp posthog_telemetry)
+else()
+  target_link_libraries(${EXTENSION_NAME} OpenSSL::SSL OpenSSL::Crypto jwt-cpp::jwt-cpp)
+  target_link_libraries(${LOADABLE_EXTENSION_NAME} OpenSSL::SSL OpenSSL::Crypto jwt-cpp::jwt-cpp)
+endif()
 
 install(
   TARGETS ${EXTENSION_NAME}

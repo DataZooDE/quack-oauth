@@ -20,6 +20,7 @@
 #include "platform_time.hpp"
 #include "refresh_function.hpp"
 #include "secret_accessor.hpp"
+#include "telemetry.hpp"
 
 namespace duckdb {
 
@@ -129,6 +130,7 @@ static string DoAcquire(ClientContext &context, const string &secret_name) {
 }
 
 static void AcquireScalarFun(DataChunk &args, ExpressionState &state, Vector &result) {
+	PostHogTelemetry::Instance().CaptureFunctionExecution("quack_oauth_acquire");
 	auto &context = state.GetContext();
 	UnaryExecutor::Execute<string_t, string_t>(args.data[0], result, args.size(), [&](string_t secret_name_str) {
 		const auto tok = DoAcquire(context, secret_name_str.GetString());

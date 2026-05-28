@@ -4,7 +4,25 @@
 
 #include "env_overrides.hpp"
 
+#ifndef EMSCRIPTEN
+#include "telemetry.hpp"
+#endif
+
 namespace duckdb {
+
+#ifndef EMSCRIPTEN
+// Telemetry opt-out + key override callbacks. Forward to the
+// PostHogTelemetry singleton so a runtime `SET quack_oauth_telemetry_enabled
+// = false` (or a redirected key) takes effect immediately. Pattern copied
+// from ../erpl-web/src/erpl_web_extension.cpp:88-98.
+static void OnTelemetryEnabled(ClientContext &, SetScope, Value &parameter) {
+	PostHogTelemetry::Instance().SetEnabled(parameter.GetValue<bool>());
+}
+
+static void OnTelemetryKey(ClientContext &, SetScope, Value &parameter) {
+	PostHogTelemetry::Instance().SetAPIKey(parameter.GetValue<std::string>());
+}
+#endif
 
 // R-S-11(c) helpers: resolve each setting's default from the matching
 // `QUACK_OAUTH_<UPPER>` environment variable when present. SET in SQL
@@ -89,6 +107,23 @@ void RegisterQuackOauthSettings(DBConfig &config) {
 	config.AddExtensionOption("quack_oauth_server_secret_name",
 	                          "Name of the quack_oauth_server SECRET that check_token reads.", LogicalType::VARCHAR,
 	                          EnvStringDefault("QUACK_OAUTH_SERVER_SECRET_NAME", ""), nullptr, SetScope::GLOBAL);
+
+#ifndef EMSCRIPTEN
+	// Anonymous usage telemetry (shared with ../erpl and ../erpl-web). Default
+	// on. Two opt-out paths -- this setting AND the `DATAZOO_DISABLE_TELEMETRY`
+	// env var checked inside posthog-telemetry's PostHogProcess(). See README
+	// "Telemetry" section.
+	config.AddExtensionOption(
+	    "quack_oauth_telemetry_enabled",
+	    "Enable anonymous usage telemetry, see https://erpl.io/telemetry for details.", LogicalType::BOOLEAN,
+	    EnvBoolDefault("QUACK_OAUTH_TELEMETRY_ENABLED", true), OnTelemetryEnabled, SetScope::GLOBAL);
+	config.AddExtensionOption("quack_oauth_telemetry_key",
+	                          "PostHog API key for telemetry, see https://erpl.io/telemetry for details.",
+	                          LogicalType::VARCHAR,
+	                          EnvStringDefault("QUACK_OAUTH_TELEMETRY_KEY",
+	                                           "phc_t3wwRLtpyEmLHYaZCSszG0MqVr74J6wnCrj9D41zk2t"),
+	                          OnTelemetryKey, SetScope::GLOBAL);
+#endif
 }
 
 } // namespace duckdb

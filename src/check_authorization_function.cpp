@@ -27,6 +27,10 @@
 #include "sql_inspect.hpp"
 #include "tracing.hpp"
 
+#ifndef EMSCRIPTEN
+#include "telemetry.hpp"
+#endif
+
 namespace duckdb {
 
 // Resolve the policy_table from the active TYPE=quack_oauth_server SECRET.
@@ -57,6 +61,9 @@ static int64_t LookupClockSkew(ClientContext &context) {
 }
 
 static void CheckAuthorizationScalarFun(DataChunk &args, ExpressionState &state, Vector &result) {
+#ifndef EMSCRIPTEN
+	PostHogTelemetry::Instance().CaptureFunctionExecution("quack_oauth_check_authorization");
+#endif
 	auto &context = state.GetContext();
 	auto &shared_state = GetQuackOauthState();
 
