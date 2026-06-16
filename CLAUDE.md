@@ -198,6 +198,31 @@ Explicit baselines (consistent with the references above):
   test binary), which otherwise inherits DuckDB's `-std=c++14`. See
   `../erpl-web/CMakeLists.txt:168-171` for the proven sibling
   pattern and our own `CMakeLists.txt` for the live wiring.
+- **The cached `CMAKE_CXX_STANDARD=11` breaks the v1.5.3 build in two
+  places; force C++17 for the WHOLE build in `extension_config.cmake`.**
+  DuckDB's root CMake does `set(CMAKE_CXX_STANDARD "11" CACHE STRING ...)`,
+  and a plain `set(... CACHE ...)` in our `CMakeLists.txt` is a no-op
+  against an already-populated cache (see the gotcha above), so by default
+  every DuckDB TU compiles below C++17. Symptoms:
+    1. **Linux/GCC**: linking quack_oauth statically into DuckDB drags
+       `posthog-telemetry`'s **PUBLIC** `cxx_std_17` into DuckDB's own
+       `tools/plan_serializer`, so that one tool compiles as C++17 while
+       `libduckdb_static` stays C++11. `BufferedFileWriter::DEFAULT_OPEN_FLAGS`
+       (a `static constexpr` member *with* a deprecated out-of-line
+       definition) is then COMDAT-weak on one side and a strong symbol on
+       the other → `multiple definition` link error.
+    2. **Windows/MSVC** (VS2026 runners): DuckDB's bundled `fmt` uses inline
+       variables, rejected without `/std:c++17` (`error C7525`); at
+       `CMAKE_CXX_STANDARD=11` CMake emits no `/std` flag on MSVC at all.
+  (v1.4.4 LTS Linux is unaffected — the header differs.) **Fix:**
+  `set(CMAKE_CXX_STANDARD 17 CACHE STRING "" FORCE)` at the top of
+  `extension_config.cmake`. That file is `include()`d from
+  extension-ci-tools' `extension_build_tools.cmake` (via
+  `DUCKDB_EXTENSION_CONFIGS`) **before** DuckDB's `add_subdirectory(src/tools)`
+  and `add_third_party(fmt)`, so the FORCE lands in time and the whole build
+  agrees on C++17 (no weak/strong split; MSVC gets `/std:c++17`). Our
+  `CMakeLists.txt:13` set is too late (it runs at the extension subdir, after
+  src/tools are configured) — the FORCE must be in `extension_config.cmake`.
 - **Google's `tokeninfo` returns numeric claims as JSON strings**, not
   numbers: `"exp": "1735689600"` rather than `"exp": 1735689600`. Any
   parser that demands `picojson::value::is<std::int64_t>()` will see
