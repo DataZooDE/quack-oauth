@@ -5,17 +5,17 @@
 # Architectures we explicitly exclude:
 #   windows_amd64_mingw -- vcpkg's OpenSSL port on MinGW is fragile;
 #     sibling extensions (anofox-tabular, erpl-web) also skip it.
-#
-# Architectures enabled (incl. the wasm trio, R-N-8): the wasm-hostile
-# code paths (HTTP-bound scalars: check_token / login / refresh /
-# device_login + the duckdb_httplib_openssl http client) are excluded
-# from the wasm build via DUCKDB_NATIVE_ONLY_SOURCES in CMakeLists.txt
-# and the matching #ifndef EMSCRIPTEN guards in quack_oauth_extension.cpp.
-# The wasm binary registers settings + SECRET types + diagnose() +
-# audit_log() + current_principal() + check_authorization +
-# check_token (1-arg, no HTTP) -- enough for a host-page-managed
-# token flow where the JS layer hands the extension a pre-acquired
-# bearer.
+#   wasm_mvp / wasm_eh / wasm_threads -- excluded (issue #3). The wasm
+#     loadable side-module (emcc -sSIDE_MODULE=2) links only the libraries
+#     named in duckdb_extension_load(... LINKED_LIBS ...); without OpenSSL
+#     there, jwt-cpp's crypto symbols are unresolved and the module fails to
+#     LOAD in the browser -- a failure invisible to CI (the side-module still
+#     *builds* green because symbol resolution is deferred to load time).
+#     OAuth's interactive/redirect flows aren't viable in wasm anyway, so a
+#     clean "not available on wasm" beats an unloadable artifact. The
+#     EMSCRIPTEN source guards (DUCKDB_NATIVE_ONLY_SOURCES + #ifndef
+#     EMSCRIPTEN) stay in place for a possible future LINKED_LIBS-based wasm
+#     build, but no wasm job is emitted today.
 #
 # Build matrix:
 #   - duckdb-stable-* jobs build against the current stable DuckDB
@@ -52,7 +52,7 @@ jobs:
       duckdb_version: v1.5.3
       ci_tools_version: v1.5.3
       extension_name: quack_oauth
-      exclude_archs: 'windows_amd64_mingw'
+      exclude_archs: 'windows_amd64_mingw;wasm_mvp;wasm_eh;wasm_threads'
 
   duckdb-stable-deploy:
     name: Deploy extension binaries (v1.5.3)
@@ -62,7 +62,7 @@ jobs:
     with:
       duckdb_version: v1.5.3
       extension_name: quack_oauth
-      exclude_archs: 'windows_amd64_mingw'
+      exclude_archs: 'windows_amd64_mingw;wasm_mvp;wasm_eh;wasm_threads'
       # Mirror erpl-web: push on tag-or-main. PRs and feature branches
       # build and verify but never publish.
       deploy_latest: ${{ startsWith(github.ref, 'refs/tags/v') || github.ref == 'refs/heads/main' }}
@@ -75,7 +75,7 @@ jobs:
       duckdb_version: v1.4.4
       ci_tools_version: v1.4.4
       extension_name: quack_oauth
-      exclude_archs: 'windows_amd64_mingw'
+      exclude_archs: 'windows_amd64_mingw;wasm_mvp;wasm_eh;wasm_threads'
 
   duckdb-lts-deploy:
     name: Deploy extension binaries (v1.4.4 LTS)
@@ -85,6 +85,6 @@ jobs:
     with:
       duckdb_version: v1.4.4
       extension_name: quack_oauth
-      exclude_archs: 'windows_amd64_mingw'
+      exclude_archs: 'windows_amd64_mingw;wasm_mvp;wasm_eh;wasm_threads'
       deploy_latest: ${{ startsWith(github.ref, 'refs/tags/v') || github.ref == 'refs/heads/main' }}
       deploy_versioned: ${{ startsWith(github.ref, 'refs/tags/v') || github.ref == 'refs/heads/main' }}

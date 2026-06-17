@@ -223,6 +223,26 @@ Explicit baselines (consistent with the references above):
   agrees on C++17 (no weak/strong split; MSVC gets `/std:c++17`). Our
   `CMakeLists.txt:13` set is too late (it runs at the extension subdir, after
   src/tools are configured) — the FORCE must be in `extension_config.cmake`.
+- **The C++17 FORCE fixes the Windows *inline-variable* error (C7525) but
+  uncovers a second MSVC failure on the newest runners.** `windows-latest`
+  now ships MSVC 19.51 (VS18/"2026"), whose STL **removed**
+  `stdext::checked_array_iterator`. DuckDB v1.5.3 (and 1.4 LTS) bundle fmt
+  6.1.2, whose `#ifdef _SECURE_SCL` branch
+  (`duckdb/third_party/fmt/include/fmt/format.h`) uses that symbol →
+  `C2653: 'stdext' is not a class or namespace name`. `_SECURE_SCL` is
+  *always* defined on MSVC, so the broken branch is always taken, and
+  `_SILENCE_ALL_MS_EXT_DEPRECATION_WARNINGS` can't revive a *removed*
+  symbol. The runner is hardcoded in the extension-ci-tools submodule
+  (`config/distribution_matrix.json`) with no override input, so you can't
+  pin an older image. **Fix:** `extension_config.cmake` `include()`s
+  `scripts/patch_bundled_fmt.cmake`, which flips that guard to `#if 0` at
+  configure time (before `add_third_party(fmt)`), forcing fmt's portable
+  `#else` (plain-pointer) branch — what every non-MSVC build already uses.
+  The patch is idempotent and runs on all platforms (no-op behavior change
+  off MSVC). It edits a file inside the `duckdb/` submodule working tree, so
+  expect `git status` to show the submodule dirty after a configure; that's
+  cosmetic. Transform is covered by `make ci_config_test`
+  (`scripts/test_fmt_patch.sh`); the real MSVC compile is CI-only.
 - **Google's `tokeninfo` returns numeric claims as JSON strings**, not
   numbers: `"exp": "1735689600"` rather than `"exp": 1735689600`. Any
   parser that demands `picojson::value::is<std::int64_t>()` will see
@@ -412,18 +432,32 @@ for C++ API changes.
 - **`unittest` vs `duckdb` CLI**: the unittest runner is the reliable
   way to execute extension SQL tests (the CLI loads the extension
   but sqllogictest verbs aren't available there).
-- **Wasm path**: a wasm build is part of the spec (architecture.md
-  §1 quality goal 3). The source list in `CMakeLists.txt` is already
-  split into `DUCKDB_WASM_SAFE_SOURCES` and `DUCKDB_NATIVE_ONLY_SOURCES`;
-  the native-only set is conditionally excluded under `if(EMSCRIPTEN)`,
-  and the matching `Register*` calls in `quack_oauth_extension.cpp`
-  are wrapped in `#ifndef EMSCRIPTEN`. **When adding a new
-  network-touching scalar / table function: put its `.cpp` in
+- **Wasm path**: wasm is currently **excluded from CI** (issue #3 —
+  `wasm_mvp;wasm_eh;wasm_threads` in every `exclude_archs` of
+  `MainDistributionPipeline.yml`). The reason is a load-time failure CI
+  can't see: the wasm loadable side-module (`emcc -sSIDE_MODULE=2`) links
+  only the libraries named in `duckdb_extension_load(... LINKED_LIBS ...)`,
+  and we declare none, so jwt-cpp's OpenSSL crypto symbols are left
+  unresolved — the `.wasm` *builds* green (symbol resolution is deferred
+  to load time) but won't instantiate in the browser. OAuth's
+  interactive/redirect flows aren't viable in wasm anyway. The
+  source-side split below is **kept** so a future `LINKED_LIBS`-based
+  wasm build can be re-enabled cheaply, but no wasm artifact ships today.
+  The `CMakeLists.txt` source list is split into `DUCKDB_WASM_SAFE_SOURCES`
+  and `DUCKDB_NATIVE_ONLY_SOURCES`; the native-only set is conditionally
+  excluded under `if(EMSCRIPTEN)`, and the matching `Register*` calls in
+  `quack_oauth_extension.cpp` are wrapped in `#ifndef EMSCRIPTEN`. **When
+  adding a new network-touching scalar / table function: put its `.cpp` in
   `DUCKDB_NATIVE_ONLY_SOURCES`, and wrap both its `#include` and its
   `Register*(loader)` call in the entry point's `#ifndef EMSCRIPTEN`
   block.** Don't add `#include <openssl/…>` in any of the
   `DUCKDB_WASM_SAFE_SOURCES` files. PURE_SOURCES are always
-  wasm-safe (they're already free of DuckDB / httplib deps).
+  wasm-safe (they're already free of DuckDB / httplib deps). **To
+  re-enable wasm:** make the side-module self-contained by passing the
+  vcpkg wasm OpenSSL archives via `LINKED_LIBS` on the
+  `duckdb_extension_load(quack_oauth ...)` call in `extension_config.cmake`,
+  then drop the wasm archs from `exclude_archs`. Verify with a real
+  duckdb-wasm browser/node load (CI's build-green is not proof).
 
 ## Pointers
 
