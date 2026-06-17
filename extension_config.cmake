@@ -24,6 +24,13 @@
 set(CMAKE_CXX_STANDARD 17 CACHE STRING "C++ standard to enforce" FORCE)
 set(CMAKE_CXX_STANDARD_REQUIRED ON CACHE BOOL "" FORCE)
 
+# Patch DuckDB's bundled fmt 6.1.2 so it compiles on MSVC 19.51 (the VS18
+# windows-latest runner), whose STL removed stdext::checked_array_iterator.
+# Must run before DuckDB's add_third_party(fmt); this file is include()d from
+# extension_build_tools.cmake well before that, same as the FORCE above. See
+# scripts/patch_bundled_fmt.cmake for the full rationale.
+include(${CMAKE_CURRENT_LIST_DIR}/scripts/patch_bundled_fmt.cmake)
+
 # Extension from this repo.
 duckdb_extension_load(quack_oauth
     SOURCE_DIR ${CMAKE_CURRENT_LIST_DIR}
