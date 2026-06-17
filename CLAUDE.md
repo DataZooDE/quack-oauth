@@ -223,6 +223,18 @@ Explicit baselines (consistent with the references above):
   agrees on C++17 (no weak/strong split; MSVC gets `/std:c++17`). Our
   `CMakeLists.txt:13` set is too late (it runs at the extension subdir, after
   src/tools are configured) — the FORCE must be in `extension_config.cmake`.
+  **The FORCE is gated to the stable line only.** Applying it to the 1.4 LTS
+  line breaks *its* Windows build: LTS builds Windows with MinGW (msys2, not
+  MSVC), and at C++17 `std::byte` becomes visible and collides with the
+  Win-SDK global `byte` typedef in `rpcndr.h`
+  (`error: reference to 'byte' is ambiguous` across `wtypes.h`/`objidl.h`).
+  LTS Windows was green before the FORCE existed (it hits neither v1.5.3
+  symptom above) and doesn't need C++17. `extension_config.cmake` therefore
+  skips the FORCE when `$ENV{DUCKDB_GIT_VERSION}` (set by extension-ci-tools'
+  non-Docker "Run configure" step — the path the Windows build uses) matches
+  `v1.4.*`, with a `git describe` fallback for local dev; unknown/empty
+  assumes stable (LTS Linux compiles fine at C++17, so only LTS+MinGW is the
+  hazard).
 - **The C++17 FORCE fixes the Windows *inline-variable* error (C7525) but
   uncovers a second MSVC failure on the newest runners.** `windows-latest`
   now ships MSVC 19.51 (VS18/"2026"), whose STL **removed**
