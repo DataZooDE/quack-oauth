@@ -223,18 +223,26 @@ Explicit baselines (consistent with the references above):
   agrees on C++17 (no weak/strong split; MSVC gets `/std:c++17`). Our
   `CMakeLists.txt:13` set is too late (it runs at the extension subdir, after
   src/tools are configured) — the FORCE must be in `extension_config.cmake`.
-  **The FORCE is gated to the stable line only.** Applying it to the 1.4 LTS
-  line breaks *its* Windows build: LTS builds Windows with MinGW (msys2, not
-  MSVC), and at C++17 `std::byte` becomes visible and collides with the
-  Win-SDK global `byte` typedef in `rpcndr.h`
-  (`error: reference to 'byte' is ambiguous` across `wtypes.h`/`objidl.h`).
-  LTS Windows was green before the FORCE existed (it hits neither v1.5.3
-  symptom above) and doesn't need C++17. `extension_config.cmake` therefore
-  skips the FORCE when `$ENV{DUCKDB_GIT_VERSION}` (set by extension-ci-tools'
-  non-Docker "Run configure" step — the path the Windows build uses) matches
-  `v1.4.*`, with a `git describe` fallback for local dev; unknown/empty
-  assumes stable (LTS Linux compiles fine at C++17, so only LTS+MinGW is the
-  hazard).
+  The FORCE is **unconditional** — but that only works because both the
+  stable and the 1.4 LTS jobs now run through the **same v1.5.3
+  extension-ci-tools reusable workflow** (see `MainDistributionPipeline.yml`),
+  which pins the Windows compiler to MSVC `cl`. On MSVC, C++17 is exactly
+  what we want and there is no `std::byte` problem.
+- **Don't build the 1.4 LTS line with the `@v1.4.4` reusable workflow on the
+  current `windows-latest` image.** `@v1.4.4` leaves `CC`/`CXX` empty for the
+  `windows_amd64` arch (only `windows_amd64_mingw`/`_rtools` get gcc/g++),
+  relying on CMake autodetect. The old image autodetected MSVC; the new image
+  (VS18 + a `C:\mingw64` in PATH) autodetects **MinGW g++**, which breaks two
+  ways: (1) at C++17 `std::byte` collides with the Win-SDK global `byte`
+  typedef in `rpcndr.h` (`error: reference to 'byte' is ambiguous`); (2) even
+  past that, MinGW's `ld` cannot link the MSVC-built vcpkg OpenSSL
+  (`libssl.lib`/`libcrypto.lib`) — undefined `__chkstk`, `__security_cookie`,
+  `__GSHandlerCheck`, `__local_stdio_printf_options`, etc. The `'cl'` default
+  only landed in extension-ci-tools `v1.5.x`/`main`; there is no fixed
+  `v1.4.x` tag. **Fix:** build the LTS job with the `@v1.5.3` workflow +
+  `ci_tools_version: v1.5.3` while keeping `duckdb_version: v1.4.4`. Same
+  MSVC harness as stable; still verifies the 1.4 API because the DuckDB
+  headers/library compiled against are v1.4.4.
 - **The C++17 FORCE fixes the Windows *inline-variable* error (C7525) but
   uncovers a second MSVC failure on the newest runners.** `windows-latest`
   now ships MSVC 19.51 (VS18/"2026"), whose STL **removed**
