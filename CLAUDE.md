@@ -198,6 +198,15 @@ Explicit baselines (consistent with the references above):
   test binary), which otherwise inherits DuckDB's `-std=c++14`. See
   `../erpl-web/CMakeLists.txt:168-171` for the proven sibling
   pattern and our own `CMakeLists.txt` for the live wiring.
+  **Same naked-target trap on MSVC for the C runtime:** the Catch2 unit
+  test `add_executable` must also set
+  `MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>"`. The vcpkg
+  deps (Catch2/OpenSSL) come from a `*-static-*` triplet (`/MT`). DuckDB's
+  stable build sets the runtime library globally and the naked target
+  inherits it, but the 1.4 LTS build does NOT, so the target defaults to
+  `/MD` and the link dies with `LNK2038: mismatch detected for
+  'RuntimeLibrary': value 'MT_StaticRelease' doesn't match 'MD_DynamicRelease'`.
+  Set the property explicitly (live in our `CMakeLists.txt`).
 - **The cached `CMAKE_CXX_STANDARD=11` breaks the v1.5.3 build in two
   places; force C++17 for the WHOLE build in `extension_config.cmake`.**
   DuckDB's root CMake does `set(CMAKE_CXX_STANDARD "11" CACHE STRING ...)`,
