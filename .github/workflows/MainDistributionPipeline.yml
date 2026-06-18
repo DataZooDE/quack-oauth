@@ -5,25 +5,32 @@
 # Architectures we explicitly exclude:
 #   windows_amd64_mingw -- vcpkg's OpenSSL port on MinGW is fragile;
 #     sibling extensions (anofox-tabular, erpl-web) also skip it.
-#
-# Architectures enabled (incl. the wasm trio, R-N-8): the wasm-hostile
-# code paths (HTTP-bound scalars: check_token / login / refresh /
-# device_login + the duckdb_httplib_openssl http client) are excluded
-# from the wasm build via DUCKDB_NATIVE_ONLY_SOURCES in CMakeLists.txt
-# and the matching #ifndef EMSCRIPTEN guards in quack_oauth_extension.cpp.
-# The wasm binary registers settings + SECRET types + diagnose() +
-# audit_log() + current_principal() + check_authorization +
-# check_token (1-arg, no HTTP) -- enough for a host-page-managed
-# token flow where the JS layer hands the extension a pre-acquired
-# bearer.
+#   wasm_mvp / wasm_eh / wasm_threads -- excluded (issue #3). The wasm
+#     loadable side-module (emcc -sSIDE_MODULE=2) links only the libraries
+#     named in duckdb_extension_load(... LINKED_LIBS ...); without OpenSSL
+#     there, jwt-cpp's crypto symbols are unresolved and the module fails to
+#     LOAD in the browser -- a failure invisible to CI (the side-module still
+#     *builds* green because symbol resolution is deferred to load time).
+#     OAuth's interactive/redirect flows aren't viable in wasm anyway, so a
+#     clean "not available on wasm" beats an unloadable artifact. The
+#     EMSCRIPTEN source guards (DUCKDB_NATIVE_ONLY_SOURCES + #ifndef
+#     EMSCRIPTEN) stay in place for a possible future LINKED_LIBS-based wasm
+#     build, but no wasm job is emitted today.
 #
 # Build matrix:
 #   - duckdb-stable-* jobs build against the current stable DuckDB
 #     (v1.5.3). The repo's submodules are pinned to this version.
-#   - duckdb-lts-* jobs build against the 1.4 LTS line (v1.4.4). They
-#     override the duckdb / extension-ci-tools versions via workflow
-#     inputs; the upstream reusable workflow handles the submodule
-#     checkout to the LTS tag itself.
+#   - duckdb-lts-* jobs build against the 1.4 LTS line: DuckDB *source*
+#     v1.4.4 (via duckdb_version), but using the v1.5.3 extension-ci-tools
+#     reusable workflow + tooling (the `@v1.5.3` ref and ci_tools_version).
+#     Why not @v1.4.4: that workflow leaves the Windows compiler to
+#     autodetect, and the current windows-latest image then picks MinGW g++,
+#     which (a) trips the C++17 std::byte vs Win-SDK `byte` ambiguity and
+#     (b) can't link the MSVC-built vcpkg OpenSSL. The v1.5.3 workflow pins
+#     the Windows compiler to MSVC `cl`, matching the stable job, so the LTS
+#     build is green on the same runners. We still verify 1.4 LTS API
+#     compatibility because the DuckDB headers/library compiled against are
+#     v1.4.4 -- only the build tooling is shared with stable.
 # Both pairs publish under their own /v<ver>/ path on S3 via
 # scripts/extension-upload.sh -- there are no naming collisions.
 #
@@ -52,7 +59,7 @@ jobs:
       duckdb_version: v1.5.3
       ci_tools_version: v1.5.3
       extension_name: quack_oauth
-      exclude_archs: 'windows_amd64_mingw'
+      exclude_archs: 'windows_amd64_mingw;wasm_mvp;wasm_eh;wasm_threads'
 
   duckdb-stable-deploy:
     name: Deploy extension binaries (v1.5.3)
@@ -62,7 +69,7 @@ jobs:
     with:
       duckdb_version: v1.5.3
       extension_name: quack_oauth
-      exclude_archs: 'windows_amd64_mingw'
+      exclude_archs: 'windows_amd64_mingw;wasm_mvp;wasm_eh;wasm_threads'
       # Mirror erpl-web: push on tag-or-main. PRs and feature branches
       # build and verify but never publish.
       deploy_latest: ${{ startsWith(github.ref, 'refs/tags/v') || github.ref == 'refs/heads/main' }}
@@ -70,12 +77,14 @@ jobs:
 
   duckdb-lts-build:
     name: Build extension binaries (v1.4.4 LTS)
-    uses: duckdb/extension-ci-tools/.github/workflows/_extension_distribution.yml@v1.4.4
+    # DuckDB source v1.4.4, but built with the v1.5.3 tooling (forces MSVC cl
+    # on Windows). See the header comment for the rationale.
+    uses: duckdb/extension-ci-tools/.github/workflows/_extension_distribution.yml@v1.5.3
     with:
       duckdb_version: v1.4.4
-      ci_tools_version: v1.4.4
+      ci_tools_version: v1.5.3
       extension_name: quack_oauth
-      exclude_archs: 'windows_amd64_mingw'
+      exclude_archs: 'windows_amd64_mingw;wasm_mvp;wasm_eh;wasm_threads'
 
   duckdb-lts-deploy:
     name: Deploy extension binaries (v1.4.4 LTS)
@@ -84,7 +93,10 @@ jobs:
     secrets: inherit
     with:
       duckdb_version: v1.4.4
+      # Match the LTS build job's tooling so the deploy arch matrix lines up
+      # with the artifacts the build produced (see duckdb-lts-build).
+      ci_tools_version: v1.5.3
       extension_name: quack_oauth
-      exclude_archs: 'windows_amd64_mingw'
+      exclude_archs: 'windows_amd64_mingw;wasm_mvp;wasm_eh;wasm_threads'
       deploy_latest: ${{ startsWith(github.ref, 'refs/tags/v') || github.ref == 'refs/heads/main' }}
       deploy_versioned: ${{ startsWith(github.ref, 'refs/tags/v') || github.ref == 'refs/heads/main' }}

@@ -155,5 +155,17 @@ if(Catch2_FOUND AND NOT EMSCRIPTEN)
     set_target_properties(quack_oauth_unit_tests PROPERTIES
       RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/test"
     )
+    # Match the static CRT (/MT) of the vcpkg deps (Catch2/OpenSSL ship from a
+    # *-static-* triplet). DuckDB's stable build sets the MSVC runtime library
+    # globally and this naked add_executable inherits it; the 1.4 LTS build
+    # does not, so the target would default to /MD and fail to link Catch2
+    # with `LNK2038: RuntimeLibrary mismatch (MT_StaticRelease vs
+    # MD_DynamicRelease)`. Set it explicitly (MSVC-only; ignored elsewhere) --
+    # same naked-target gotcha as the cxx_std_17 feature above.
+    if(MSVC)
+      set_target_properties(quack_oauth_unit_tests PROPERTIES
+        MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>"
+      )
+    endif()
   endif()
 endif()

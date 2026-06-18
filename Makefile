@@ -78,3 +78,14 @@ demo: release
 .PHONY: e2e
 e2e: release
 	@cd e2e && uv sync --frozen && uv run pytest
+
+# ---------------------------------------------------------------------------
+# CI-config tests (no build needed). Assert the distribution pipeline
+# excludes the wasm archs (issue #3) and that the bundled-fmt _SECURE_SCL
+# patch transforms the header (the MSVC 19.51 / fmt 6.1.2 fix). Pure-logic
+# checks of the build/CI plumbing; the real MSVC compile is validated in CI.
+# ---------------------------------------------------------------------------
+.PHONY: ci_config_test
+ci_config_test:
+	@./scripts/test_ci_wasm_excluded.sh
+	@./scripts/test_fmt_patch.sh

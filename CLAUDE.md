@@ -198,6 +198,90 @@ Explicit baselines (consistent with the references above):
   test binary), which otherwise inherits DuckDB's `-std=c++14`. See
   `../erpl-web/CMakeLists.txt:168-171` for the proven sibling
   pattern and our own `CMakeLists.txt` for the live wiring.
+  **Same naked-target trap on MSVC for the C runtime:** the Catch2 unit
+  test `add_executable` must also set
+  `MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>"`. The vcpkg
+  deps (Catch2/OpenSSL) come from a `*-static-*` triplet (`/MT`). DuckDB's
+  stable build sets the runtime library globally and the naked target
+  inherits it, but the 1.4 LTS build does NOT, so the target defaults to
+  `/MD` and the link dies with `LNK2038: mismatch detected for
+  'RuntimeLibrary': value 'MT_StaticRelease' doesn't match 'MD_DynamicRelease'`.
+  Set the property explicitly (live in our `CMakeLists.txt`).
+- **The cached `CMAKE_CXX_STANDARD=11` breaks the v1.5.3 build in two
+  places; force C++17 for the WHOLE build in `extension_config.cmake`.**
+  DuckDB's root CMake does `set(CMAKE_CXX_STANDARD "11" CACHE STRING ...)`,
+  and a plain `set(... CACHE ...)` in our `CMakeLists.txt` is a no-op
+  against an already-populated cache (see the gotcha above), so by default
+  every DuckDB TU compiles below C++17. Symptoms:
+    1. **Linux/GCC**: linking quack_oauth statically into DuckDB drags
+       `posthog-telemetry`'s **PUBLIC** `cxx_std_17` into DuckDB's own
+       `tools/plan_serializer`, so that one tool compiles as C++17 while
+       `libduckdb_static` stays C++11. `BufferedFileWriter::DEFAULT_OPEN_FLAGS`
+       (a `static constexpr` member *with* a deprecated out-of-line
+       definition) is then COMDAT-weak on one side and a strong symbol on
+       the other → `multiple definition` link error.
+    2. **Windows/MSVC** (VS2026 runners): DuckDB's bundled `fmt` uses inline
+       variables, rejected without `/std:c++17` (`error C7525`); at
+       `CMAKE_CXX_STANDARD=11` CMake emits no `/std` flag on MSVC at all.
+  (v1.4.4 LTS Linux is unaffected — the header differs.) **Fix:**
+  `set(CMAKE_CXX_STANDARD 17 CACHE STRING "" FORCE)` at the top of
+  `extension_config.cmake`. That file is `include()`d from
+  extension-ci-tools' `extension_build_tools.cmake` (via
+  `DUCKDB_EXTENSION_CONFIGS`) **before** DuckDB's `add_subdirectory(src/tools)`
+  and `add_third_party(fmt)`, so the FORCE lands in time and the whole build
+  agrees on C++17 (no weak/strong split; MSVC gets `/std:c++17`). Our
+  `CMakeLists.txt:13` set is too late (it runs at the extension subdir, after
+  src/tools are configured) — the FORCE must be in `extension_config.cmake`.
+  The FORCE is **unconditional** — but that only works because both the
+  stable and the 1.4 LTS jobs now run through the **same v1.5.3
+  extension-ci-tools reusable workflow** (see `MainDistributionPipeline.yml`),
+  which pins the Windows compiler to MSVC `cl`. On MSVC, C++17 is exactly
+  what we want and there is no `std::byte` problem.
+- **Don't build the 1.4 LTS line with the `@v1.4.4` reusable workflow on the
+  current `windows-latest` image.** `@v1.4.4` leaves `CC`/`CXX` empty for the
+  `windows_amd64` arch (only `windows_amd64_mingw`/`_rtools` get gcc/g++),
+  relying on CMake autodetect. The old image autodetected MSVC; the new image
+  (VS18 + a `C:\mingw64` in PATH) autodetects **MinGW g++**, which breaks two
+  ways: (1) at C++17 `std::byte` collides with the Win-SDK global `byte`
+  typedef in `rpcndr.h` (`error: reference to 'byte' is ambiguous`); (2) even
+  past that, MinGW's `ld` cannot link the MSVC-built vcpkg OpenSSL
+  (`libssl.lib`/`libcrypto.lib`) — undefined `__chkstk`, `__security_cookie`,
+  `__GSHandlerCheck`, `__local_stdio_printf_options`, etc. The `'cl'` default
+  only landed in extension-ci-tools `v1.5.x`/`main`; there is no fixed
+  `v1.4.x` tag. **Fix:** build the LTS job with the `@v1.5.3` workflow +
+  `ci_tools_version: v1.5.3` while keeping `duckdb_version: v1.4.4`. Same
+  MSVC harness as stable; still verifies the 1.4 API because the DuckDB
+  headers/library compiled against are v1.4.4.
+- **The 1.4 LTS build also needs `_HAS_STD_BYTE=0` (MSVC).** Once the LTS job
+  builds with MSVC + C++17 (above), it compiles DuckDB's
+  `sqlite3_api_wrapper.cpp` — which the stable v1.5.3 build does *not* — and
+  that pulls in the Win-SDK headers where `std::byte` clashes with the SDK's
+  global `byte` (`error C2872: 'byte': ambiguous symbol`). `extension_config.cmake`
+  defines `_HAS_STD_BYTE=0` (disables `std::byte`) **for the v1.4.x line only**
+  (gated on `$ENV{DUCKDB_GIT_VERSION}`), leaving the stable build untouched.
+  Safe because DuckDB 1.4.x predates any std::byte use and our code uses none.
+  Note v1.4.4 and v1.5.3 bundle the *same* fmt 6.1.2, so both need the C++17
+  FORCE (fmt inline vars) and both get the `_SECURE_SCL` patch.
+- **The C++17 FORCE fixes the Windows *inline-variable* error (C7525) but
+  uncovers a second MSVC failure on the newest runners.** `windows-latest`
+  now ships MSVC 19.51 (VS18/"2026"), whose STL **removed**
+  `stdext::checked_array_iterator`. DuckDB v1.5.3 (and 1.4 LTS) bundle fmt
+  6.1.2, whose `#ifdef _SECURE_SCL` branch
+  (`duckdb/third_party/fmt/include/fmt/format.h`) uses that symbol →
+  `C2653: 'stdext' is not a class or namespace name`. `_SECURE_SCL` is
+  *always* defined on MSVC, so the broken branch is always taken, and
+  `_SILENCE_ALL_MS_EXT_DEPRECATION_WARNINGS` can't revive a *removed*
+  symbol. The runner is hardcoded in the extension-ci-tools submodule
+  (`config/distribution_matrix.json`) with no override input, so you can't
+  pin an older image. **Fix:** `extension_config.cmake` `include()`s
+  `scripts/patch_bundled_fmt.cmake`, which flips that guard to `#if 0` at
+  configure time (before `add_third_party(fmt)`), forcing fmt's portable
+  `#else` (plain-pointer) branch — what every non-MSVC build already uses.
+  The patch is idempotent and runs on all platforms (no-op behavior change
+  off MSVC). It edits a file inside the `duckdb/` submodule working tree, so
+  expect `git status` to show the submodule dirty after a configure; that's
+  cosmetic. Transform is covered by `make ci_config_test`
+  (`scripts/test_fmt_patch.sh`); the real MSVC compile is CI-only.
 - **Google's `tokeninfo` returns numeric claims as JSON strings**, not
   numbers: `"exp": "1735689600"` rather than `"exp": 1735689600`. Any
   parser that demands `picojson::value::is<std::int64_t>()` will see
@@ -387,18 +471,32 @@ for C++ API changes.
 - **`unittest` vs `duckdb` CLI**: the unittest runner is the reliable
   way to execute extension SQL tests (the CLI loads the extension
   but sqllogictest verbs aren't available there).
-- **Wasm path**: a wasm build is part of the spec (architecture.md
-  §1 quality goal 3). The source list in `CMakeLists.txt` is already
-  split into `DUCKDB_WASM_SAFE_SOURCES` and `DUCKDB_NATIVE_ONLY_SOURCES`;
-  the native-only set is conditionally excluded under `if(EMSCRIPTEN)`,
-  and the matching `Register*` calls in `quack_oauth_extension.cpp`
-  are wrapped in `#ifndef EMSCRIPTEN`. **When adding a new
-  network-touching scalar / table function: put its `.cpp` in
+- **Wasm path**: wasm is currently **excluded from CI** (issue #3 —
+  `wasm_mvp;wasm_eh;wasm_threads` in every `exclude_archs` of
+  `MainDistributionPipeline.yml`). The reason is a load-time failure CI
+  can't see: the wasm loadable side-module (`emcc -sSIDE_MODULE=2`) links
+  only the libraries named in `duckdb_extension_load(... LINKED_LIBS ...)`,
+  and we declare none, so jwt-cpp's OpenSSL crypto symbols are left
+  unresolved — the `.wasm` *builds* green (symbol resolution is deferred
+  to load time) but won't instantiate in the browser. OAuth's
+  interactive/redirect flows aren't viable in wasm anyway. The
+  source-side split below is **kept** so a future `LINKED_LIBS`-based
+  wasm build can be re-enabled cheaply, but no wasm artifact ships today.
+  The `CMakeLists.txt` source list is split into `DUCKDB_WASM_SAFE_SOURCES`
+  and `DUCKDB_NATIVE_ONLY_SOURCES`; the native-only set is conditionally
+  excluded under `if(EMSCRIPTEN)`, and the matching `Register*` calls in
+  `quack_oauth_extension.cpp` are wrapped in `#ifndef EMSCRIPTEN`. **When
+  adding a new network-touching scalar / table function: put its `.cpp` in
   `DUCKDB_NATIVE_ONLY_SOURCES`, and wrap both its `#include` and its
   `Register*(loader)` call in the entry point's `#ifndef EMSCRIPTEN`
   block.** Don't add `#include <openssl/…>` in any of the
   `DUCKDB_WASM_SAFE_SOURCES` files. PURE_SOURCES are always
-  wasm-safe (they're already free of DuckDB / httplib deps).
+  wasm-safe (they're already free of DuckDB / httplib deps). **To
+  re-enable wasm:** make the side-module self-contained by passing the
+  vcpkg wasm OpenSSL archives via `LINKED_LIBS` on the
+  `duckdb_extension_load(quack_oauth ...)` call in `extension_config.cmake`,
+  then drop the wasm archs from `exclude_archs`. Verify with a real
+  duckdb-wasm browser/node load (CI's build-green is not proof).
 
 ## Pointers
 

@@ -18,10 +18,18 @@ on:
       extension_name:
         required: true
         type: string
-      # DuckDB version to build against
+      # DuckDB version to build against (also used to name the artifacts).
       duckdb_version:
         required: true
         type: string
+      # extension-ci-tools ref used to generate the deploy arch matrix. Must
+      # match the ci_tools_version the build job used, or the deploy matrix
+      # will expect archs the build never produced (artifact-not-found).
+      # Defaults to duckdb_version when empty.
+      ci_tools_version:
+        required: false
+        type: string
+        default: ""
       # ';' separated list of architectures to exclude, for example: 'linux_amd64;osx_arm64'
       exclude_archs:
         required: false
@@ -72,14 +80,14 @@ jobs:
           git checkout ${{ inputs.duckdb_version }}
 
       - name: Checkout extension-ci-tools to version
-        # Submodules are pinned to the stable DuckDB version; for the
-        # LTS deploy we need the matching tools so the parsed
-        # architecture matrix lines up with what the LTS build job
-        # produced. Branch first, tag fallback.
+        # Use the SAME tools ref the build job used (ci_tools_version, falling
+        # back to duckdb_version) so the parsed architecture matrix lines up
+        # with what the build produced. Branch first, tag fallback.
         run: |
           cd extension-ci-tools
-          git fetch --depth 1 origin ${{ inputs.duckdb_version }} || \
-            git fetch --depth 1 origin tag ${{ inputs.duckdb_version }}
+          REF="${{ inputs.ci_tools_version != '' && inputs.ci_tools_version || inputs.duckdb_version }}"
+          git fetch --depth 1 origin "$REF" || \
+            git fetch --depth 1 origin tag "$REF"
           git checkout FETCH_HEAD
 
       - id: parse-matrices
@@ -119,8 +127,9 @@ jobs:
       - name: Checkout extension-ci-tools to version
         run: |
           cd extension-ci-tools
-          git fetch --depth 1 origin ${{ inputs.duckdb_version }} || \
-            git fetch --depth 1 origin tag ${{ inputs.duckdb_version }}
+          REF="${{ inputs.ci_tools_version != '' && inputs.ci_tools_version || inputs.duckdb_version }}"
+          git fetch --depth 1 origin "$REF" || \
+            git fetch --depth 1 origin tag "$REF"
           git checkout FETCH_HEAD
 
       - uses: actions/download-artifact@v4
