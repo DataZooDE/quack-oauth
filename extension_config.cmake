@@ -36,6 +36,25 @@
 set(CMAKE_CXX_STANDARD 17 CACHE STRING "C++ standard to enforce" FORCE)
 set(CMAKE_CXX_STANDARD_REQUIRED ON CACHE BOOL "" FORCE)
 
+# The 1.4 LTS build compiles DuckDB's `sqlite3_api_wrapper.cpp` (the stable
+# v1.5.3 build does not), which pulls in the Win-SDK headers. At C++17 on
+# MSVC, `std::byte` then clashes with the SDK's global `byte`
+# (`error C2872: 'byte': ambiguous symbol` in rpcndr.h/wtypes.h/objidlbase.h).
+# Disable std::byte for the LTS line -- DuckDB 1.4.x built fine before C++17
+# existed and our code doesn't use std::byte, so this is safe. Scoped to
+# v1.4.x via $ENV{DUCKDB_GIT_VERSION} (with a git-describe fallback) so the
+# green stable build is untouched.
+set(_qo_ddb_ver "$ENV{DUCKDB_GIT_VERSION}")
+if(NOT _qo_ddb_ver)
+  execute_process(
+    COMMAND git -C "${CMAKE_CURRENT_LIST_DIR}/duckdb" describe --tags
+    OUTPUT_VARIABLE _qo_ddb_ver OUTPUT_STRIP_TRAILING_WHITESPACE ERROR_QUIET)
+endif()
+if(_qo_ddb_ver MATCHES "^v?1\\.4\\.")
+  add_compile_definitions(_HAS_STD_BYTE=0)
+  message(STATUS "quack-oauth: DuckDB ${_qo_ddb_ver} (1.4 LTS) -- defining _HAS_STD_BYTE=0 (avoid MSVC std::byte vs Win-SDK byte clash)")
+endif()
+
 # Patch DuckDB's bundled fmt 6.1.2 so it compiles on MSVC 19.51 (the VS18
 # windows-latest runner), whose STL removed stdext::checked_array_iterator.
 # Must run before DuckDB's add_third_party(fmt); this file is include()d from

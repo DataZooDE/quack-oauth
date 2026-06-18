@@ -243,6 +243,16 @@ Explicit baselines (consistent with the references above):
   `ci_tools_version: v1.5.3` while keeping `duckdb_version: v1.4.4`. Same
   MSVC harness as stable; still verifies the 1.4 API because the DuckDB
   headers/library compiled against are v1.4.4.
+- **The 1.4 LTS build also needs `_HAS_STD_BYTE=0` (MSVC).** Once the LTS job
+  builds with MSVC + C++17 (above), it compiles DuckDB's
+  `sqlite3_api_wrapper.cpp` — which the stable v1.5.3 build does *not* — and
+  that pulls in the Win-SDK headers where `std::byte` clashes with the SDK's
+  global `byte` (`error C2872: 'byte': ambiguous symbol`). `extension_config.cmake`
+  defines `_HAS_STD_BYTE=0` (disables `std::byte`) **for the v1.4.x line only**
+  (gated on `$ENV{DUCKDB_GIT_VERSION}`), leaving the stable build untouched.
+  Safe because DuckDB 1.4.x predates any std::byte use and our code uses none.
+  Note v1.4.4 and v1.5.3 bundle the *same* fmt 6.1.2, so both need the C++17
+  FORCE (fmt inline vars) and both get the `_SECURE_SCL` patch.
 - **The C++17 FORCE fixes the Windows *inline-variable* error (C7525) but
   uncovers a second MSVC failure on the newest runners.** `windows-latest`
   now ships MSVC 19.51 (VS18/"2026"), whose STL **removed**
