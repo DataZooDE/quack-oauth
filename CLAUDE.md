@@ -425,6 +425,25 @@ Explicit baselines (consistent with the references above):
   quoted before substitution — see `QuoteQualifiedIdentifier` in
   `src/policy_table.cpp`; never concatenate user-influenced names
   (incl. SECRET fields) directly into SQL.
+- **No new network I/O from atexit/static-teardown paths** (posthog-
+  telemetry SIGSEGV, July 2026). `atexit` handlers and function-local
+  static destructors share one LIFO registration list: any static
+  initialized *after* your handler was registered is destroyed *before*
+  the handler runs. posthog-telemetry's shutdown handler drained its
+  event queue at exit, constructing new httplib `Client`s whose ctor
+  uses a function-local static regex — first initialized by the
+  worker's first POST, i.e. after the handler registration — so the
+  drain hit a destroyed regex: deterministic SIGSEGV in
+  `duckdb_re2::RE2::Match` after "All tests passed" on the v1.5.3
+  linux_amd64 CI job (exit 139; v1.4.4 LTS unaffected). Ordering
+  against OpenSSL cleanup alone is not enough. Rules: a shutdown
+  handler may join/stop threads but must not start new work; if exit-
+  time code must touch a lazily-initialized static, force-initialize
+  it *before* registering the handler (the `OPENSSL_init_ssl`-then-
+  `atexit` trick). Fixed in DataZooDE/posthog-telemetry#4. When a
+  teardown crash strikes only after tests pass, run
+  `./build/release/test/unittest "test/*"` under gdb — the suite
+  passing means the repro is free.
 
 ## Submodules
 
