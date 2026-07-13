@@ -110,7 +110,7 @@ string DoDeviceLoginImpl(ClientContext &context, const string &secret_name) {
 }
 
 static void DeviceLoginScalarFun(DataChunk &args, ExpressionState &state, Vector &result) {
-	PostHogTelemetry::Instance().CaptureFunctionExecution("quack_oauth_device_login");
+	PostHogTelemetry::Instance().RecordFunctionCall("quack_oauth_device_login");
 	auto &context = state.GetContext();
 	UnaryExecutor::Execute<string_t, string_t>(args.data[0], result, args.size(), [&](string_t secret_name_str) {
 		const auto iso = DoDeviceLoginImpl(context, secret_name_str.GetString());

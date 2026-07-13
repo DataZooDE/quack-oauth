@@ -62,7 +62,7 @@ static int64_t LookupClockSkew(ClientContext &context) {
 
 static void CheckAuthorizationScalarFun(DataChunk &args, ExpressionState &state, Vector &result) {
 #ifndef EMSCRIPTEN
-	PostHogTelemetry::Instance().CaptureFunctionExecution("quack_oauth_check_authorization");
+	PostHogTelemetry::Instance().RecordFunctionCall("quack_oauth_check_authorization");
 #endif
 	auto &context = state.GetContext();
 	auto &shared_state = GetQuackOauthState();

@@ -55,7 +55,7 @@ static string ReadSetting(ClientContext &context, const string &key) {
 static unique_ptr<FunctionData> DiagnoseBind(ClientContext &context, TableFunctionBindInput &,
                                              vector<LogicalType> &return_types, vector<string> &names) {
 #ifndef EMSCRIPTEN
-	PostHogTelemetry::Instance().CaptureFunctionExecution("quack_oauth_diagnose");
+	PostHogTelemetry::Instance().RecordFunctionCall("quack_oauth_diagnose");
 #endif
 	return_types = {LogicalType::VARCHAR, LogicalType::VARCHAR, LogicalType::VARCHAR};
 	names = {"component", "status", "detail"};
@@ -215,7 +215,7 @@ struct AuditLogGlobalState : public GlobalTableFunctionState {
 static unique_ptr<FunctionData> AuditLogBind(ClientContext &, TableFunctionBindInput &,
                                              vector<LogicalType> &return_types, vector<string> &names) {
 #ifndef EMSCRIPTEN
-	PostHogTelemetry::Instance().CaptureFunctionExecution("quack_oauth_audit_log");
+	PostHogTelemetry::Instance().RecordFunctionCall("quack_oauth_audit_log");
 #endif
 	return_types = {LogicalType::BIGINT,  LogicalType::VARCHAR, LogicalType::VARCHAR, LogicalType::VARCHAR,
 	                LogicalType::VARCHAR, LogicalType::VARCHAR, LogicalType::VARCHAR, LogicalType::VARCHAR};
@@ -286,7 +286,7 @@ struct CurrentPrincipalGlobalState : public GlobalTableFunctionState {
 static unique_ptr<FunctionData> CurrentPrincipalBind(ClientContext &, TableFunctionBindInput &,
                                                      vector<LogicalType> &return_types, vector<string> &names) {
 #ifndef EMSCRIPTEN
-	PostHogTelemetry::Instance().CaptureFunctionExecution("quack_oauth_current_principal");
+	PostHogTelemetry::Instance().RecordFunctionCall("quack_oauth_current_principal");
 #endif
 	return_types = {LogicalType::VARCHAR, LogicalType::VARCHAR, LogicalType::VARCHAR,
 	                LogicalType::LIST(LogicalType::VARCHAR), LogicalType::BIGINT};
