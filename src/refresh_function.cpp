@@ -66,7 +66,7 @@ string DoRefresh(ClientContext &context, const string &secret_name) {
 }
 
 static void RefreshScalarFun(DataChunk &args, ExpressionState &state, Vector &result) {
-	PostHogTelemetry::Instance().CaptureFunctionExecution("quack_oauth_refresh");
+	PostHogTelemetry::Instance().RecordFunctionCall("quack_oauth_refresh");
 	auto &context = state.GetContext();
 	UnaryExecutor::Execute<string_t, string_t>(args.data[0], result, args.size(), [&](string_t secret_name_str) {
 		const auto iso = DoRefresh(context, secret_name_str.GetString());

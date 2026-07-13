@@ -395,7 +395,7 @@ static void RunValidationLoop(Vector &tokens, idx_t count, Vector &result, Clien
 // cache the extracted Principal in QuackOauthState::session_principals so
 // the companion authz scalar can look it up.
 static void ValidateChunk(Vector &tokens, idx_t count, Vector &result, ClientContext &context, Vector *session_ids) {
-	PostHogTelemetry::Instance().CaptureFunctionExecution("quack_oauth_check_token");
+	PostHogTelemetry::Instance().RecordFunctionCall("quack_oauth_check_token");
 	const auto cfg = LoadServerConfig(context);
 
 	quack_oauth::VerifyOptions opts;

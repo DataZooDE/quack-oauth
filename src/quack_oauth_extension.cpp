@@ -32,6 +32,8 @@ static void LoadInternal(ExtensionLoader &loader) {
 	// settings registration follows so that user-supplied
 	// `quack_oauth_telemetry_key` overrides the default via OnTelemetryKey.
 	PostHogTelemetry::Instance().SetAPIKey("phc_t3wwRLtpyEmLHYaZCSszG0MqVr74J6wnCrj9D41zk2t");
+	PostHogTelemetry::Instance().SetProduct("quack_oauth", "2026.05.28", "oss");
+	PostHogTelemetry::Instance().AssociateGroup("deployment", PostHogTelemetry::GetDistinctId());
 	PostHogTelemetry::Instance().CaptureExtensionLoad("quack_oauth", QuackOauthExtension().Version());
 #endif
 	RegisterQuackOauthSettings(config);
