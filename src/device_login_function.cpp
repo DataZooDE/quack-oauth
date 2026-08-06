@@ -21,6 +21,7 @@
 #include "retry_http_client.hpp"
 #include "secret_accessor.hpp"
 #include "telemetry.hpp"
+#include "quack_oauth_banner.hpp"
 
 namespace duckdb {
 
@@ -119,7 +120,8 @@ static void DeviceLoginScalarFun(DataChunk &args, ExpressionState &state, Vector
 }
 
 void RegisterQuackOauthDeviceLogin(ExtensionLoader &loader) {
-	ScalarFunction fn("quack_oauth_device_login", {LogicalType::VARCHAR}, LogicalType::VARCHAR, DeviceLoginScalarFun);
+	ScalarFunction fn("quack_oauth_device_login", {LogicalType::VARCHAR}, LogicalType::VARCHAR,
+	                  DATAZOO_GUARD(QUACK_OAUTH_BANNER, DeviceLoginScalarFun));
 	// Side-effecting (mutates SECRET state, emits audit events) AND
 	// non-idempotent (each call mints a NEW device_code with the IdP).
 	// MUST NOT be constant-folded or memoised across rows.

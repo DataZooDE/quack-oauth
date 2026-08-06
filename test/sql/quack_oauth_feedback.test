@@ -1,0 +1,36 @@
+# name: test/sql/quack_oauth_feedback.test
+# description: The feedback banner's two contracts: errors carry an issue link,
+#              and the banner never writes anything under a test runner.
+# group: [sql]
+
+require quack_oauth
+
+# --- Every error raised by a registered function picks up the issue link, so a
+#     user who hits one is told where to report it without going looking.
+statement error
+SELECT quack_oauth_login('does_not_exist');
+----
+https://github.com/DataZooDE/quack-oauth/issues
+
+# The link is appended, not substituted: the real diagnostic must survive.
+statement error
+SELECT quack_oauth_login('does_not_exist');
+----
+SECRET 'does_not_exist' not found
+
+# --- Errors DuckDB raises before dispatch (binder, catalog, arity) are
+#     deliberately NOT annotated -- they are not ours, and claiming them would
+#     send users to the wrong tracker.
+statement error
+SELECT * FROM quack_oauth_audit_log(NULL);
+----
+Binder Error
+
+# --- The opt-out knob exists and is settable. The banner itself cannot be
+#     observed from a .test file at all -- stderr is not a tty here, which is
+#     precisely the guarantee that keeps this suite's expected output unchanged.
+statement ok
+SET datazoo_banner = false;
+
+statement ok
+SET datazoo_banner = true;

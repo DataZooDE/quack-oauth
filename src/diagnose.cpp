@@ -16,6 +16,7 @@
 #include "quack_oauth_state.hpp"
 #include "retry_http_client.hpp"
 #include "secret_accessor.hpp"
+#include "quack_oauth_banner.hpp"
 
 #ifndef EMSCRIPTEN
 #include "telemetry.hpp"
@@ -336,7 +337,8 @@ static void CurrentPrincipalScan(ClientContext &, TableFunctionInput &input, Dat
 
 void RegisterQuackOauthDiagnose(ExtensionLoader &loader) {
 	{
-		TableFunction fn("quack_oauth_diagnose", {}, DiagnoseScan, DiagnoseBind, DiagnoseInit);
+		TableFunction fn("quack_oauth_diagnose", {}, DATAZOO_GUARD(QUACK_OAUTH_BANNER, DiagnoseScan),
+		                 DATAZOO_GUARD(QUACK_OAUTH_BANNER, DiagnoseBind), DiagnoseInit);
 		CreateTableFunctionInfo info(fn);
 		FunctionDescription desc;
 		desc.description = "Health and configuration snapshot for the quack_oauth extension. Returns one row "
@@ -353,8 +355,9 @@ void RegisterQuackOauthDiagnose(ExtensionLoader &loader) {
 	}
 
 	{
-		TableFunction fn("quack_oauth_current_principal", {}, CurrentPrincipalScan, CurrentPrincipalBind,
-		                 CurrentPrincipalInit);
+		TableFunction fn("quack_oauth_current_principal", {},
+		                 DATAZOO_GUARD(QUACK_OAUTH_BANNER, CurrentPrincipalScan),
+		                 DATAZOO_GUARD(QUACK_OAUTH_BANNER, CurrentPrincipalBind), CurrentPrincipalInit);
 		CreateTableFunctionInfo info(fn);
 		FunctionDescription desc;
 		desc.description = "Returns the per-session Principal cache as a typed table (R-S-6): "
@@ -373,7 +376,8 @@ void RegisterQuackOauthDiagnose(ExtensionLoader &loader) {
 	}
 
 	{
-		TableFunction fn("quack_oauth_audit_log", {}, AuditLogScan, AuditLogBind, AuditLogInit);
+		TableFunction fn("quack_oauth_audit_log", {}, DATAZOO_GUARD(QUACK_OAUTH_BANNER, AuditLogScan),
+		                 DATAZOO_GUARD(QUACK_OAUTH_BANNER, AuditLogBind), AuditLogInit);
 		CreateTableFunctionInfo info(fn);
 		FunctionDescription desc;
 		desc.description = "Returns the in-memory audit ring (last N auth decisions) as a typed table. "

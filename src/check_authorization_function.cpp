@@ -26,6 +26,7 @@
 #include "secret_accessor.hpp"
 #include "sql_inspect.hpp"
 #include "tracing.hpp"
+#include "quack_oauth_banner.hpp"
 
 #ifndef EMSCRIPTEN
 #include "telemetry.hpp"
@@ -163,7 +164,8 @@ static void CheckAuthorizationScalarFun(DataChunk &args, ExpressionState &state,
 
 void RegisterQuackOauthCheckAuthorization(ExtensionLoader &loader) {
 	ScalarFunction fn("quack_oauth_check_authorization", {LogicalType::VARCHAR, LogicalType::VARCHAR},
-	                  LogicalType::BOOLEAN, CheckAuthorizationScalarFun);
+	                  LogicalType::BOOLEAN,
+	                  DATAZOO_GUARD(QUACK_OAUTH_BANNER, CheckAuthorizationScalarFun));
 	// Emits an audit event per call AND reads from session-keyed in-memory
 	// state that may change between rows. MUST NOT be constant-folded.
 	fn.stability = FunctionStability::VOLATILE;

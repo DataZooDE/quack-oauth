@@ -18,6 +18,7 @@
 
 #include "secret_accessor.hpp"
 #include "telemetry.hpp"
+#include "quack_oauth_banner.hpp"
 
 namespace duckdb {
 
@@ -48,7 +49,8 @@ static void LogoutScalarFun(DataChunk &args, ExpressionState &state, Vector &res
 }
 
 void RegisterQuackOauthLogout(ExtensionLoader &loader) {
-	ScalarFunction fn("quack_oauth_logout", {LogicalType::VARCHAR}, LogicalType::BOOLEAN, LogoutScalarFun);
+	ScalarFunction fn("quack_oauth_logout", {LogicalType::VARCHAR}, LogicalType::BOOLEAN,
+	                  DATAZOO_GUARD(QUACK_OAUTH_BANNER, LogoutScalarFun));
 	// Side-effecting (mutates the SECRET): never fold or memoise.
 	fn.stability = FunctionStability::VOLATILE;
 	CreateScalarFunctionInfo info(std::move(fn));
