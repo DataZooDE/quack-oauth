@@ -19,18 +19,18 @@
 #
 # Build matrix:
 #   - duckdb-stable-* jobs build against the current stable DuckDB
-#     (v1.5.3). The repo's submodules are pinned to this version.
+#     (v1.5.5). The repo's submodules are pinned to this version.
 #   - duckdb-lts-* jobs build against the 1.4 LTS line: DuckDB *source*
-#     v1.4.4 (via duckdb_version), but using the v1.5.3 extension-ci-tools
-#     reusable workflow + tooling (the `@v1.5.3` ref and ci_tools_version).
-#     Why not @v1.4.4: that workflow leaves the Windows compiler to
+#     v1.4.5 (via duckdb_version), but using the v1.5.5 extension-ci-tools
+#     reusable workflow + tooling (the `@v1.5.5` ref and ci_tools_version).
+#     Why not @v1.4.5: that workflow leaves the Windows compiler to
 #     autodetect, and the current windows-latest image then picks MinGW g++,
 #     which (a) trips the C++17 std::byte vs Win-SDK `byte` ambiguity and
-#     (b) can't link the MSVC-built vcpkg OpenSSL. The v1.5.3 workflow pins
+#     (b) can't link the MSVC-built vcpkg OpenSSL. The v1.5.5 workflow pins
 #     the Windows compiler to MSVC `cl`, matching the stable job, so the LTS
 #     build is green on the same runners. We still verify 1.4 LTS API
 #     compatibility because the DuckDB headers/library compiled against are
-#     v1.4.4 -- only the build tooling is shared with stable.
+#     v1.4.5 -- only the build tooling is shared with stable.
 # Both pairs publish under their own /v<ver>/ path on S3 via
 # scripts/extension-upload.sh -- there are no naming collisions.
 #
@@ -53,21 +53,21 @@ concurrency:
 
 jobs:
   duckdb-stable-build:
-    name: Build extension binaries (v1.5.3)
-    uses: duckdb/extension-ci-tools/.github/workflows/_extension_distribution.yml@v1.5.3
+    name: Build extension binaries (v1.5.5)
+    uses: duckdb/extension-ci-tools/.github/workflows/_extension_distribution.yml@v1.5.5
     with:
-      duckdb_version: v1.5.3
-      ci_tools_version: v1.5.3
+      duckdb_version: v1.5.5
+      ci_tools_version: v1.5.5
       extension_name: quack_oauth
       exclude_archs: 'windows_amd64_mingw;wasm_mvp;wasm_eh;wasm_threads'
 
   duckdb-stable-deploy:
-    name: Deploy extension binaries (v1.5.3)
+    name: Deploy extension binaries (v1.5.5)
     needs: duckdb-stable-build
     uses: ./.github/workflows/_extension_deploy.yml
     secrets: inherit
     with:
-      duckdb_version: v1.5.3
+      duckdb_version: v1.5.5
       extension_name: quack_oauth
       exclude_archs: 'windows_amd64_mingw;wasm_mvp;wasm_eh;wasm_threads'
       # Mirror erpl-web: push on tag-or-main. PRs and feature branches
@@ -76,26 +76,26 @@ jobs:
       deploy_versioned: ${{ startsWith(github.ref, 'refs/tags/v') || github.ref == 'refs/heads/main' }}
 
   duckdb-lts-build:
-    name: Build extension binaries (v1.4.4 LTS)
-    # DuckDB source v1.4.4, but built with the v1.5.3 tooling (forces MSVC cl
+    name: Build extension binaries (v1.4.5 LTS)
+    # DuckDB source v1.4.5, but built with the v1.5.5 tooling (forces MSVC cl
     # on Windows). See the header comment for the rationale.
-    uses: duckdb/extension-ci-tools/.github/workflows/_extension_distribution.yml@v1.5.3
+    uses: duckdb/extension-ci-tools/.github/workflows/_extension_distribution.yml@v1.5.5
     with:
-      duckdb_version: v1.4.4
-      ci_tools_version: v1.5.3
+      duckdb_version: v1.4.5
+      ci_tools_version: v1.5.5
       extension_name: quack_oauth
       exclude_archs: 'windows_amd64_mingw;wasm_mvp;wasm_eh;wasm_threads'
 
   duckdb-lts-deploy:
-    name: Deploy extension binaries (v1.4.4 LTS)
+    name: Deploy extension binaries (v1.4.5 LTS)
     needs: duckdb-lts-build
     uses: ./.github/workflows/_extension_deploy.yml
     secrets: inherit
     with:
-      duckdb_version: v1.4.4
+      duckdb_version: v1.4.5
       # Match the LTS build job's tooling so the deploy arch matrix lines up
       # with the artifacts the build produced (see duckdb-lts-build).
-      ci_tools_version: v1.5.3
+      ci_tools_version: v1.5.5
       extension_name: quack_oauth
       exclude_archs: 'windows_amd64_mingw;wasm_mvp;wasm_eh;wasm_threads'
       deploy_latest: ${{ startsWith(github.ref, 'refs/tags/v') || github.ref == 'refs/heads/main' }}
