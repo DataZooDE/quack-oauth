@@ -21,6 +21,7 @@
 #include "refresh_function.hpp"
 #include "secret_accessor.hpp"
 #include "telemetry.hpp"
+#include "quack_oauth_banner.hpp"
 
 namespace duckdb {
 
@@ -139,7 +140,8 @@ static void AcquireScalarFun(DataChunk &args, ExpressionState &state, Vector &re
 }
 
 void RegisterQuackOauthAcquire(ExtensionLoader &loader) {
-	ScalarFunction fn("quack_oauth_acquire", {LogicalType::VARCHAR}, LogicalType::VARCHAR, AcquireScalarFun);
+	ScalarFunction fn("quack_oauth_acquire", {LogicalType::VARCHAR}, LogicalType::VARCHAR,
+	                  DATAZOO_GUARD(QUACK_OAUTH_BANNER, AcquireScalarFun));
 	// Side-effecting + HTTP-bound + idempotent only in the UseCached
 	// branch. Never fold or memoise.
 	fn.stability = FunctionStability::VOLATILE;

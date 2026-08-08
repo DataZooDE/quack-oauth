@@ -33,6 +33,7 @@
 #include "validator.hpp"
 
 #include "duckdb/main/connection.hpp"
+#include "quack_oauth_banner.hpp"
 
 namespace duckdb {
 
@@ -552,13 +553,14 @@ void RegisterQuackOauthCheckToken(ExtensionLoader &loader) {
 	// via `SET quack_authentication_function = 'quack_oauth_check_token'`
 	// after `LOAD quack` (slice S-9).
 	ScalarFunctionSet set("quack_oauth_check_token");
-	ScalarFunction fn1({LogicalType::VARCHAR}, LogicalType::BOOLEAN, CheckTokenScalarFun1);
+	ScalarFunction fn1({LogicalType::VARCHAR}, LogicalType::BOOLEAN,
+	                   DATAZOO_GUARD(QUACK_OAUTH_BANNER, CheckTokenScalarFun1));
 	// Each call may issue an HTTP fetch (JWKS / introspect / tokeninfo) and
 	// always emits audit events. MUST NOT be constant-folded.
 	fn1.stability = FunctionStability::VOLATILE;
 	set.AddFunction(fn1);
 	ScalarFunction fn3({LogicalType::VARCHAR, LogicalType::VARCHAR, LogicalType::VARCHAR}, LogicalType::BOOLEAN,
-	                   CheckTokenScalarFun3);
+	                   DATAZOO_GUARD(QUACK_OAUTH_BANNER, CheckTokenScalarFun3));
 	fn3.stability = FunctionStability::VOLATILE;
 	set.AddFunction(fn3);
 

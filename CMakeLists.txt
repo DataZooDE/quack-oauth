@@ -32,7 +32,14 @@ include_directories(./duckdb/third_party/httplib)
 if(NOT EMSCRIPTEN)
     include_directories(posthog-telemetry/include)
     add_subdirectory(posthog-telemetry)
+    # Count a printed banner as a banner_shown event. Only where telemetry is
+    # actually linked -- on wasm the banner still compiles and is simply inert,
+    # since a browser has no terminal to print to.
+    set(DATAZOO_BANNER_TELEMETRY ON CACHE BOOL "" FORCE)
 endif()
+
+# Feedback banner (header-only, no dependencies, builds everywhere).
+add_subdirectory(datazoo-banner)
 
 # Pure-logic sources (no DuckDB includes) -- compiled into BOTH the extension
 # and the Catch2 unit-test binary. See docs/IMPLEMENTATION.md section 2.3.
@@ -113,11 +120,11 @@ target_compile_features(${EXTENSION_NAME} PRIVATE cxx_std_17)
 target_compile_features(${LOADABLE_EXTENSION_NAME} PRIVATE cxx_std_17)
 
 if(NOT EMSCRIPTEN)
-  target_link_libraries(${EXTENSION_NAME} OpenSSL::SSL OpenSSL::Crypto jwt-cpp::jwt-cpp posthog_telemetry)
-  target_link_libraries(${LOADABLE_EXTENSION_NAME} OpenSSL::SSL OpenSSL::Crypto jwt-cpp::jwt-cpp posthog_telemetry)
+  target_link_libraries(${EXTENSION_NAME} OpenSSL::SSL OpenSSL::Crypto jwt-cpp::jwt-cpp posthog_telemetry datazoo_banner)
+  target_link_libraries(${LOADABLE_EXTENSION_NAME} OpenSSL::SSL OpenSSL::Crypto jwt-cpp::jwt-cpp posthog_telemetry datazoo_banner)
 else()
-  target_link_libraries(${EXTENSION_NAME} OpenSSL::SSL OpenSSL::Crypto jwt-cpp::jwt-cpp)
-  target_link_libraries(${LOADABLE_EXTENSION_NAME} OpenSSL::SSL OpenSSL::Crypto jwt-cpp::jwt-cpp)
+  target_link_libraries(${EXTENSION_NAME} OpenSSL::SSL OpenSSL::Crypto jwt-cpp::jwt-cpp datazoo_banner)
+  target_link_libraries(${LOADABLE_EXTENSION_NAME} OpenSSL::SSL OpenSSL::Crypto jwt-cpp::jwt-cpp datazoo_banner)
 endif()
 
 install(

@@ -20,6 +20,7 @@
 #include "secret_accessor.hpp"
 #include "telemetry.hpp"
 #include "token_endpoint.hpp"
+#include "quack_oauth_banner.hpp"
 
 namespace duckdb {
 
@@ -73,7 +74,8 @@ static void LoginScalarFun(DataChunk &args, ExpressionState &state, Vector &resu
 }
 
 void RegisterQuackOauthLogin(ExtensionLoader &loader) {
-	ScalarFunction fn("quack_oauth_login", {LogicalType::VARCHAR}, LogicalType::VARCHAR, LoginScalarFun);
+	ScalarFunction fn("quack_oauth_login", {LogicalType::VARCHAR}, LogicalType::VARCHAR,
+	                  DATAZOO_GUARD(QUACK_OAUTH_BANNER, LoginScalarFun));
 	// Side-effecting (writes access_token + expires_at back onto the SECRET)
 	// and HTTP-bound: never fold or memoise across calls.
 	fn.stability = FunctionStability::VOLATILE;

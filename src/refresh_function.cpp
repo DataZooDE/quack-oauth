@@ -20,6 +20,7 @@
 #include "secret_accessor.hpp"
 #include "telemetry.hpp"
 #include "token_endpoint.hpp"
+#include "quack_oauth_banner.hpp"
 
 namespace duckdb {
 
@@ -75,7 +76,8 @@ static void RefreshScalarFun(DataChunk &args, ExpressionState &state, Vector &re
 }
 
 void RegisterQuackOauthRefresh(ExtensionLoader &loader) {
-	ScalarFunction fn("quack_oauth_refresh", {LogicalType::VARCHAR}, LogicalType::VARCHAR, RefreshScalarFun);
+	ScalarFunction fn("quack_oauth_refresh", {LogicalType::VARCHAR}, LogicalType::VARCHAR,
+	                  DATAZOO_GUARD(QUACK_OAUTH_BANNER, RefreshScalarFun));
 	// Side-effecting (rotates tokens on the SECRET) and HTTP-bound.
 	fn.stability = FunctionStability::VOLATILE;
 	CreateScalarFunctionInfo info(std::move(fn));

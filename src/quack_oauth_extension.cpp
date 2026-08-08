@@ -1,6 +1,7 @@
 #define DUCKDB_EXTENSION_MAIN
 
 #include "quack_oauth_extension.hpp"
+#include "quack_oauth_banner.hpp"
 #include "check_authorization_function.hpp"
 #include "diagnose.hpp"
 #include "secrets.hpp"
@@ -21,6 +22,20 @@
 #include "duckdb/main/config.hpp"
 #include "duckdb/main/database.hpp"
 #include "duckdb/main/extension/extension_loader.hpp"
+
+// The build stamps EXT_VERSION_QUACK_OAUTH from the git tag; the fallback keeps
+// the banner honest in local builds that do not, and matches the version
+// SetProduct reports below.
+#ifdef EXT_VERSION_QUACK_OAUTH
+#define QUACK_OAUTH_BANNER_VERSION EXT_VERSION_QUACK_OAUTH
+#else
+#define QUACK_OAUTH_BANNER_VERSION "2026.05.28"
+#endif
+
+// Deliberately outside namespace duckdb: the banner library is DuckDB-agnostic
+// and the guard macro refers to this object from every guarded source file.
+const datazoo::BannerInfo QUACK_OAUTH_BANNER {"quack_oauth", QUACK_OAUTH_BANNER_VERSION,
+                                              "https://github.com/DataZooDE/quack-oauth"};
 
 namespace duckdb {
 
@@ -48,6 +63,11 @@ static void LoadInternal(ExtensionLoader &loader) {
 	RegisterQuackOauthDeviceLogin(loader);
 	RegisterQuackOauthAcquire(loader);
 #endif
+
+	datazoo::RegisterBannerOption(loader);
+	// Last, so a load that fails earlier never advertises itself. Silent unless
+	// stderr is a terminal and the ~/.duckdb stamp is over a day old.
+	datazoo::ShowBanner(QUACK_OAUTH_BANNER);
 }
 
 void QuackOauthExtension::Load(ExtensionLoader &loader) {

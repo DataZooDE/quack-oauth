@@ -647,6 +647,20 @@ SELECT * FROM quack_oauth_diagnose();
 The `token_hash` column is always the first 8 hex of `sha256(token)` —
 **never** the raw bearer.
 
+## Feedback
+
+If `quack_oauth` misbehaves or does something surprising, please
+[open an issue](https://github.com/DataZooDE/quack-oauth/issues). OAuth breaks against
+real IdP configurations we cannot reproduce here — Entra app roles, Google's
+string-typed numeric claims, Keycloak realms — so a report with your setup is the
+fastest path to a fix. Every error the extension raises ends with that link.
+
+If it saved you time, a star on the repo helps other people find it.
+
+The first time you load the extension in an interactive terminal each day, a small
+banner says the same thing. It never prints when output is piped, in notebooks, or in
+CI. Silence it with `SET datazoo_banner = false;` or `DATAZOO_NO_BANNER=1`.
+
 ## Telemetry
 
 The extension sends anonymous usage events to a DataZoo-owned PostHog
