@@ -61,9 +61,18 @@ jobs:
       extension_name: quack_oauth
       exclude_archs: 'windows_amd64_mingw;wasm_mvp;wasm_eh;wasm_threads'
 
+  duckdb-stable-smoke-test:
+    name: Smoke test (v1.5.5)
+    needs: duckdb-stable-build
+    uses: ./.github/workflows/_extension_smoke_test.yml
+    with:
+      duckdb_version: v1.5.5
+      extension_name: quack_oauth
+      exclude_archs: 'windows_amd64_mingw;wasm_mvp;wasm_eh;wasm_threads'
+
   duckdb-stable-deploy:
     name: Deploy extension binaries (v1.5.5)
-    needs: duckdb-stable-build
+    needs: [duckdb-stable-build, duckdb-stable-smoke-test]
     uses: ./.github/workflows/_extension_deploy.yml
     secrets: inherit
     with:
@@ -86,9 +95,18 @@ jobs:
       extension_name: quack_oauth
       exclude_archs: 'windows_amd64_mingw;wasm_mvp;wasm_eh;wasm_threads'
 
+  duckdb-lts-smoke-test:
+    name: Smoke test (v1.4.5)
+    needs: duckdb-lts-build
+    uses: ./.github/workflows/_extension_smoke_test.yml
+    with:
+      duckdb_version: v1.4.5
+      extension_name: quack_oauth
+      exclude_archs: 'windows_amd64_mingw;wasm_mvp;wasm_eh;wasm_threads'
+
   duckdb-lts-deploy:
     name: Deploy extension binaries (v1.4.5 LTS)
-    needs: duckdb-lts-build
+    needs: [duckdb-lts-build, duckdb-lts-smoke-test]
     uses: ./.github/workflows/_extension_deploy.yml
     secrets: inherit
     with:
