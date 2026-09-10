@@ -71,7 +71,28 @@ VerifyResult ValidateToken(std::string_view token, const VerifyOptions &opts, Va
 
 	const auto first_lookup = ctx.jwks_cache.Lookup(parsed->kid, opts.now_s);
 	if (first_lookup.status == JwksLookupStatus::Hit) {
-		return VerifyWithCachedKey(token, *first_lookup.jwk, opts);
+		const auto cached_result = VerifyWithCachedKey(token, *first_lookup.jwk, opts);
+		if (cached_result != VerifyResult::InvalidSignature ||
+		    !ctx.jwks_cache.TryBeginHitRefresh(parsed->kid, opts.now_s)) {
+			return cached_result;
+		}
+
+		// A provider may rotate key material while reusing the same kid. One
+		// rate-limited refresh lets a valid token recover without allowing
+		// forged tokens to turn every verification into a JWKS request.
+		const auto refresh = ctx.http.Get(ctx.jwks_uri);
+		if (!refresh.has_value() || refresh->status_code != 200 ||
+		    !IngestJwks(parsed->kid, refresh->body, opts.now_s, ctx.jwks_cache)) {
+			// Preserve the original authentication result and the last-good
+			// cached key during an IdP outage.
+			return cached_result;
+		}
+
+		const auto refreshed_lookup = ctx.jwks_cache.Lookup(parsed->kid, opts.now_s);
+		if (refreshed_lookup.status != JwksLookupStatus::Hit) {
+			return cached_result;
+		}
+		return VerifyWithCachedKey(token, *refreshed_lookup.jwk, opts);
 	}
 	if (first_lookup.status == JwksLookupStatus::RateLimited) {
 		// Within the per-kid rate-limit window (R-S-4) -- do not refetch.

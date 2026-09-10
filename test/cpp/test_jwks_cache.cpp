@@ -121,6 +121,18 @@ TEST_CASE("JwksCache: re-fetching the same kid overwrites the cached JWK", "[jwk
 	CHECK(cache.Size() == 1);
 }
 
+TEST_CASE("JwksCache: cached-key refresh attempts are rate-limited", "[jwks][cache][rate-limit]") {
+	JwksCache cache(kRefresh);
+	cache.OnFetchSuccess(MakeRsaJwk("k1"), 100);
+
+	CHECK_FALSE(cache.TryBeginHitRefresh("k1", 110));
+	CHECK(cache.TryBeginHitRefresh("k1", 130));
+	CHECK_FALSE(cache.TryBeginHitRefresh("k1", 140));
+	CHECK(cache.TryBeginHitRefresh("k1", 160));
+	CHECK_FALSE(cache.TryBeginHitRefresh("missing", 200));
+	CHECK(cache.Lookup("k1", 200).status == JwksLookupStatus::Hit);
+}
+
 TEST_CASE("JwksCache: successful fetches are bounded by capacity", "[jwks][cache][capacity]") {
 	JwksCache cache(kRefresh, /*max_entries=*/2);
 	cache.OnFetchSuccess(MakeRsaJwk("k1"), 0);

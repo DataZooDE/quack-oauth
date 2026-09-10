@@ -39,12 +39,25 @@ void JwksCache::OnFetchSuccess(const Jwk &jwk, std::int64_t now_s) {
 		hits_.erase(hit);
 	}
 	hit_lru_.push_front(jwk.kid);
-	hits_[jwk.kid] = Entry {jwk, now_s, hit_lru_.begin()};
+	hits_[jwk.kid] = Entry {jwk, now_s, now_s, hit_lru_.begin()};
 	while (hits_.size() > max_entries_) {
 		const auto victim = hit_lru_.back();
 		hit_lru_.pop_back();
 		hits_.erase(victim);
 	}
+}
+
+bool JwksCache::TryBeginHitRefresh(const std::string &kid, std::int64_t now_s) {
+	const auto hit = hits_.find(kid);
+	if (hit == hits_.end()) {
+		return false;
+	}
+	const auto elapsed = now_s - hit->second.last_refresh_attempt_s;
+	if (elapsed < min_refresh_s_) {
+		return false;
+	}
+	hit->second.last_refresh_attempt_s = now_s;
+	return true;
 }
 
 void JwksCache::OnFetchMiss(const std::string &kid, std::int64_t now_s) {

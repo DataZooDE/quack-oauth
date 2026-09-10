@@ -64,6 +64,11 @@ public:
 	// timer for this kid.
 	void OnFetchMiss(const std::string &kid, std::int64_t now_s);
 
+	// Reserve one rate-limited refresh attempt for an already-cached kid.
+	// Returns false when another attempt occurred inside `min_refresh_s`.
+	// The cached JWK remains available even when the refresh later fails.
+	bool TryBeginHitRefresh(const std::string &kid, std::int64_t now_s);
+
 	std::size_t Size() const noexcept;
 	std::size_t MissSize() const noexcept;
 
@@ -71,6 +76,7 @@ private:
 	struct Entry {
 		Jwk jwk;
 		std::int64_t fetched_at_s = 0;
+		std::int64_t last_refresh_attempt_s = 0;
 		std::list<std::string>::iterator lru_it;
 	};
 	struct MissEntry {

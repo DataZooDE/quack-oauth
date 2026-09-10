@@ -54,43 +54,45 @@ struct TestKey {
 	Jwk jwk;
 };
 
+TestKey GenerateValidatorKey(const std::string &kid) {
+	EVP_PKEY *pkey = EVP_RSA_gen(2048);
+	REQUIRE(pkey != nullptr);
+
+	BIO *priv_bio = BIO_new(BIO_s_mem());
+	PEM_write_bio_PrivateKey(priv_bio, pkey, nullptr, nullptr, 0, nullptr, nullptr);
+	char *priv_data = nullptr;
+	const long priv_len = BIO_get_mem_data(priv_bio, &priv_data);
+	std::string priv_pem(priv_data, static_cast<std::size_t>(priv_len));
+	BIO_free(priv_bio);
+
+	BIGNUM *n_bn = nullptr;
+	BIGNUM *e_bn = nullptr;
+	EVP_PKEY_get_bn_param(pkey, OSSL_PKEY_PARAM_RSA_N, &n_bn);
+	EVP_PKEY_get_bn_param(pkey, OSSL_PKEY_PARAM_RSA_E, &e_bn);
+
+	auto bn_to_b64url = [](const BIGNUM *bn) {
+		std::vector<unsigned char> buf(static_cast<std::size_t>(BN_num_bytes(bn)));
+		BN_bn2bin(bn, buf.data());
+		return B64UrlNoPad(std::string(buf.begin(), buf.end()));
+	};
+
+	Jwk jwk;
+	jwk.kid = kid;
+	jwk.kty = "RSA";
+	jwk.alg = "RS256";
+	jwk.use = "sig";
+	jwk.n = bn_to_b64url(n_bn);
+	jwk.e = bn_to_b64url(e_bn);
+
+	BN_free(n_bn);
+	BN_free(e_bn);
+	EVP_PKEY_free(pkey);
+
+	return TestKey {std::move(priv_pem), std::move(jwk)};
+}
+
 const TestKey &GetValidatorKey() {
-	static const TestKey k = [] {
-		EVP_PKEY *pkey = EVP_RSA_gen(2048);
-		REQUIRE(pkey != nullptr);
-
-		BIO *priv_bio = BIO_new(BIO_s_mem());
-		PEM_write_bio_PrivateKey(priv_bio, pkey, nullptr, nullptr, 0, nullptr, nullptr);
-		char *priv_data = nullptr;
-		const long priv_len = BIO_get_mem_data(priv_bio, &priv_data);
-		std::string priv_pem(priv_data, static_cast<std::size_t>(priv_len));
-		BIO_free(priv_bio);
-
-		BIGNUM *n_bn = nullptr;
-		BIGNUM *e_bn = nullptr;
-		EVP_PKEY_get_bn_param(pkey, OSSL_PKEY_PARAM_RSA_N, &n_bn);
-		EVP_PKEY_get_bn_param(pkey, OSSL_PKEY_PARAM_RSA_E, &e_bn);
-
-		auto bn_to_b64url = [](const BIGNUM *bn) {
-			std::vector<unsigned char> buf(static_cast<std::size_t>(BN_num_bytes(bn)));
-			BN_bn2bin(bn, buf.data());
-			return B64UrlNoPad(std::string(buf.begin(), buf.end()));
-		};
-
-		Jwk jwk;
-		jwk.kid = "validator-key-1";
-		jwk.kty = "RSA";
-		jwk.alg = "RS256";
-		jwk.use = "sig";
-		jwk.n = bn_to_b64url(n_bn);
-		jwk.e = bn_to_b64url(e_bn);
-
-		BN_free(n_bn);
-		BN_free(e_bn);
-		EVP_PKEY_free(pkey);
-
-		return TestKey {std::move(priv_pem), std::move(jwk)};
-	}();
+	static const TestKey k = GenerateValidatorKey("validator-key-1");
 	return k;
 }
 
@@ -164,6 +166,44 @@ TEST_CASE("Validator: cache hit short-circuits the HTTP fetch", "[validator][cac
 	const auto token = Sign(k, 1700003600, 1700000000);
 	CHECK(ValidateToken(token, BaseOpts(), ctx) == VerifyResult::Ok);
 	CHECK(http.call_count == 0);
+}
+
+TEST_CASE("Validator: invalid signature refreshes a reused kid and retries once", "[validator][rotation]") {
+	const auto &old_key = GetValidatorKey();
+	const auto rotated_key = GenerateValidatorKey(old_key.jwk.kid);
+	JwksCache cache(30);
+	cache.OnFetchSuccess(old_key.jwk, 1699999900);
+
+	FakeHttpClient http;
+	http.next_response = IHttpClient::Response {200, JwksWith(rotated_key.jwk)};
+	ValidateContext ctx {http, cache, "https://idp.test/jwks"};
+
+	const auto token = Sign(rotated_key, 1700003600, 1700000000);
+	CHECK(ValidateToken(token, BaseOpts(), ctx) == VerifyResult::Ok);
+	CHECK(http.call_count == 1);
+}
+
+TEST_CASE("Validator: cached-key refresh failure keeps the last-good key and rate-limits retries",
+          "[validator][rotation][rate-limit]") {
+	const auto &old_key = GetValidatorKey();
+	const auto rotated_key = GenerateValidatorKey(old_key.jwk.kid);
+	JwksCache cache(30);
+	cache.OnFetchSuccess(old_key.jwk, 1699999900);
+
+	FakeHttpClient http;
+	http.next_response = std::nullopt;
+	ValidateContext ctx {http, cache, "https://idp.test/jwks"};
+
+	const auto rotated_token = Sign(rotated_key, 1700003600, 1700000000);
+	CHECK(ValidateToken(rotated_token, BaseOpts(), ctx) == VerifyResult::InvalidSignature);
+	CHECK(http.call_count == 1);
+
+	CHECK(ValidateToken(rotated_token, BaseOpts(1700000010), ctx) == VerifyResult::InvalidSignature);
+	CHECK(http.call_count == 1);
+
+	const auto old_token = Sign(old_key, 1700003600, 1700000000);
+	CHECK(ValidateToken(old_token, BaseOpts(1700000010), ctx) == VerifyResult::Ok);
+	CHECK(http.call_count == 1);
 }
 
 TEST_CASE("Validator: cache miss triggers a fetch, populates, then verifies", "[validator][cache-miss]") {

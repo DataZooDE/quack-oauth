@@ -39,7 +39,8 @@ struct IntrospectContext {
 // Validate a JWT end-to-end via JWKS-local verification:
 //   1. Parse the token, extract `kid`.
 //   2. Look up the `kid` in the cache.
-//      - Hit: verify against the cached JWK.
+//      - Hit: verify against the cached JWK. On InvalidSignature, reserve one
+//        rate-limited refresh, fetch JWKS, replace the key, and retry once.
 //      - Miss: fetch the JWKS via `ctx.http.Get(ctx.jwks_uri)`, parse it into
 //        the cache, then verify against the newly-cached JWK.
 //      - RateLimited: do not fetch; return `UnknownKid` so the caller's
@@ -51,7 +52,8 @@ struct IntrospectContext {
 // Side effects: on success, `ctx.jwks_cache` is updated with every key from
 // the fetched JWKS. On a fetch that does not contain the target `kid`, the
 // cache records a miss so subsequent calls within the rate-limit window
-// short-circuit.
+// short-circuit. Refresh failure on an existing hit preserves its last-good
+// cached key and returns the original InvalidSignature result.
 VerifyResult ValidateToken(std::string_view token, const VerifyOptions &opts, ValidateContext &ctx);
 
 // Dependencies for the Google-style tokeninfo path. Parallel to
