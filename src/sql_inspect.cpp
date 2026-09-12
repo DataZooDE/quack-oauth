@@ -11,6 +11,11 @@
 #include "duckdb/parser/tableref/basetableref.hpp"
 #include "duckdb/parser/tableref/joinref.hpp"
 #include "duckdb/parser/tableref/subqueryref.hpp"
+#include "duckdb/parser/tableref/table_function_ref.hpp"
+#include "duckdb/parser/tableref/pivotref.hpp"
+#include "duckdb/parser/expression/function_expression.hpp"
+#include "duckdb/parser/expression/subquery_expression.hpp"
+#include "duckdb/parser/group_by_node.hpp"
 #include "duckdb/parser/statement/select_statement.hpp"
 #include "duckdb/parser/statement/insert_statement.hpp"
 #include "duckdb/parser/statement/update_statement.hpp"
@@ -87,6 +92,21 @@ void AddObject(AuthzRequest &req, const std::string &catalog, const std::string 
 	}
 }
 
+// Surface a TABLE FUNCTION (read_csv, postgres_query, glob, read_parquet, …)
+// as a policy-gated object under the reserved `fn:` namespace, so default-deny
+// covers it and a rule can still allow a specific safe function. Table
+// functions are NOT base tables, so schema-scoped isolation never gated them;
+// left unsurfaced, `SELECT … FROM entitled, read_csv('http://…')` reaches the
+// serving connection's secrets/attached catalogs unchecked (the F1 boundary
+// failure). `fn:` cannot collide with a real `schema.table` object (no `:`
+// there) and is exempt from the system-object filter.
+void AddFunctionObject(AuthzRequest &req, const std::string &name) {
+	const auto fn = "fn:" + LowerAscii(name.empty() ? "?" : name);
+	if (std::find(req.objects.begin(), req.objects.end(), fn) == req.objects.end()) {
+		req.objects.push_back(fn);
+	}
+}
+
 void AddColumn(AuthzRequest &req, const std::string &col) {
 	if (col.empty()) {
 		return;
@@ -99,6 +119,8 @@ void AddColumn(AuthzRequest &req, const std::string &col) {
 
 void WalkTableRef(const duckdb::TableRef &ref, AuthzRequest &req);
 
+void WalkQueryNode(const duckdb::QueryNode &qn, AuthzRequest &req);
+
 void WalkExpression(const duckdb::ParsedExpression &expr, AuthzRequest &req) {
 	if (expr.GetExpressionClass() == duckdb::ExpressionClass::COLUMN_REF) {
 		const auto &cr = expr.Cast<duckdb::ColumnRefExpression>();
@@ -107,6 +129,16 @@ void WalkExpression(const duckdb::ParsedExpression &expr, AuthzRequest &req) {
 		}
 	} else if (expr.GetExpressionClass() == duckdb::ExpressionClass::STAR) {
 		AddColumn(req, "*");
+	} else if (expr.GetExpressionClass() == duckdb::ExpressionClass::SUBQUERY) {
+		// A subquery in an expression position (scalar in SELECT, EXISTS/IN in
+		// WHERE/HAVING, a correlated body). Its FROM tables are NOT enumerated
+		// as expression children, so walk its query node explicitly — else
+		// `SELECT (SELECT max(x) FROM other_tenant) FROM entitled` reaches
+		// another tenant's rows unchecked (the F2 gap).
+		const auto &sq = expr.Cast<duckdb::SubqueryExpression>();
+		if (sq.subquery && sq.subquery->node) {
+			WalkQueryNode(*sq.subquery->node, req);
+		}
 	}
 	duckdb::ParsedExpressionIterator::EnumerateChildren(
 	    expr, [&](const duckdb::ParsedExpression &child) { WalkExpression(child, req); });
@@ -122,6 +154,23 @@ void WalkQueryNode(const duckdb::QueryNode &qn, AuthzRequest &req) {
 		for (const auto &expr : sn.select_list) {
 			if (expr) {
 				WalkExpression(*expr, req);
+			}
+		}
+		// Walk the remaining expression clauses too — a subquery reaching
+		// another tenant hides in WHERE/HAVING/QUALIFY/GROUP BY just as easily
+		// as in the SELECT list (F2). WalkExpression recurses into subqueries.
+		if (sn.where_clause) {
+			WalkExpression(*sn.where_clause, req);
+		}
+		if (sn.having) {
+			WalkExpression(*sn.having, req);
+		}
+		if (sn.qualify) {
+			WalkExpression(*sn.qualify, req);
+		}
+		for (const auto &g : sn.groups.group_expressions) {
+			if (g) {
+				WalkExpression(*g, req);
 			}
 		}
 		// CTE definitions
@@ -185,18 +234,47 @@ void WalkTableRef(const duckdb::TableRef &ref, AuthzRequest &req) {
 		}
 		break;
 	}
-	case duckdb::TableReferenceType::TABLE_FUNCTION:
+	case duckdb::TableReferenceType::TABLE_FUNCTION: {
+		// A table function (read_csv, read_parquet, glob, postgres_query, …).
+		// Surface it as a `fn:<name>` gated object so default-deny covers it —
+		// on the serving connection these reach secrets, remote endpoints, and
+		// attached catalogs by path, which schema isolation never gated (F1).
+		const auto &tf = ref.Cast<duckdb::TableFunctionRef>();
+		std::string fn_name;
+		if (tf.function &&
+		    tf.function->GetExpressionClass() == duckdb::ExpressionClass::FUNCTION) {
+			fn_name = tf.function->Cast<duckdb::FunctionExpression>().function_name;
+		}
+		if (fn_name.empty()) {
+			// A table function we cannot name is one we cannot gate by rule —
+			// fail closed rather than let it through unsurfaced.
+			req.unsafe = true;
+			req.error = "unnamed table function";
+		} else {
+			AddFunctionObject(req, fn_name);
+		}
+		break;
+	}
+	case duckdb::TableReferenceType::PIVOT: {
+		// PIVOT/UNPIVOT wrap a source table ref — walk it so the pivoted
+		// object is still gated.
+		const auto &pr = ref.Cast<duckdb::PivotRef>();
+		if (pr.source) {
+			WalkTableRef(*pr.source, req);
+		}
+		break;
+	}
 	case duckdb::TableReferenceType::EXPRESSION_LIST:
 	case duckdb::TableReferenceType::EMPTY_FROM:
-	case duckdb::TableReferenceType::PIVOT:
 	case duckdb::TableReferenceType::CTE:
 	case duckdb::TableReferenceType::SHOW_REF:
 	case duckdb::TableReferenceType::COLUMN_DATA:
 	case duckdb::TableReferenceType::DELIM_GET:
 	case duckdb::TableReferenceType::BOUND_TABLE_REF:
 	case duckdb::TableReferenceType::INVALID:
-		// Nothing to gate: either non-base or already-bound, neither
-		// of which we surface as a policy-targetable object in v1.
+		// Nothing to gate: literal VALUES lists, an empty FROM, a CTE
+		// reference (its body is walked at the definition via cte_map), or an
+		// already-bound ref — none is a policy-targetable object in v1.
 		break;
 	}
 }
