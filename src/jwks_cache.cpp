@@ -19,8 +19,68 @@ void JwksCache::TrimToCap(Entry &entry) {
 	}
 }
 
-JwksLookup JwksCache::Lookup(const std::string &kid, std::int64_t now_s) const {
-	if (const auto hit = hits_.find(kid); hit != hits_.end()) {
+std::unordered_map<std::string, JwksCache::Entry>::iterator JwksCache::FindHit(const std::string &jwks_uri,
+                                                                               const std::string &kid) {
+	const auto cache_key = CacheKey(jwks_uri, kid);
+	auto hit = hits_.find(cache_key);
+	if (hit != hits_.end()) {
+		return hit;
+	}
+	if (!jwks_uri.empty()) {
+		return hits_.find(kid);
+	}
+	for (auto it = hits_.begin(); it != hits_.end(); ++it) {
+		if (it->first == kid ||
+		    (it->first.size() > kid.size() && it->first[it->first.size() - kid.size() - 1] == '\n' &&
+		     it->first.compare(it->first.size() - kid.size(), kid.size(), kid) == 0)) {
+			return it;
+		}
+	}
+	return hits_.end();
+}
+
+std::unordered_map<std::string, JwksCache::Entry>::const_iterator JwksCache::FindHit(const std::string &jwks_uri,
+                                                                                     const std::string &kid) const {
+	const auto cache_key = CacheKey(jwks_uri, kid);
+	auto hit = hits_.find(cache_key);
+	if (hit != hits_.end()) {
+		return hit;
+	}
+	if (!jwks_uri.empty()) {
+		return hits_.find(kid);
+	}
+	for (auto it = hits_.begin(); it != hits_.end(); ++it) {
+		if (it->first == kid ||
+		    (it->first.size() > kid.size() && it->first[it->first.size() - kid.size() - 1] == '\n' &&
+		     it->first.compare(it->first.size() - kid.size(), kid.size(), kid) == 0)) {
+			return it;
+		}
+	}
+	return hits_.end();
+}
+
+std::unordered_map<std::string, JwksCache::MissEntry>::const_iterator
+JwksCache::FindMiss(const std::string &jwks_uri, const std::string &kid) const {
+	const auto cache_key = CacheKey(jwks_uri, kid);
+	auto miss = misses_.find(cache_key);
+	if (miss != misses_.end()) {
+		return miss;
+	}
+	if (!jwks_uri.empty()) {
+		return misses_.find(kid);
+	}
+	for (auto it = misses_.begin(); it != misses_.end(); ++it) {
+		if (it->first == kid ||
+		    (it->first.size() > kid.size() && it->first[it->first.size() - kid.size() - 1] == '\n' &&
+		     it->first.compare(it->first.size() - kid.size(), kid.size(), kid) == 0)) {
+			return it;
+		}
+	}
+	return misses_.end();
+}
+
+JwksLookup JwksCache::Lookup(const std::string &kid, std::int64_t now_s, const std::string &jwks_uri) const {
+	if (const auto hit = FindHit(jwks_uri, kid); hit != hits_.end()) {
 		JwksLookup result;
 		result.status = JwksLookupStatus::Hit;
 		result.keys = hit->second.keys;
@@ -28,61 +88,79 @@ JwksLookup JwksCache::Lookup(const std::string &kid, std::int64_t now_s) const {
 	}
 
 	JwksLookup result;
-	const auto miss = misses_.find(kid);
+	const auto miss = FindMiss(jwks_uri, kid);
 	if (miss != misses_.end()) {
-		if (now_s < miss->second.recorded_at_s - kClockResetThresholdSeconds) {
-			// Clock rewind larger than reset threshold: treat as expired miss (F3)
-		} else if (now_s < miss->second.recorded_at_s) {
-			result.status = JwksLookupStatus::RateLimited;
-			result.retry_after_s = min_refresh_s_;
-			return result;
-		} else {
+		const auto rel = RelateClock(now_s, miss->second.recorded_at_s);
+		if (rel == ClockRel::Forward) {
 			const auto elapsed = now_s - miss->second.recorded_at_s;
 			if (elapsed < min_refresh_s_) {
 				result.status = JwksLookupStatus::RateLimited;
 				result.retry_after_s = min_refresh_s_ - elapsed;
 				return result;
 			}
+		} else if (rel == ClockRel::MinorRewind) {
+			result.status = JwksLookupStatus::RateLimited;
+			result.retry_after_s = min_refresh_s_;
+			return result;
 		}
+		// ClockRel::Reset: treat as expired miss
 	}
 	result.status = JwksLookupStatus::Miss;
 	return result;
 }
 
-void JwksCache::OnFetchSuccess(const std::string &kid, const std::vector<Jwk> &keys, std::int64_t now_s) {
+void JwksCache::RecordJwksFetchSuccess(std::int64_t now_s, const std::string &jwks_uri) {
+	if (!jwks_uri.empty()) {
+		last_successful_fetch_by_uri_[jwks_uri] = now_s;
+	} else {
+		last_successful_fetch_s_ = now_s;
+	}
+}
+
+void JwksCache::OnFetchSuccess(const std::string &kid, const std::vector<Jwk> &keys, std::int64_t now_s,
+                               const std::string &jwks_uri) {
 	if (keys.empty()) {
 		return;
 	}
 
-	last_successful_fetch_s_ = now_s;
+	RecordJwksFetchSuccess(now_s, jwks_uri);
+	const auto cache_key = CacheKey(jwks_uri, kid);
 
-	if (const auto miss = misses_.find(kid); miss != misses_.end()) {
+	if (const auto miss = misses_.find(cache_key); miss != misses_.end()) {
 		miss_lru_.erase(miss->second.lru_it);
 		misses_.erase(miss);
 	}
+	if (!jwks_uri.empty()) {
+		if (const auto miss = misses_.find(kid); miss != misses_.end()) {
+			miss_lru_.erase(miss->second.lru_it);
+			misses_.erase(miss);
+		}
+	}
 
-	if (const auto hit = hits_.find(kid); hit != hits_.end()) {
+	if (const auto hit = FindHit(jwks_uri, kid); hit != hits_.end()) {
 		if (!SameKeyMaterial(hit->second.keys, keys)) {
 			hit->second.current_reservation_id = 0;
 		}
 		hit->second.keys = keys;
 		TrimToCap(hit->second);
 		hit->second.fetched_at_s = now_s;
+		hit->second.consecutive_absent_count = 0;
 		hit_lru_.erase(hit->second.lru_it);
-		hit_lru_.push_front(kid);
+		hit_lru_.push_front(hit->first);
 		hit->second.lru_it = hit_lru_.begin();
 		return;
 	}
 
-	hit_lru_.push_front(kid);
+	hit_lru_.push_front(cache_key);
 	Entry entry;
 	entry.keys = keys;
 	TrimToCap(entry);
 	entry.fetched_at_s = now_s;
 	entry.last_refresh_attempt_s = now_s;
 	entry.current_reservation_id = 0;
+	entry.consecutive_absent_count = 0;
 	entry.lru_it = hit_lru_.begin();
-	hits_[kid] = std::move(entry);
+	hits_[cache_key] = std::move(entry);
 	while (hits_.size() > max_entries_) {
 		const auto victim = hit_lru_.back();
 		hit_lru_.pop_back();
@@ -90,28 +168,55 @@ void JwksCache::OnFetchSuccess(const std::string &kid, const std::vector<Jwk> &k
 	}
 }
 
-void JwksCache::OnPassiveFetchSuccess(const std::string &kid, const std::vector<Jwk> &keys, std::int64_t now_s) {
-	if (const auto hit = hits_.find(kid); hit != hits_.end()) {
-		if (now_s >= hit->second.fetched_at_s && (now_s - hit->second.fetched_at_s) < min_refresh_s_) {
-			// Kid was already refreshed recently; do not mutate it from passive ingest (F4)
-			return;
-		}
+void JwksCache::OnPassiveFetchSuccess(const std::string &kid, const std::vector<Jwk> &keys, std::int64_t now_s,
+                                      const std::string &jwks_uri) {
+	if (keys.empty()) {
+		return;
 	}
-	OnFetchSuccess(kid, keys, now_s);
+	const auto hit = FindHit(jwks_uri, kid);
+	if (hit != hits_.end()) {
+		// Strictly additive: union new keys into existing entry without clearing reservation or changing fetched_at_s
+		// (F4)
+		for (const auto &k : keys) {
+			bool exists = false;
+			for (const auto &existing : hit->second.keys) {
+				if (SameKeyMaterial(existing, k)) {
+					exists = true;
+					break;
+				}
+			}
+			if (!exists) {
+				hit->second.keys.push_back(k);
+			}
+		}
+		TrimToCap(hit->second);
+		return;
+	}
+	OnFetchSuccess(kid, keys, now_s, jwks_uri);
 }
 
-bool JwksCache::Evict(const std::string &kid) {
-	const auto hit = hits_.find(kid);
+bool JwksCache::RecordKidAbsent(const std::string &kid, std::uint64_t reservation_id, std::int64_t now_s,
+                                const std::string &jwks_uri) {
+	const auto hit = FindHit(jwks_uri, kid);
 	if (hit == hits_.end()) {
 		return false;
 	}
-	hit_lru_.erase(hit->second.lru_it);
-	hits_.erase(hit);
-	return true;
+	if (reservation_id != 0 && hit->second.current_reservation_id != reservation_id) {
+		return false;
+	}
+	hit->second.current_reservation_id = 0;
+	hit->second.last_refresh_attempt_s = now_s;
+	hit->second.consecutive_absent_count++;
+	if (hit->second.consecutive_absent_count >= 2) {
+		hit_lru_.erase(hit->second.lru_it);
+		hits_.erase(hit);
+		return true;
+	}
+	return false;
 }
 
-bool JwksCache::EvictReserved(const std::string &kid, std::uint64_t reservation_id) {
-	const auto hit = hits_.find(kid);
+bool JwksCache::EvictReserved(const std::string &kid, std::uint64_t reservation_id, const std::string &jwks_uri) {
+	const auto hit = FindHit(jwks_uri, kid);
 	if (hit == hits_.end()) {
 		return false;
 	}
@@ -127,52 +232,61 @@ bool JwksCache::CanFetchJwks(std::int64_t now_s) const {
 	if (last_global_fetch_s_ <= 0) {
 		return true;
 	}
-	if (now_s < last_global_fetch_s_ - kClockResetThresholdSeconds) {
-		// Clock rewind larger than reset threshold: treat as reset (F3)
+	const auto rel = RelateClock(now_s, last_global_fetch_s_);
+	if (rel == ClockRel::Reset) {
 		return true;
 	}
-	if (now_s < last_global_fetch_s_ || (now_s - last_global_fetch_s_) < kGlobalFetchBudgetWindowSeconds) {
+	if (rel == ClockRel::MinorRewind || (now_s - last_global_fetch_s_) < kGlobalFetchBudgetWindowSeconds) {
 		return false;
 	}
 	return true;
 }
 
-bool JwksCache::HasFreshJwksDocument(std::int64_t now_s) const {
-	if (last_successful_fetch_s_ <= 0) {
+bool JwksCache::HasFreshJwksDocument(std::int64_t now_s, std::int64_t window_s, const std::string &jwks_uri) const {
+	std::int64_t last_s = 0;
+	if (!jwks_uri.empty()) {
+		const auto it = last_successful_fetch_by_uri_.find(jwks_uri);
+		if (it != last_successful_fetch_by_uri_.end()) {
+			last_s = it->second;
+		}
+	}
+	if (last_s <= 0) {
+		last_s = last_successful_fetch_s_;
+	}
+	if (last_s <= 0) {
 		return false;
 	}
-	if (now_s < last_successful_fetch_s_ - kClockResetThresholdSeconds) {
+	const auto rel = RelateClock(now_s, last_s);
+	if (rel != ClockRel::Forward) {
 		return false;
 	}
-	if (now_s < last_successful_fetch_s_) {
-		return false;
-	}
-	return (now_s - last_successful_fetch_s_) < kGlobalFetchBudgetWindowSeconds;
+	return (now_s - last_s) < window_s;
 }
 
 void JwksCache::RecordJwksFetch(std::int64_t now_s) {
-	if (last_global_fetch_s_ > 0 && now_s < last_global_fetch_s_ - kClockResetThresholdSeconds) {
-		last_global_fetch_s_ = now_s;
-	} else {
-		last_global_fetch_s_ = std::max(last_global_fetch_s_, now_s);
+	if (last_global_fetch_s_ > 0) {
+		const auto rel = RelateClock(now_s, last_global_fetch_s_);
+		if (rel == ClockRel::Reset) {
+			last_global_fetch_s_ = now_s;
+			return;
+		}
 	}
+	last_global_fetch_s_ = std::max(last_global_fetch_s_, now_s);
 }
 
-std::uint64_t JwksCache::TryReserveRefresh(const std::string &kid, std::int64_t now_s) {
-	const auto hit = hits_.find(kid);
+std::uint64_t JwksCache::TryReserveRefresh(const std::string &kid, std::int64_t now_s, const std::string &jwks_uri) {
+	const auto hit = FindHit(jwks_uri, kid);
 	if (hit == hits_.end()) {
 		return 0;
 	}
-	if (now_s < hit->second.last_refresh_attempt_s - kClockResetThresholdSeconds) {
-		// Clock rewind larger than reset threshold: re-base and grant reservation (F3)
+	const auto rel = RelateClock(now_s, hit->second.last_refresh_attempt_s);
+	if (rel == ClockRel::Reset) {
 		hit->second.last_refresh_attempt_s = now_s;
 		const auto res_id = next_reservation_id_++;
 		hit->second.current_reservation_id = res_id;
 		return res_id;
 	}
-	if (now_s < hit->second.last_refresh_attempt_s) {
-		// Clock rewind or concurrent chunk with earlier now_s:
-		// Fail closed; the existing stamp is already newer.
+	if (rel == ClockRel::MinorRewind) {
 		return 0;
 	}
 	const auto elapsed = now_s - hit->second.last_refresh_attempt_s;
@@ -186,45 +300,41 @@ std::uint64_t JwksCache::TryReserveRefresh(const std::string &kid, std::int64_t 
 }
 
 bool JwksCache::CommitRefresh(const std::string &kid, std::uint64_t reservation_id, const std::vector<Jwk> &keys,
-                              std::int64_t now_s) {
+                              std::int64_t now_s, const std::string &jwks_uri) {
 	if (reservation_id == 0 || keys.empty()) {
 		return false;
 	}
-	const auto hit = hits_.find(kid);
+	const auto hit = FindHit(jwks_uri, kid);
 	if (hit == hits_.end()) {
 		return false;
 	}
 	if (hit->second.current_reservation_id != reservation_id) {
-		// A newer reservation has occurred or a newer key was already committed.
-		// Drop this stale completion to avoid overwriting a newer key.
 		return false;
 	}
-	if (now_s < hit->second.fetched_at_s) {
-		if (now_s < hit->second.fetched_at_s - kClockResetThresholdSeconds) {
-			// Clock rewind larger than reset threshold: allow commit and re-base (F3)
-		} else {
-			// Time inversion within window: newer material was already ingested.
-			return false;
-		}
+	const auto rel = RelateClock(now_s, hit->second.fetched_at_s);
+	if (rel == ClockRel::MinorRewind) {
+		return false;
 	}
 
 	hit->second.current_reservation_id = 0;
+	hit->second.consecutive_absent_count = 0;
 	hit->second.keys = keys;
 	TrimToCap(hit->second);
 	hit->second.fetched_at_s = now_s;
 	hit_lru_.erase(hit->second.lru_it);
-	hit_lru_.push_front(kid);
+	hit_lru_.push_front(hit->first);
 	hit->second.lru_it = hit_lru_.begin();
 	return true;
 }
 
-void JwksCache::OnFetchMiss(const std::string &kid, std::int64_t now_s) {
-	if (const auto miss = misses_.find(kid); miss != misses_.end()) {
+void JwksCache::OnFetchMiss(const std::string &kid, std::int64_t now_s, const std::string &jwks_uri) {
+	const auto cache_key = CacheKey(jwks_uri, kid);
+	if (const auto miss = misses_.find(cache_key); miss != misses_.end()) {
 		miss_lru_.erase(miss->second.lru_it);
 		misses_.erase(miss);
 	}
-	miss_lru_.push_front(kid);
-	misses_[kid] = MissEntry {now_s, miss_lru_.begin()};
+	miss_lru_.push_front(cache_key);
+	misses_[cache_key] = MissEntry {now_s, miss_lru_.begin()};
 	while (misses_.size() > max_entries_) {
 		const auto victim = miss_lru_.back();
 		miss_lru_.pop_back();

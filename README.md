@@ -788,6 +788,7 @@ exercising the wiring no in-process test can.
 ## Documentation
 
 - **[API_REFERENCE.md](API_REFERENCE.md)** — complete function / SECRET / setting reference.
+- **[Key Rotation Guide](API_REFERENCE.md#key-rotation)** — in-flight key rotation, corroborated eviction, and multi-tenant cache isolation.
 - **[requirements.md](requirements.md)** — functional spec.
 - **[architecture.md](architecture.md)** — arc42 design doc.
 - **[docs/IMPLEMENTATION.md](docs/IMPLEMENTATION.md)** — TDD discipline, test layering, slice plan.

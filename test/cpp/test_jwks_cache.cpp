@@ -434,3 +434,77 @@ TEST_CASE("JwksCache: SameKeyMaterial vector comparison is order-insensitive",
 	CHECK(SameKeyMaterial(vec_a, vec_b));
 	CHECK(SameKeyMaterial(vec_b, vec_a));
 }
+
+TEST_CASE("JwksCache: SameKeyMaterial multiset equality handles duplicate keys correctly",
+          "[jwks][cache][same-key-material][f17]") {
+	const auto j1 = MakeRsaJwk("k1");
+	auto j2 = MakeRsaJwk("k2");
+	j2.n = "other-modulus-k2";
+
+	std::vector<Jwk> vec_a = {j1, j1};
+	std::vector<Jwk> vec_b = {j1, j2};
+
+	CHECK_FALSE(SameKeyMaterial(vec_a, vec_b));
+	CHECK_FALSE(SameKeyMaterial(vec_b, vec_a));
+}
+
+TEST_CASE("JwksCache: hits and misses are partitioned by jwks_uri", "[jwks][cache][multi-tenant][f3]") {
+	JwksCache cache(30);
+	const auto k1 = MakeRsaJwk("k1");
+	const std::string uri_a = "https://idp-a.example.com/jwks";
+	const std::string uri_b = "https://idp-b.example.com/jwks";
+
+	cache.OnFetchSuccess("k1", {k1}, 100, uri_a);
+
+	// Hit on uri_a
+	CHECK(cache.Lookup("k1", 100, uri_a).status == JwksLookupStatus::Hit);
+	// Miss on uri_b
+	CHECK(cache.Lookup("k1", 100, uri_b).status == JwksLookupStatus::Miss);
+
+	// Record miss on uri_b does not rate-limit uri_a
+	cache.OnFetchMiss("k1", 105, uri_b);
+	CHECK(cache.Lookup("k1", 110, uri_a).status == JwksLookupStatus::Hit);
+	CHECK(cache.Lookup("k1", 110, uri_b).status == JwksLookupStatus::RateLimited);
+}
+
+TEST_CASE("JwksCache: corroborated eviction requires two consecutive absent observations", "[jwks][cache][evict][f2]") {
+	JwksCache cache(30);
+	const auto k1 = MakeRsaJwk("k1");
+	cache.OnFetchSuccess("k1", {k1}, 100);
+
+	// First refresh reservation
+	auto res1 = cache.TryReserveRefresh("k1", 140);
+	REQUIRE(res1 > 0);
+
+	// First absent observation: keys preserved, returns false (not evicted)
+	CHECK_FALSE(cache.RecordKidAbsent("k1", res1, 140));
+	CHECK(cache.Lookup("k1", 145).status == JwksLookupStatus::Hit);
+
+	// Second refresh reservation
+	auto res2 = cache.TryReserveRefresh("k1", 180);
+	REQUIRE(res2 > 0);
+
+	// Second consecutive absent observation: evicted, returns true
+	CHECK(cache.RecordKidAbsent("k1", res2, 180));
+	CHECK(cache.Lookup("k1", 185).status == JwksLookupStatus::Miss);
+}
+
+TEST_CASE("JwksCache: OnPassiveFetchSuccess is strictly additive and preserves active reservations",
+          "[jwks][cache][passive][f4]") {
+	JwksCache cache(30);
+	const auto k1 = MakeRsaJwk("k1");
+	auto k2 = MakeRsaJwk("k1");
+	k2.n = "k2-modulus";
+	cache.OnFetchSuccess("k1", {k1}, 100);
+
+	// Active reservation on k1
+	auto res = cache.TryReserveRefresh("k1", 140);
+	REQUIRE(res > 0);
+
+	// Passive ingest on k1 with k2 arrives
+	cache.OnPassiveFetchSuccess("k1", {k2}, 145);
+
+	// Existing reservation must NOT be cancelled!
+	CHECK(cache.CommitRefresh("k1", res, {k1, k2}, 150));
+	CHECK(cache.Lookup("k1", 155).keys.size() == 2);
+}

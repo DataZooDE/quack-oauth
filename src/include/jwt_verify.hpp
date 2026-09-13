@@ -24,6 +24,7 @@ enum class VerifyResult {
 	WrongAudience,
 	UnsupportedKeyType,
 	UnusableKey,
+	NoMatchingKey,
 	// Reported by the validator orchestration (slice S-7b.1); never produced
 	// by the standalone `VerifyJwt` call.
 	UnknownKid,

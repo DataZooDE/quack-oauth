@@ -21,9 +21,72 @@ inline constexpr const char *kReasonRefreshKidAbsent = "refresh_kid_absent";
 inline constexpr const char *kReasonRefreshRevoked = "refresh_revoked";
 inline constexpr const char *kReasonRefreshSuperseded = "refresh_superseded";
 
+enum class RefreshReason {
+	None,
+	Rotated,
+	NoRotation,
+	Throttled,
+	BudgetThrottled,
+	FetchFailed,
+	ParseFailed,
+	KidAbsent,
+	Revoked,
+	Superseded,
+};
+
+inline const char *ToString(RefreshReason r) noexcept {
+	switch (r) {
+	case RefreshReason::Rotated:
+		return kReasonRefreshRotated;
+	case RefreshReason::NoRotation:
+		return kReasonRefreshNoRotation;
+	case RefreshReason::Throttled:
+		return kReasonRefreshThrottled;
+	case RefreshReason::BudgetThrottled:
+		return kReasonRefreshBudgetThrottled;
+	case RefreshReason::FetchFailed:
+		return kReasonRefreshFetchFailed;
+	case RefreshReason::ParseFailed:
+		return kReasonRefreshParseFailed;
+	case RefreshReason::KidAbsent:
+		return kReasonRefreshKidAbsent;
+	case RefreshReason::Revoked:
+		return kReasonRefreshRevoked;
+	case RefreshReason::Superseded:
+		return kReasonRefreshSuperseded;
+	case RefreshReason::None:
+	default:
+		return "";
+	}
+}
+
+inline bool ShouldAudit(RefreshReason r) noexcept {
+	switch (r) {
+	case RefreshReason::Rotated:
+	case RefreshReason::NoRotation:
+	case RefreshReason::FetchFailed:
+	case RefreshReason::ParseFailed:
+	case RefreshReason::KidAbsent:
+	case RefreshReason::Revoked:
+	case RefreshReason::Superseded:
+		return true;
+	case RefreshReason::Throttled:
+	case RefreshReason::BudgetThrottled:
+	case RefreshReason::None:
+	default:
+		return false;
+	}
+}
+
 struct RefreshEvent {
 	std::string kid;
 	std::string reason;
+	RefreshReason reason_enum = RefreshReason::None;
+
+	void SetReason(RefreshReason r) {
+		reason_enum = r;
+		reason = ToString(r);
+	}
 };
 
 // Externally-owned dependencies for `ValidateToken`. The validator does not

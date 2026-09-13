@@ -1,10 +1,13 @@
 #include "check_token_function.hpp"
 
+#include <algorithm>
 #include <chrono>
 #include <cstdint>
 #include <mutex>
 #include <string>
 #include <thread>
+#include <utility>
+#include <vector>
 
 #include "duckdb/common/exception.hpp"
 #include "duckdb/logging/logger.hpp"
@@ -259,6 +262,8 @@ static const char *VerifyResultReason(quack_oauth::VerifyResult r) {
 		return "jwks_fetch_failed";
 	case quack_oauth::VerifyResult::JwksThrottled:
 		return "jwks_throttled";
+	case quack_oauth::VerifyResult::NoMatchingKey:
+		return "no_matching_key";
 	}
 	return "unknown";
 }
@@ -348,17 +353,17 @@ static void EmitAuditsAndScrub(ClientContext &context, string &token_str, const 
 	guard.unlock();
 	EmitTokenAudit(context, token_str, row.outcome, now_s, (ok && row.have_principal) ? &row.principal : nullptr);
 	if (!row.refresh_kid.empty()) {
+		quack_oauth::AuditEvent e;
+		e.timestamp_unix_s = now_s;
+		e.event_type = quack_oauth::AuditEventType::JwksRefresh;
+		e.kid = row.refresh_kid;
+		e.reason = row.refresh_reason;
+		e.token_hash = quack_oauth::RedactSensitive(token_str);
+		EmitAuditEvent(context, e);
+
 		if (row.refresh_reason == quack_oauth::kReasonRefreshThrottled ||
 		    row.refresh_reason == quack_oauth::kReasonRefreshBudgetThrottled) {
 			throttled_events.emplace_back(row.refresh_kid, row.refresh_reason);
-		} else {
-			quack_oauth::AuditEvent e;
-			e.timestamp_unix_s = now_s;
-			e.event_type = quack_oauth::AuditEventType::JwksRefresh;
-			e.kid = row.refresh_kid;
-			e.reason = row.refresh_reason;
-			e.token_hash = quack_oauth::RedactSensitive(token_str);
-			EmitAuditEvent(context, e);
 		}
 	}
 	guard.lock();
@@ -414,6 +419,13 @@ static void RunValidationLoop(Vector &tokens, idx_t count, Vector &result, Clien
 		std::sort(throttled_events.begin(), throttled_events.end());
 		throttled_events.erase(std::unique(throttled_events.begin(), throttled_events.end()), throttled_events.end());
 		for (const auto &item : throttled_events) {
+			const string dedup_key = item.first + ":" + item.second;
+			auto it = shared_state.last_throttle_logged_s.find(dedup_key);
+			if (it != shared_state.last_throttle_logged_s.end() && (now_s - it->second < 30)) {
+				continue;
+			}
+			shared_state.last_throttle_logged_s[dedup_key] = now_s;
+
 			std::string safe_kid;
 			for (char c : item.first) {
 				if (static_cast<unsigned char>(c) >= 32 && static_cast<unsigned char>(c) < 127 && c != '"' &&
@@ -431,6 +443,16 @@ static void RunValidationLoop(Vector &tokens, idx_t count, Vector &result, Clien
 				DUCKDB_LOG_WARNING(context,
 				                   "quack_oauth: JWKS refresh throttled by global fetch budget (2s window) for kid='" +
 				                       safe_kid + "'");
+			}
+		}
+		if (shared_state.last_throttle_logged_s.size() > 1000) {
+			for (auto it = shared_state.last_throttle_logged_s.begin();
+			     it != shared_state.last_throttle_logged_s.end();) {
+				if (now_s - it->second > 60) {
+					it = shared_state.last_throttle_logged_s.erase(it);
+				} else {
+					++it;
+				}
 			}
 		}
 	}

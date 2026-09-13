@@ -1,5 +1,6 @@
 #include "settings.hpp"
 
+#include <algorithm>
 #include <atomic>
 #include <mutex>
 
@@ -34,7 +35,8 @@ static std::once_flag g_startup_floor_once;
 
 static void OnJwksMinRefreshSeconds(ClientContext &, SetScope scope, Value &parameter) {
 	if (scope == SetScope::SESSION) {
-		throw InvalidInputException("quack_oauth_jwks_min_refresh_s must be SET GLOBAL, not SET SESSION");
+		throw InvalidInputException("quack_oauth_jwks_min_refresh_s is a global setting; use GLOBAL scope (e.g. SET "
+		                            "GLOBAL ... / RESET GLOBAL ...)");
 	}
 	if (parameter.IsNull()) {
 		throw InvalidInputException("quack_oauth_jwks_min_refresh_s cannot be NULL");

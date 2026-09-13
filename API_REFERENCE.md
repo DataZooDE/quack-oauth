@@ -439,14 +439,18 @@ All settings are global (SET applies process-wide; there is no per-session overr
 | `quack_oauth_trust_plaintext`        | BOOLEAN | `false`     | Allow enabling auth without a TLS terminator (R-N-4). Disabled by default. |
 | `quack_oauth_server_secret_name`     | VARCHAR | `''`        | Name of the `quack_oauth_server` SECRET that `check_token` reads from. |
 
-### Key rotation
+---
+
+## Key rotation
 
 When identity providers (such as Microsoft Entra ID) rotate key material while reusing the same `kid`, cached keys will fail signature verification on new tokens. The extension automatically detects this and triggers a rate-limited, synchronous on-demand JWKS refresh on the request path to recover the new key without requiring process restart or cache invalidation.
 
-- **Multi-key cache entry**: On a successful 200 OK JWKS fetch, cached keys for the target `kid` are synchronized with the keys currently published in the document, capped at 4 keys per `kid`. When an IdP removes a key from its published JWKS, it is revoked. If a fetch fails or times out, all existing cached keys are preserved.
+- **Multi-key cache entry**: On a successful 200 OK JWKS fetch, cached keys for the target `kid` are synchronized with the keys currently published in the document, capped at 4 keys per `kid`. If a fetch fails or times out, all existing cached keys are preserved.
+- **Corroborated key eviction**: To protect against transient network glitches or partial IdP responses evicting valid keys, key absence from a 200 OK response must be observed across **2 consecutive distinct refreshes** before the cached key is evicted. Existing keys continue to verify until absence is corroborated.
+- **Multi-tenant partitioning**: JWKS documents and cached keys are strictly partitioned by `jwks_uri`. Refreshing keys for Tenant A cannot mutate, invalidate, or starve the refresh window for Tenant B.
 - **Request-path latency**: Refreshes happen synchronously on the request thread encountering an unusable key signature failure against currently-cached keys, bounded by `quack_oauth_jwks_min_refresh_s` (default 30 seconds) per `kid` and a process-global fetch rate limit (2 seconds).
-- **Starvation & DoS resistance**: Fresh key material fetched from the IdP over TLS is committed to the cache even if the triggering token fails verification, preventing forged or corrupted tokens from starving legitimate key rotation recovery. Repeated requests with already-known keys emit `refresh_no_rotation` and do not re-fetch.
-- **Troubleshooting**: If clients experience bursts of `invalid_signature` or `jwks_throttled` errors during an IdP rotation, inspect `quack_oauth_audit_log()` for `jwks_refresh` events and `quack_oauth_diagnose()` for the `throttled=` counter on `jwks_cache`. Refresh rate-limiting is logged to the DuckDB logger as `quack_oauth: JWKS refresh rate-limited by min_refresh_s for kid='...'` or `quack_oauth: JWKS refresh throttled by global fetch budget (2s window) for kid='...'` (viewable via `SET enable_logging = true; SELECT * FROM duckdb_logs WHERE message LIKE 'quack_oauth:%';`); network failures appear as `refresh_fetch_failed`.
+- **Starvation & DoS resistance**: Fresh key material fetched from the IdP over TLS is committed to the cache even if the triggering token fails verification, preventing forged or corrupted tokens from starving legitimate key rotation recovery. Cold misses during a fresh document window (<2s) reject immediately as `unknown_kid` without burning the global fetch slot. Repeated requests with already-known keys emit `refresh_no_rotation` and do not re-fetch.
+- **Troubleshooting**: If clients experience bursts of `invalid_signature` or `jwks_throttled` errors during an IdP rotation, inspect `quack_oauth_audit_log()` for `jwks_refresh` events and `quack_oauth_diagnose()` for granular throttle counters (`throttled=N`, `budget_throttled=N`, `kid_throttled=N`) on `jwks_cache`. Refresh rate-limiting is logged to the DuckDB logger as `quack_oauth: JWKS refresh rate-limited by min_refresh_s for kid='...'` or `quack_oauth: JWKS refresh throttled by global fetch budget (2s window) for kid='...'` (viewable via `SET enable_logging = true; SELECT * FROM duckdb_logs WHERE message LIKE 'quack_oauth:%';`); network failures appear as `refresh_fetch_failed`.
 
 ---
 

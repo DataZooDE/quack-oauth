@@ -412,7 +412,7 @@ TEST_CASE("Validator: cache miss triggers a fetch, populates, then verifies", "[
 	CHECK(cache.Size() == 1);
 }
 
-TEST_CASE("Validator: rate-limited cache returns UnknownKid without fetching", "[validator][rate-limit]") {
+TEST_CASE("Validator: rate-limited cache returns JwksThrottled without fetching (F8)", "[validator][rate-limit]") {
 	const auto &k = GetValidatorKey();
 	JwksCache cache(30);
 	cache.OnFetchMiss(k.jwk.kid, 1700000000);
@@ -422,7 +422,7 @@ TEST_CASE("Validator: rate-limited cache returns UnknownKid without fetching", "
 
 	const auto token = Sign(k, 1700003600, 1700000000);
 	// 10s after the recorded miss -- inside the 30s rate-limit window.
-	CHECK(ValidateToken(token, BaseOpts(1700000010), ctx) == VerifyResult::UnknownKid);
+	CHECK(ValidateToken(token, BaseOpts(1700000010), ctx) == VerifyResult::JwksThrottled);
 	CHECK(http.call_count == 0);
 }
 
@@ -469,7 +469,7 @@ TEST_CASE("Validator: kid absent from JWKS response records a miss", "[validator
 
 	// A subsequent call within the rate-limit window short-circuits.
 	http.next_response.reset();
-	CHECK(ValidateToken(token, BaseOpts(1700000010), ctx) == VerifyResult::UnknownKid);
+	CHECK(ValidateToken(token, BaseOpts(1700000010), ctx) == VerifyResult::JwksThrottled);
 	CHECK(http.call_count == 1); // no second fetch
 }
 
@@ -742,8 +742,7 @@ TEST_CASE("Validator: 100 distinct unknown kids in one batch trigger exactly 1 H
 	for (int i = 0; i < 100; ++i) {
 		const auto bogus_key = GenerateValidatorKey("unknown-" + std::to_string(i));
 		const auto bogus_token = Sign(bogus_key, 2000, 1000);
-		const auto expected = (i == 0) ? VerifyResult::UnknownKid : VerifyResult::JwksThrottled;
-		CHECK(ValidateToken(bogus_token, BaseOpts(1000), ctx) == expected);
+		CHECK(ValidateToken(bogus_token, BaseOpts(1000), ctx) == VerifyResult::UnknownKid);
 	}
 
 	CHECK(http.call_count == 1);
@@ -841,12 +840,12 @@ TEST_CASE("Validator: budget-blocked cold miss does not negative-cache and recov
 	const auto key2 = GenerateValidatorKey("kid-2");
 
 	FakeHttpClient http;
-	http.next_response = IHttpClient::Response {200, JwksWith(key1.jwk)};
+	http.next_response = IHttpClient::Response {500, "internal error"};
 	ValidateContext ctx {http, cache, "https://idp.test/jwks"};
 
-	// t=1000: successful fetch for kid-1
+	// t=1000: failed fetch for kid-1
 	const auto token1 = Sign(key1, 2000, 1000);
-	CHECK(ValidateToken(token1, BaseOpts(1000), ctx) == VerifyResult::Ok);
+	CHECK(ValidateToken(token1, BaseOpts(1000), ctx) == VerifyResult::JwksFetchFailed);
 	CHECK(http.call_count == 1);
 
 	// t=1001: IdP publishes kid-2, but client requests kid-2 within 2s global budget window.
@@ -864,8 +863,8 @@ TEST_CASE("Validator: budget-blocked cold miss does not negative-cache and recov
 	CHECK(http.call_count == 2);
 }
 
-TEST_CASE("Validator: hit path alg filter attempts refresh and fails closed if no matching key found",
-          "[validator][alg-filter][f5][f-j]") {
+TEST_CASE("Validator: hit path alg filter skips refresh and returns NoMatchingKey (F9)",
+          "[validator][alg-filter][f9]") {
 	JwksCache cache(30);
 	auto key = GenerateValidatorKey("kid-alg");
 	key.jwk.alg = "RS512"; // Key in cache is pinned to RS512
@@ -878,9 +877,9 @@ TEST_CASE("Validator: hit path alg filter attempts refresh and fails closed if n
 
 	// Token is signed with RS256; arrives at t=1050 (after kid's 30s cooldown)
 	const auto token = Sign(key, 2000, 1050);
-	// Should attempt refresh, find no RS256 key, and fail closed with InvalidSignature
-	CHECK(ValidateToken(token, BaseOpts(1050), ctx) == VerifyResult::InvalidSignature);
-	CHECK(http.call_count == 1);
+	// Alg mismatch skips refresh and returns NoMatchingKey immediately (F9)
+	CHECK(ValidateToken(token, BaseOpts(1050), ctx) == VerifyResult::NoMatchingKey);
+	CHECK(http.call_count == 0);
 }
 
 TEST_CASE("Validator: sub-2048 RSA key returns UnsupportedKeyType and does not trigger refresh loop",
@@ -1005,22 +1004,18 @@ TEST_CASE("Validator: F-F Global fetch budget decoupled from min_refresh_s", "[v
 
 TEST_CASE("Validator: F-G Budget-blocked cold miss returns JwksThrottled", "[validator][f-g]") {
 	JwksCache cache(30);
-	const auto key1 = GenerateValidatorKey("kid-1");
 	const auto key2 = GenerateValidatorKey("kid-2");
 
 	FakeHttpClient http;
-	http.next_response = IHttpClient::Response {200, JwksWith(key1.jwk)};
 	ValidateContext ctx {http, cache, "https://idp.test/jwks"};
 
-	// t=1000: cold miss for kid-1
-	const auto token1 = Sign(key1, 2000, 1000);
-	CHECK(ValidateToken(token1, BaseOpts(1000), ctx) == VerifyResult::Ok);
-	CHECK(http.call_count == 1);
+	// Satiate global budget by recording a fetch attempt at t=1000 without successful document
+	cache.RecordJwksFetch(1000);
 
-	// t=1001: 1 second later (< 2s global budget), cold miss for kid-2
+	// t=1001: 1 second later (< 2s global budget), cold miss for kid-2 without fresh document
 	const auto token2 = Sign(key2, 2000, 1001);
 	CHECK(ValidateToken(token2, BaseOpts(1001), ctx) == VerifyResult::JwksThrottled);
-	CHECK(http.call_count == 1);
+	CHECK(http.call_count == 0);
 }
 
 TEST_CASE("Validator: F-K Sub-2048 key in cache does not mask valid 2048-bit key rotation", "[validator][f-k]") {
@@ -1175,7 +1170,8 @@ TEST_CASE("Validator: concurrent cache update invalidating reservation causes st
 	CHECK(refresh.reason == kReasonRefreshSuperseded);
 }
 
-TEST_CASE("Validator: reserved refresh against 200 JWKS missing target kid evicts cached entry",
+TEST_CASE("Validator: reserved refresh against 200 JWKS missing target kid evicts cached entry after 2 consecutive "
+          "refreshes (F2)",
           "[validator][revocation][kid-absent-evict]") {
 	const auto target_key = GenerateValidatorKey("revoked-kid");
 	const auto other_key = GenerateValidatorKey("other-kid");
@@ -1196,9 +1192,18 @@ TEST_CASE("Validator: reserved refresh against 200 JWKS missing target kid evict
 	CHECK(res == VerifyResult::InvalidSignature);
 	CHECK(refresh.reason == kReasonRefreshKidAbsent);
 
-	// The revoked kid MUST be evicted from the cache!
-	const auto lookup = cache.Lookup("revoked-kid", 1050);
-	CHECK(lookup.status == JwksLookupStatus::Miss);
+	// First absent response does NOT evict immediately; corroboration requires 2 (F2)
+	const auto lookup1 = cache.Lookup("revoked-kid", 1050);
+	CHECK(lookup1.status == JwksLookupStatus::Hit);
+
+	// Second absent refresh at t=1090 corroborates absence and evicts
+	http.next_response = IHttpClient::Response {200, JwksWith(other_key.jwk)};
+	const auto res2 = ValidateToken(bad_token, BaseOpts(1090), ctx, &refresh);
+	CHECK(res2 == VerifyResult::InvalidSignature);
+	CHECK(refresh.reason == kReasonRefreshKidAbsent);
+
+	const auto lookup2 = cache.Lookup("revoked-kid", 1090);
+	CHECK(lookup2.status == JwksLookupStatus::Miss);
 }
 
 TEST_CASE("Validator: cold miss for random kid cannot mutate unrelated recently-refreshed cached kid",
@@ -1233,8 +1238,8 @@ TEST_CASE("Validator: cold miss for random kid cannot mutate unrelated recently-
 }
 
 TEST_CASE(
-    "Validator: cold miss for unknown kid within 2s of successful fetch returns JwksThrottled without negative cache",
-    "[validator][budget][cold-miss][f5]") {
+    "Validator: cold miss for unknown kid within 2s of successful fetch returns UnknownKid without negative cache (F1)",
+    "[validator][budget][cold-miss][f1]") {
 	const auto known_key = GenerateValidatorKey("known-kid");
 	const auto unknown_key = GenerateValidatorKey("unknown-kid");
 
@@ -1252,9 +1257,9 @@ TEST_CASE(
 	CHECK(http.call_count == 1);
 
 	// Request 2 at t=1001 (1s later, within the 2s budget window) with unknown-kid arrives.
-	// Global budget protects network by returning JwksThrottled.
+	// Fresh document exists; unknown-kid returns UnknownKid without fetching.
 	const auto unknown_token = Sign(unknown_key, 2000, 1001);
-	CHECK(ValidateToken(unknown_token, BaseOpts(1001), ctx) == VerifyResult::JwksThrottled);
+	CHECK(ValidateToken(unknown_token, BaseOpts(1001), ctx) == VerifyResult::UnknownKid);
 	CHECK(http.call_count == 1);
 
 	// unknown-kid MUST NOT be negative-cached, so after the 2s budget window passes,
@@ -1323,4 +1328,171 @@ TEST_CASE("Validator: 5 keys under one kid prioritizes verifying key and keeps v
 	const auto token2 = Sign(keys[4], 2000, 1036);
 	CHECK(ValidateToken(token2, BaseOpts(1036), ctx) == VerifyResult::Ok);
 	CHECK(http.call_count == 1);
+}
+
+TEST_CASE("Validator: cold miss during fresh document window does not starve budget and returns UnknownKid (F1)",
+          "[validator][cold-miss][starvation][f1]") {
+	JwksCache cache(30);
+	const auto &known_key = GetValidatorKey();
+	// IdP fetch succeeds at t=1000
+	cache.RecordJwksFetch(1000);
+	cache.OnPassiveFetchSuccess(known_key.jwk.kid, {known_key.jwk}, 1000);
+
+	FakeHttpClient http;
+	ValidateContext ctx {http, cache, "https://idp.test/jwks"};
+
+	// At t=1001, token arrives with unknown kid
+	const auto stranger_key = GenerateValidatorKey("stranger-kid");
+	const auto token = Sign(stranger_key, 2000, 1001);
+
+	RefreshEvent refresh;
+	const auto res = ValidateToken(token, BaseOpts(1001), ctx, &refresh);
+	CHECK(res == VerifyResult::UnknownKid);
+	// No network request attempted because fresh document exists
+	CHECK(http.call_count == 0);
+}
+
+TEST_CASE("Validator: single transient absent response does not evict cached key; second consecutive absent response "
+          "evicts (F2)",
+          "[validator][corroborated-eviction][f2]") {
+	const auto valid_key = GenerateValidatorKey("corroborated-kid");
+	const auto other_key = GenerateValidatorKey("other-kid");
+	const auto attacker_key = GenerateValidatorKey("corroborated-kid");
+
+	JwksCache cache(30);
+	cache.OnFetchSuccess("corroborated-kid", {valid_key.jwk}, 1000);
+
+	FakeHttpClient http;
+	// IdP serves document omitting corroborated-kid
+	std::string jwks_omitted = R"({"keys":[{"kid":")" + other_key.jwk.kid +
+	                           R"(","kty":"RSA","use":"sig","alg":"RS256","n":")" + other_key.jwk.n + R"(","e":")" +
+	                           other_key.jwk.e + R"("}]})";
+	http.next_response = IHttpClient::Response {200, jwks_omitted};
+
+	ValidateContext ctx {http, cache, "https://idp.test/jwks"};
+
+	// Attacker / invalid signature triggers refresh at t=1035
+	TestKey forged {attacker_key.priv_pem, valid_key.jwk};
+	const auto invalid_token = Sign(forged, 2000, 1035);
+	RefreshEvent refresh1;
+	const auto res1 = ValidateToken(invalid_token, BaseOpts(1035), ctx, &refresh1);
+	CHECK(res1 == VerifyResult::InvalidSignature);
+	CHECK(refresh1.reason == kReasonRefreshKidAbsent);
+	CHECK(http.call_count == 1);
+
+	// First absent observation: key must NOT be evicted! Legitimate token must still verify at t=1036!
+	const auto legit_token = Sign(valid_key, 2000, 1036);
+	CHECK(ValidateToken(legit_token, BaseOpts(1036), ctx) == VerifyResult::Ok);
+	CHECK(http.call_count == 1);
+
+	// Second absent observation at t=1070: another invalid token triggers refresh
+	http.next_response = IHttpClient::Response {200, jwks_omitted};
+	RefreshEvent refresh2;
+	const auto res2 = ValidateToken(invalid_token, BaseOpts(1070), ctx, &refresh2);
+	CHECK(res2 == VerifyResult::InvalidSignature);
+	CHECK(refresh2.reason == kReasonRefreshKidAbsent);
+	CHECK(http.call_count == 2);
+
+	// Now key MUST be evicted after two consecutive corroborations
+	const auto res3 = ValidateToken(legit_token, BaseOpts(1071), ctx);
+	// Fresh document exists from t=1070 fetch; unknown kid returns UnknownKid
+	CHECK(res3 == VerifyResult::UnknownKid);
+}
+
+TEST_CASE("Validator: multi-tenant caches partitioned by jwks_uri do not cross-talk (F3)",
+          "[validator][multi-tenant][f3]") {
+	const auto key_a = GenerateValidatorKey("shared-kid");
+	const auto key_b = GenerateValidatorKey("shared-kid");
+
+	JwksCache cache(30);
+	FakeHttpClient http;
+
+	ValidateContext ctx_a {http, cache, "https://tenant-a.com/jwks"};
+	ValidateContext ctx_b {http, cache, "https://tenant-b.com/jwks"};
+
+	// Seed tenant A with key_a
+	cache.OnFetchSuccess("shared-kid", {key_a.jwk}, 1000, "https://tenant-a.com/jwks");
+
+	// Tenant A verifies token signed with key_a
+	const auto token_a = Sign(key_a, 2000, 1000);
+	CHECK(ValidateToken(token_a, BaseOpts(1000), ctx_a) == VerifyResult::Ok);
+	CHECK(http.call_count == 0);
+
+	// Tenant B does NOT see tenant A's key (cold miss)
+	std::string jwks_b = R"({"keys":[{"kid":"shared-kid","kty":"RSA","use":"sig","alg":"RS256","n":")" + key_b.jwk.n +
+	                     R"(","e":")" + key_b.jwk.e + R"("}]})";
+	http.next_response = IHttpClient::Response {200, jwks_b};
+
+	const auto token_b = Sign(key_b, 2000, 1001);
+	CHECK(ValidateToken(token_b, BaseOpts(1001), ctx_b) == VerifyResult::Ok);
+	CHECK(http.call_count == 1);
+}
+
+TEST_CASE("Validator: screening failure for published kid returns UnsupportedKeyType / UnusableKey without negative "
+          "caching (F7)",
+          "[validator][screening][unusable-key][f7]") {
+	JwksCache cache(30);
+	FakeHttpClient http;
+	// EC P-521 is unsupported (only P-256 and P-384 supported)
+	std::string p521_jwks = R"({"keys":[{"kid":"p521-kid","kty":"EC","crv":"P-521","use":"sig","x":"abc","y":"def"}]})";
+	http.next_response = IHttpClient::Response {200, p521_jwks};
+
+	ValidateContext ctx {http, cache, "https://idp.test/jwks"};
+
+	const auto key = GenerateValidatorKey("p521-kid");
+	const auto token = Sign(key, 2000, 1000);
+
+	const auto res = ValidateToken(token, BaseOpts(1000), ctx);
+	CHECK(res == VerifyResult::UnusableKey);
+
+	// Must NOT be placed in negative cache (lookup is Miss, not RateLimited)
+	const auto lookup = cache.Lookup("p521-kid", 1001, "https://idp.test/jwks");
+	CHECK(lookup.status == JwksLookupStatus::Miss);
+}
+
+TEST_CASE("Validator: per-kid rate-limited lookup returns JwksThrottled (F8)",
+          "[validator][rate-limited][throttled][f8]") {
+	JwksCache cache(30);
+	cache.OnFetchMiss("unknown-kid", 1000);
+
+	FakeHttpClient http;
+	ValidateContext ctx {http, cache, "https://idp.test/jwks"};
+
+	const auto key = GenerateValidatorKey("unknown-kid");
+	const auto token = Sign(key, 2000, 1005);
+
+	RefreshEvent refresh;
+	const auto res = ValidateToken(token, BaseOpts(1005), ctx, &refresh);
+	CHECK(res == VerifyResult::JwksThrottled);
+	CHECK(refresh.reason == kReasonRefreshThrottled);
+	CHECK(http.call_count == 0);
+}
+
+TEST_CASE("Validator: token with alg mismatch against cached kid returns NoMatchingKey without HTTP call (F9)",
+          "[validator][alg-mismatch][no-matching-key][f9]") {
+	const auto key = GenerateValidatorKey("rsa-kid");
+
+	JwksCache cache(30);
+	cache.OnFetchSuccess("rsa-kid", {key.jwk}, 1000);
+
+	FakeHttpClient http;
+	ValidateContext ctx {http, cache, "https://idp.test/jwks"};
+
+	// Create token with alg="RS384" but kid="rsa-kid" (cached key is RSA RS256)
+	const auto token = jwt::create<TraitsT>()
+	                       .set_type("JWT")
+	                       .set_key_id("rsa-kid")
+	                       .set_issuer("https://idp.test")
+	                       .set_subject("alice")
+	                       .set_audience("api://quack")
+	                       .set_issued_at(std::chrono::system_clock::time_point(std::chrono::seconds(1000)))
+	                       .set_expires_at(std::chrono::system_clock::time_point(std::chrono::seconds(2000)))
+	                       .sign(jwt::algorithm::rs384("", key.priv_pem, "", ""));
+
+	VerifyOptions opts = BaseOpts(1000);
+	opts.allowed_algorithms = {"RS256", "RS384"};
+
+	const auto res = ValidateToken(token, opts, ctx);
+	CHECK(res == VerifyResult::NoMatchingKey);
+	CHECK(http.call_count == 0);
 }

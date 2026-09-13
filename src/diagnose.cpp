@@ -1,5 +1,7 @@
 #include "diagnose.hpp"
 
+#include <algorithm>
+#include <chrono>
 #include <mutex>
 #include <sstream>
 #include <string>
@@ -54,6 +56,16 @@ static string ReadSetting(ClientContext &context, const string &key) {
 	return v.ToString();
 }
 
+#ifndef EMSCRIPTEN
+struct ProbeCache {
+	std::mutex mu;
+	std::string uri;
+	int64_t probed_at_s = 0;
+	quack_oauth::IdpProbeResult result;
+};
+static ProbeCache g_probe_cache;
+#endif
+
 static unique_ptr<FunctionData> DiagnoseBind(ClientContext &context, TableFunctionBindInput &,
                                              vector<LogicalType> &return_types, vector<string> &names) {
 #ifndef EMSCRIPTEN
@@ -88,6 +100,16 @@ static unique_ptr<FunctionData> DiagnoseBind(ClientContext &context, TableFuncti
 		Append(detail, "unknown_kids", std::to_string(unknown_kids));
 		Append(detail, "min_refresh_s", std::to_string(state.jwks_cache.GetMinRefreshSeconds()));
 		Append(detail, "throttled", std::to_string(state.jwks_cache.GetThrottledRefreshesCount()));
+		Append(detail, "throttled_per_kid", std::to_string(state.jwks_cache.GetThrottledPerKidCount()));
+		Append(detail, "throttled_budget", std::to_string(state.jwks_cache.GetThrottledBudgetCount()));
+		const auto last_reason = state.jwks_cache.GetLastRefreshReason();
+		if (!last_reason.empty()) {
+			Append(detail, "last_refresh_reason", last_reason);
+		}
+		const auto last_throttled = state.jwks_cache.GetLastThrottledAt();
+		if (last_throttled > 0) {
+			Append(detail, "last_throttled_at", std::to_string(last_throttled));
+		}
 		string status = "empty";
 		if (entries > 0) {
 			status = "warm";
@@ -136,9 +158,31 @@ static unique_ptr<FunctionData> DiagnoseBind(ClientContext &context, TableFuncti
 
 		std::ostringstream detail;
 #ifndef EMSCRIPTEN
-		DuckdbHttpClient base_http;
-		quack_oauth::RetryingHttpClient http(base_http, /*max_retries=*/0);
-		const auto probe = quack_oauth::ProbeIdpReachability(http, probe_uri);
+		const auto now_s =
+		    std::chrono::duration_cast<std::chrono::seconds>(std::chrono::system_clock::now().time_since_epoch())
+		        .count();
+		quack_oauth::IdpProbeResult probe;
+		bool run_probe = false;
+		if (probe_uri.empty()) {
+			probe.status = quack_oauth::IdpProbeResult::Status::Unconfigured;
+		} else {
+			std::lock_guard<std::mutex> pguard(g_probe_cache.mu);
+			if (g_probe_cache.uri == probe_uri && now_s - g_probe_cache.probed_at_s < 2 &&
+			    g_probe_cache.probed_at_s > 0) {
+				probe = g_probe_cache.result;
+			} else {
+				run_probe = true;
+			}
+		}
+		if (run_probe) {
+			DuckdbHttpClient base_http;
+			quack_oauth::RetryingHttpClient http(base_http, /*max_retries=*/0);
+			probe = quack_oauth::ProbeIdpReachability(http, probe_uri);
+			std::lock_guard<std::mutex> pguard(g_probe_cache.mu);
+			g_probe_cache.uri = probe_uri;
+			g_probe_cache.probed_at_s = now_s;
+			g_probe_cache.result = probe;
+		}
 
 		if (probe.probed_uri.empty()) {
 			Append(detail, "uri", "(none)");
@@ -179,7 +223,8 @@ static unique_ptr<FunctionData> DiagnoseBind(ClientContext &context, TableFuncti
 				++denies;
 				break;
 			case quack_oauth::AuditEventType::JwksRefresh:
-				if (e.reason == quack_oauth::kReasonRefreshRotated || e.reason == quack_oauth::kReasonRefreshRevoked) {
+				if (e.reason == quack_oauth::kReasonRefreshRotated || e.reason == quack_oauth::kReasonRefreshRevoked ||
+				    e.reason == quack_oauth::kReasonRefreshKidAbsent) {
 					++refreshes;
 				} else if (e.reason == quack_oauth::kReasonRefreshNoRotation ||
 				           e.reason == quack_oauth::kReasonRefreshSuperseded) {
