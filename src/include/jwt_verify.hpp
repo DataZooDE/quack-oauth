@@ -27,6 +27,7 @@ enum class VerifyResult {
 	// by the standalone `VerifyJwt` call.
 	UnknownKid,
 	JwksFetchFailed,
+	JwksThrottled,
 };
 
 struct VerifyOptions {

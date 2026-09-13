@@ -33,13 +33,10 @@ static void OnJwksMinRefreshSeconds(ClientContext &, SetScope, Value &parameter)
 		throw InvalidInputException("quack_oauth_jwks_min_refresh_s cannot be NULL");
 	}
 	const auto val = parameter.GetValue<int32_t>();
-	if (val < 1 || val > 3600) {
-		throw InvalidInputException("quack_oauth_jwks_min_refresh_s must be between 1 and 3600 (got %s)",
-		                            parameter.ToString());
-	}
-	if (val < g_startup_min_refresh_s) {
+	if (val < g_startup_min_refresh_s || val > 3600) {
 		throw InvalidInputException(
-		    "quack_oauth_jwks_min_refresh_s cannot be lowered below the startup floor of %d (got %d)",
+		    "quack_oauth_jwks_min_refresh_s must be between %d and 3600 (got %d); cannot be lowered below the "
+		    "startup floor configured via QUACK_OAUTH_JWKS_MIN_REFRESH_S",
 		    g_startup_min_refresh_s, val);
 	}
 	auto &state = GetQuackOauthState();

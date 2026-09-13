@@ -63,7 +63,7 @@ static unique_ptr<FunctionData> DiagnoseBind(ClientContext &context, TableFuncti
 
 	auto data = make_uniq<DiagnoseBindData>();
 	auto &state = GetQuackOauthState();
-	std::lock_guard<std::mutex> guard(state.mu);
+	std::unique_lock<std::mutex> guard(state.mu);
 
 	// 1. extension master switch + active SECRET
 	{
@@ -80,20 +80,13 @@ static unique_ptr<FunctionData> DiagnoseBind(ClientContext &context, TableFuncti
 
 	// 2. JWKS cache
 	{
-		const auto setting_str = ReadSetting(context, "quack_oauth_jwks_min_refresh_s");
-		if (!setting_str.empty()) {
-			try {
-				const auto setting_val = std::stoi(setting_str);
-				state.jwks_cache.SetMinRefreshSeconds(setting_val);
-			} catch (...) {
-			}
-		}
 		const auto entries = state.jwks_cache.Size();
 		const auto unknown_kids = state.jwks_cache.MissSize();
 		std::ostringstream detail;
 		Append(detail, "entries", std::to_string(entries));
 		Append(detail, "unknown_kids", std::to_string(unknown_kids));
 		Append(detail, "min_refresh_s", std::to_string(state.jwks_cache.GetMinRefreshSeconds()));
+		Append(detail, "throttled", std::to_string(state.jwks_cache.GetThrottledRefreshesCount()));
 		string status = "empty";
 		if (entries > 0) {
 			status = "warm";
@@ -118,6 +111,11 @@ static unique_ptr<FunctionData> DiagnoseBind(ClientContext &context, TableFuncti
 		Append(detail, "sessions", std::to_string(entries));
 		data->rows.push_back({"session_principals", entries == 0 ? "empty" : "active", detail.str()});
 	}
+
+	// Snapshot audit ring before releasing state.mu (F-H)
+	const auto snap = state.audit_ring.Snapshot();
+	const auto ring_cap = state.audit_ring.capacity();
+	guard.unlock();
 
 	// R-N-13 IdP reachability: live GET on jwks_uri (or introspection_endpoint
 	// when there's no JWKS, e.g. GitHub). No-op when there's no configured
@@ -162,7 +160,6 @@ static unique_ptr<FunctionData> DiagnoseBind(ClientContext &context, TableFuncti
 	// 5. In-memory audit ring snapshot: count accepted vs rejected tokens
 	// and allowed vs denied authz decisions.
 	{
-		const auto snap = state.audit_ring.Snapshot();
 		size_t accepts = 0, rejects = 0, allows = 0, denies = 0;
 		size_t refreshes = 0, refresh_noops = 0, refresh_failures = 0;
 		for (const auto &e : snap) {
@@ -180,7 +177,7 @@ static unique_ptr<FunctionData> DiagnoseBind(ClientContext &context, TableFuncti
 				++denies;
 				break;
 			case quack_oauth::AuditEventType::JwksRefresh:
-				if (e.reason == "rotated_key_refreshed") {
+				if (e.reason == "rotated_key_refreshed" || e.reason == "refresh_rotated") {
 					++refreshes;
 				} else if (e.reason == "refresh_no_rotation" || e.reason == "refresh_superseded") {
 					++refresh_noops;
@@ -191,7 +188,7 @@ static unique_ptr<FunctionData> DiagnoseBind(ClientContext &context, TableFuncti
 			}
 		}
 		std::ostringstream detail;
-		Append(detail, "count", std::to_string(snap.size()) + "/" + std::to_string(state.audit_ring.capacity()));
+		Append(detail, "count", std::to_string(snap.size()) + "/" + std::to_string(ring_cap));
 		Append(detail, "accepted", std::to_string(accepts));
 		Append(detail, "rejected", std::to_string(rejects));
 		Append(detail, "allowed", std::to_string(allows));

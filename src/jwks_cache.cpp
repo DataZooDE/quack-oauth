@@ -13,14 +13,17 @@ void JwksCache::SetMinRefreshSeconds(std::int64_t min_refresh_s) {
 	min_refresh_s_ = std::clamp<std::int64_t>(min_refresh_s, 1, 3600);
 }
 
+void JwksCache::TrimToCap(Entry &entry) {
+	if (entry.keys.size() > kMaxKeysPerKid) {
+		entry.keys.erase(entry.keys.begin(), entry.keys.begin() + (entry.keys.size() - kMaxKeysPerKid));
+	}
+}
+
 JwksLookup JwksCache::Lookup(const std::string &kid, std::int64_t now_s) const {
 	if (const auto hit = hits_.find(kid); hit != hits_.end()) {
 		JwksLookup result;
 		result.status = JwksLookupStatus::Hit;
 		result.keys = hit->second.keys;
-		if (!hit->second.keys.empty()) {
-			result.jwk = hit->second.keys.back();
-		}
 		return result;
 	}
 
@@ -38,52 +41,6 @@ JwksLookup JwksCache::Lookup(const std::string &kid, std::int64_t now_s) const {
 	return result;
 }
 
-void JwksCache::OnFetchSuccess(const Jwk &jwk, std::int64_t now_s) {
-	if (jwk.kty != "RSA" && jwk.kty != "EC" && jwk.kty != "OKP") {
-		return;
-	}
-
-	// A successful fetch supersedes any prior miss-rate-limit on this kid.
-	if (const auto miss = misses_.find(jwk.kid); miss != misses_.end()) {
-		miss_lru_.erase(miss->second.lru_it);
-		misses_.erase(miss);
-	}
-
-	if (const auto hit = hits_.find(jwk.kid); hit != hits_.end()) {
-		for (const auto &existing : hit->second.keys) {
-			if (SameKeyMaterial(existing, jwk)) {
-				hit_lru_.erase(hit->second.lru_it);
-				hit_lru_.push_front(jwk.kid);
-				hit->second.lru_it = hit_lru_.begin();
-				return;
-			}
-		}
-		hit->second.keys.push_back(jwk);
-		if (hit->second.keys.size() > 4) {
-			hit->second.keys.erase(hit->second.keys.begin(), hit->second.keys.begin() + (hit->second.keys.size() - 4));
-		}
-		hit->second.fetched_at_s = now_s;
-		hit_lru_.erase(hit->second.lru_it);
-		hit_lru_.push_front(jwk.kid);
-		hit->second.lru_it = hit_lru_.begin();
-		return;
-	}
-
-	hit_lru_.push_front(jwk.kid);
-	Entry entry;
-	entry.keys.push_back(jwk);
-	entry.fetched_at_s = now_s;
-	entry.last_refresh_attempt_s = now_s;
-	entry.current_reservation_id = next_reservation_id_++;
-	entry.lru_it = hit_lru_.begin();
-	hits_[jwk.kid] = std::move(entry);
-	while (hits_.size() > max_entries_) {
-		const auto victim = hit_lru_.back();
-		hit_lru_.pop_back();
-		hits_.erase(victim);
-	}
-}
-
 void JwksCache::OnFetchSuccess(const std::string &kid, const std::vector<Jwk> &keys, std::int64_t now_s) {
 	std::vector<Jwk> valid_keys;
 	for (const auto &k : keys) {
@@ -95,9 +52,6 @@ void JwksCache::OnFetchSuccess(const std::string &kid, const std::vector<Jwk> &k
 		return;
 	}
 	last_fetch_failed_ = false;
-	if (valid_keys.size() > 4) {
-		valid_keys.erase(valid_keys.begin(), valid_keys.begin() + (valid_keys.size() - 4));
-	}
 
 	if (const auto miss = misses_.find(kid); miss != misses_.end()) {
 		miss_lru_.erase(miss->second.lru_it);
@@ -106,6 +60,7 @@ void JwksCache::OnFetchSuccess(const std::string &kid, const std::vector<Jwk> &k
 
 	if (const auto hit = hits_.find(kid); hit != hits_.end()) {
 		hit->second.keys = std::move(valid_keys);
+		TrimToCap(hit->second);
 		hit->second.fetched_at_s = now_s;
 		hit_lru_.erase(hit->second.lru_it);
 		hit_lru_.push_front(kid);
@@ -116,9 +71,10 @@ void JwksCache::OnFetchSuccess(const std::string &kid, const std::vector<Jwk> &k
 	hit_lru_.push_front(kid);
 	Entry entry;
 	entry.keys = std::move(valid_keys);
+	TrimToCap(entry);
 	entry.fetched_at_s = now_s;
 	entry.last_refresh_attempt_s = now_s;
-	entry.current_reservation_id = next_reservation_id_++;
+	entry.current_reservation_id = 0;
 	entry.lru_it = hit_lru_.begin();
 	hits_[kid] = std::move(entry);
 	while (hits_.size() > max_entries_) {
@@ -129,7 +85,8 @@ void JwksCache::OnFetchSuccess(const std::string &kid, const std::vector<Jwk> &k
 }
 
 bool JwksCache::CanFetchJwks(std::int64_t now_s) const {
-	if (last_global_fetch_s_ > 0 && (now_s < last_global_fetch_s_ || (now_s - last_global_fetch_s_) < min_refresh_s_)) {
+	if (last_global_fetch_s_ > 0 &&
+	    (now_s < last_global_fetch_s_ || (now_s - last_global_fetch_s_) < kGlobalFetchBudgetWindowSeconds)) {
 		return false;
 	}
 	return true;
@@ -160,35 +117,6 @@ std::uint64_t JwksCache::TryReserveRefresh(const std::string &kid, std::int64_t 
 	return res_id;
 }
 
-bool JwksCache::CommitRefresh(const std::string &kid, std::uint64_t reservation_id, const Jwk &jwk,
-                              std::int64_t now_s) {
-	if (jwk.kty != "RSA" && jwk.kty != "EC" && jwk.kty != "OKP") {
-		return false;
-	}
-	const auto hit = hits_.find(kid);
-	if (hit == hits_.end() || hit->second.current_reservation_id != reservation_id) {
-		return false;
-	}
-	bool exists = false;
-	for (const auto &existing : hit->second.keys) {
-		if (SameKeyMaterial(existing, jwk)) {
-			exists = true;
-			break;
-		}
-	}
-	if (!exists) {
-		hit->second.keys.push_back(jwk);
-		if (hit->second.keys.size() > 4) {
-			hit->second.keys.erase(hit->second.keys.begin(), hit->second.keys.begin() + (hit->second.keys.size() - 4));
-		}
-	}
-	hit->second.fetched_at_s = now_s;
-	hit_lru_.erase(hit->second.lru_it);
-	hit_lru_.push_front(kid);
-	hit->second.lru_it = hit_lru_.begin();
-	return true;
-}
-
 bool JwksCache::CommitRefresh(const std::string &kid, std::uint64_t reservation_id, const std::vector<Jwk> &keys,
                               std::int64_t now_s) {
 	if (reservation_id == 0 || keys.empty()) {
@@ -213,11 +141,9 @@ bool JwksCache::CommitRefresh(const std::string &kid, std::uint64_t reservation_
 	if (valid_keys.empty()) {
 		return false;
 	}
-	if (valid_keys.size() > 4) {
-		valid_keys.erase(valid_keys.begin(), valid_keys.begin() + (valid_keys.size() - 4));
-	}
 
 	hit->second.keys = std::move(valid_keys);
+	TrimToCap(hit->second);
 	hit->second.fetched_at_s = now_s;
 	hit_lru_.erase(hit->second.lru_it);
 	hit_lru_.push_front(kid);

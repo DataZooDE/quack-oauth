@@ -389,7 +389,7 @@ only the normalised `Principal`.
 
 | Scenario | Stimulus | Expected response |
 |---|---|---|
-| **IdP key rotation** | IdP rotates signing key; old JWKS cached. | First request with new `kid` triggers a single JWKS fetch; subsequent requests hit cache. Old key remains for tokens still bearing it until `exp`. |
+| **IdP key rotation** | IdP rotates signing key; old JWKS cached. | First request with new `kid` (or signature failure on same `kid`) triggers a rate-limited JWKS fetch (bounded by `min_refresh_s`); subsequent requests hit cache. Keys removed by the IdP are revoked on successful 200 refresh. |
 | **IdP outage** | IdP unreachable for 10 min. | `jwks` mode keeps serving with cached JWKS; new tokens with unknown `kid` rejected with `unknown_kid`. `introspect` mode rejects new tokens immediately; cached decisions continue to honour their TTL. |
 | **Token rotation mid-session** | Client's AT expires while attached. | Client renews via refresh_token (or re-flows), updates the SECRET, transparently reconnects on next operation. |
 | **Policy update** | Operator `UPDATE`s or `INSERT`s rows in the policy table. | Next request to `check_authorization` re-`SELECT`s and uses the new rules immediately. No file watch, no restart, no extension reload. |

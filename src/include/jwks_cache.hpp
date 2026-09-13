@@ -32,7 +32,7 @@ struct Jwk {
 };
 
 inline bool SameKeyMaterial(const Jwk &a, const Jwk &b) {
-	if (a.kty != b.kty) {
+	if (a.kty != b.kty || a.alg != b.alg || a.use != b.use) {
 		return false;
 	}
 	if (a.kty == "RSA") {
@@ -54,10 +54,12 @@ enum class JwksLookupStatus {
 	RateLimited,
 };
 
+static constexpr std::int64_t kGlobalFetchBudgetWindowSeconds = 2;
+static constexpr std::size_t kMaxKeysPerKid = 4;
+
 struct JwksLookup {
 	JwksLookupStatus status = JwksLookupStatus::Miss;
 	std::vector<Jwk> keys;          // populated on Hit: all cached keys for this kid
-	std::optional<Jwk> jwk;         // populated on Hit: most recently ingested key for backwards compatibility
 	std::int64_t retry_after_s = 0; // populated only on RateLimited
 };
 
@@ -84,10 +86,7 @@ public:
 	// Look up a kid. Does not mutate the cache.
 	JwksLookup Lookup(const std::string &kid, std::int64_t now_s) const;
 
-	// Ingests key material for jwk.kid. If an entry for jwk.kid already exists,
-	// appends this key if not already present (material difference check),
-	// preserving the existing reservation ID and refresh attempt timestamp (F1, F5).
-	void OnFetchSuccess(const Jwk &jwk, std::int64_t now_s);
+	// Ingests key material authoritatively for kid.
 	void OnFetchSuccess(const std::string &kid, const std::vector<Jwk> &keys, std::int64_t now_s);
 
 	// Caller fetched JWKS but the kid was absent. Starts the rate-limit
@@ -95,12 +94,19 @@ public:
 	void OnFetchMiss(const std::string &kid, std::int64_t now_s);
 
 	// Global fetch budget: determines whether an outbound JWKS fetch is allowed
-	// at now_s, or if a recent successful fetch already answered all keys.
+	// at now_s (decoupled to kGlobalFetchBudgetWindowSeconds for amplification control).
 	bool CanFetchJwks(std::int64_t now_s) const;
 	void RecordJwksFetch(std::int64_t now_s, bool failed = false);
 
 	bool WasLastFetchFailed() const noexcept {
 		return last_fetch_failed_;
+	}
+
+	void IncrementThrottledRefreshes() noexcept {
+		++throttled_refreshes_;
+	}
+	std::uint64_t GetThrottledRefreshesCount() const noexcept {
+		return throttled_refreshes_;
 	}
 
 	// Reserve one rate-limited refresh attempt for an already-cached kid.
@@ -109,10 +115,9 @@ public:
 	// the call fails closed (returns 0).
 	std::uint64_t TryReserveRefresh(const std::string &kid, std::int64_t now_s);
 
-	// Commit verified refreshed JWK(s) for the reserved kid.
+	// Commit verified refreshed JWKs for the reserved kid.
 	// Succeeds only if `reservation_id` matches the active reservation for `kid`,
 	// dropping stale out-of-order completions so they cannot overwrite newer keys.
-	bool CommitRefresh(const std::string &kid, std::uint64_t reservation_id, const Jwk &jwk, std::int64_t now_s);
 	bool CommitRefresh(const std::string &kid, std::uint64_t reservation_id, const std::vector<Jwk> &keys,
 	                   std::int64_t now_s);
 
@@ -132,10 +137,13 @@ private:
 		std::list<std::string>::iterator lru_it;
 	};
 
+	static void TrimToCap(Entry &entry);
+
 	std::int64_t min_refresh_s_;
 	std::size_t max_entries_;
 	std::int64_t last_global_fetch_s_ = 0;
 	bool last_fetch_failed_ = false;
+	std::uint64_t throttled_refreshes_ = 0;
 	std::uint64_t next_reservation_id_ = 1;
 	std::list<std::string> hit_lru_;
 	std::list<std::string> miss_lru_;

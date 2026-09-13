@@ -14,16 +14,26 @@ static std::int64_t ToUnixSeconds(const std::chrono::system_clock::time_point &t
 	return std::chrono::duration_cast<std::chrono::seconds>(tp.time_since_epoch()).count();
 }
 
-static void ExtractHeader(const jwt::decoded_jwt<TraitsT> &decoded, JwtParsed &out) {
+static bool ExtractHeader(const jwt::decoded_jwt<TraitsT> &decoded, JwtParsed &out) {
 	if (decoded.has_algorithm()) {
 		out.alg = decoded.get_algorithm();
 	}
 	if (decoded.has_key_id()) {
 		out.kid = decoded.get_key_id();
+		if (out.kid.size() > 256) {
+			return false;
+		}
+		for (char c : out.kid) {
+			const auto uc = static_cast<unsigned char>(c);
+			if (uc < 32 || uc == 127) {
+				return false;
+			}
+		}
 	}
 	if (decoded.has_type()) {
 		out.typ = decoded.get_type();
 	}
+	return true;
 }
 
 static void ExtractStandardPayload(const jwt::decoded_jwt<TraitsT> &decoded, JwtParsed &out) {
@@ -91,7 +101,9 @@ std::optional<JwtParsed> ParseJwt(std::string_view token) {
 	try {
 		auto decoded = jwt::decode<TraitsT>(std::string(token));
 		JwtParsed out;
-		ExtractHeader(decoded, out);
+		if (!ExtractHeader(decoded, out)) {
+			return std::nullopt;
+		}
 		ExtractStandardPayload(decoded, out);
 		ExtractScopes(decoded, out);
 		return out;

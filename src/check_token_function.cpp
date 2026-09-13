@@ -256,6 +256,8 @@ static const char *VerifyResultReason(quack_oauth::VerifyResult r) {
 		return "unknown_kid";
 	case quack_oauth::VerifyResult::JwksFetchFailed:
 		return "jwks_fetch_failed";
+	case quack_oauth::VerifyResult::JwksThrottled:
+		return "jwks_throttled";
 	}
 	return "unknown";
 }
@@ -281,6 +283,8 @@ struct RowValidation {
 	quack_oauth::VerifyResult outcome;
 	bool have_principal = false;
 	quack_oauth::Principal principal;
+	std::string refresh_kid;
+	std::string refresh_reason;
 };
 
 class UnlockingHttpClient : public quack_oauth::IHttpClient {
@@ -336,6 +340,40 @@ static void StoreSessionPrincipal(QuackOauthState &shared_state, const string &s
 	}
 }
 
+static void EmitAuditsAndScrub(ClientContext &context, string &token_str, const RowValidation &row, int64_t now_s,
+                               std::unique_lock<std::mutex> &guard) {
+	const bool ok = row.outcome == quack_oauth::VerifyResult::Ok;
+	guard.unlock();
+	EmitTokenAudit(context, token_str, row.outcome, now_s, (ok && row.have_principal) ? &row.principal : nullptr);
+	if (!row.refresh_kid.empty()) {
+		if (row.refresh_reason == "refresh_throttled") {
+			// Drop refresh_throttled from 64-entry audit ring to avoid flooding; log to DUCKDB_LOG_INFO instead
+			// (F6). Sanitize kid for log output and cap length at 256.
+			std::string safe_kid;
+			for (char c : row.refresh_kid) {
+				if (static_cast<unsigned char>(c) >= 32 && static_cast<unsigned char>(c) < 127 && c != '"' &&
+				    c != '\\') {
+					safe_kid.push_back(c);
+				}
+			}
+			if (safe_kid.size() > 256) {
+				safe_kid.resize(256);
+			}
+			DUCKDB_LOG_INFO(context, "quack_oauth: JWKS refresh throttled for kid='" + safe_kid + "'");
+		} else {
+			quack_oauth::AuditEvent e;
+			e.timestamp_unix_s = now_s;
+			e.event_type = quack_oauth::AuditEventType::JwksRefresh;
+			e.kid = row.refresh_kid;
+			e.reason = row.refresh_reason;
+			e.token_hash = quack_oauth::RedactSensitive(token_str);
+			EmitAuditEvent(context, e);
+		}
+	}
+	guard.lock();
+	quack_oauth::SecureScrub(token_str); // R-N-3
+}
+
 // Drive a chunk through a per-row validator. Centralises the boilerplate
 // (UnifiedVectorFormat parallel iteration, principal caching, audit
 // emission, R-N-3 secure scrub) that was previously copy-pasted across
@@ -368,22 +406,14 @@ static void RunValidationLoop(Vector &tokens, idx_t count, Vector &result, Clien
 			if (ok && row.have_principal && !sid_str.empty()) {
 				StoreSessionPrincipal(shared_state, sid_str, row.principal, now_s);
 			}
-			guard.unlock();
-			EmitTokenAudit(context, token_str, row.outcome, now_s,
-			               (ok && row.have_principal) ? &row.principal : nullptr);
-			guard.lock();
-			quack_oauth::SecureScrub(token_str); // R-N-3
+			EmitAuditsAndScrub(context, token_str, row, now_s, guard);
 		}
 	} else {
 		UnaryExecutor::Execute<string_t, bool>(tokens, result, count, [&](string_t token) {
 			auto token_str = token.GetString();
 			const auto row = validate_row(token_str);
 			const bool ok = row.outcome == quack_oauth::VerifyResult::Ok;
-			guard.unlock();
-			EmitTokenAudit(context, token_str, row.outcome, now_s,
-			               (ok && row.have_principal) ? &row.principal : nullptr);
-			guard.lock();
-			quack_oauth::SecureScrub(token_str); // R-N-3
+			EmitAuditsAndScrub(context, token_str, row, now_s, guard);
 			return ok;
 		});
 	}
@@ -470,22 +500,15 @@ static void ValidateChunk(Vector &tokens, idx_t count, Vector &result, ClientCon
 			                  return r;
 		                  });
 	} else { // jwks
-		struct RawRefreshItem {
-			std::string kid;
-			std::string reason;
-			std::string token_hash;
-		};
-		std::vector<RawRefreshItem> pending_refreshes;
-
-		quack_oauth::ValidateContext vctx {
-		    http, shared_state.jwks_cache, cfg.jwks_uri,
-		    [&](const std::string &kid, const std::string &reason, std::string_view token) {
-			    // Hash token immediately to ensure no plaintext bearer tokens are retained (F6).
-			    pending_refreshes.push_back({kid, reason, quack_oauth::RedactSensitive(token)});
-		    }};
+		quack_oauth::ValidateContext vctx {http, shared_state.jwks_cache, cfg.jwks_uri, nullptr};
 		RunValidationLoop(tokens, count, result, context, session_ids, opts.now_s, shared_state, guard,
 		                  [&](string &token_str) -> RowValidation {
 			                  RowValidation r;
+			                  vctx.on_refresh = [&](const std::string &kid, const std::string &reason,
+			                                        std::string_view) {
+				                  r.refresh_kid = kid;
+				                  r.refresh_reason = reason;
+			                  };
 			                  r.outcome = quack_oauth::ValidateToken(token_str, opts, vctx);
 			                  if (r.outcome == quack_oauth::VerifyResult::Ok) {
 				                  const auto parsed = quack_oauth::ParseJwt(token_str);
@@ -496,36 +519,6 @@ static void ValidateChunk(Vector &tokens, idx_t count, Vector &result, ClientCon
 			                  }
 			                  return r;
 		                  });
-
-		// Emit any recorded JWKS refresh audit events AFTER RunValidationLoop returns
-		// and guard is unlocked, avoiding deadlock on shared_state.mu (F1).
-		guard.unlock();
-		std::set<std::pair<std::string, std::string>> seen_refreshes;
-		for (const auto &pr : pending_refreshes) {
-			if (!seen_refreshes.insert({pr.kid, pr.reason}).second) {
-				continue;
-			}
-			if (pr.reason == "refresh_throttled") {
-				// Drop refresh_throttled from 64-entry audit ring to avoid flooding; log to DUCKDB_LOG_INFO instead
-				// (F6). Sanitize kid for log output.
-				std::string safe_kid;
-				for (char c : pr.kid) {
-					if (static_cast<unsigned char>(c) >= 32 && static_cast<unsigned char>(c) < 127 && c != '"' &&
-					    c != '\\') {
-						safe_kid.push_back(c);
-					}
-				}
-				DUCKDB_LOG_INFO(context, "quack_oauth: JWKS refresh throttled for kid='" + safe_kid + "'");
-				continue;
-			}
-			quack_oauth::AuditEvent e;
-			e.timestamp_unix_s = opts.now_s;
-			e.event_type = quack_oauth::AuditEventType::JwksRefresh;
-			e.kid = pr.kid;
-			e.reason = pr.reason;
-			e.token_hash = pr.token_hash;
-			EmitAuditEvent(context, e);
-		}
 	}
 }
 

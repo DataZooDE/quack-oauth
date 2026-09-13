@@ -27,21 +27,22 @@ TEST_CASE("JwksCache: empty cache yields Miss", "[jwks][cache]") {
 	JwksCache cache(kRefresh);
 	const auto r = cache.Lookup("unknown-kid", 0);
 	CHECK(r.status == JwksLookupStatus::Miss);
-	CHECK_FALSE(r.jwk.has_value());
+	CHECK(r.keys.empty());
 	CHECK(cache.Size() == 0);
 }
 
 TEST_CASE("JwksCache: OnFetchSuccess makes subsequent lookups Hit", "[jwks][cache]") {
 	JwksCache cache(kRefresh);
-	cache.OnFetchSuccess(MakeRsaJwk("k1"), 100);
+	const auto j = MakeRsaJwk("k1");
+	cache.OnFetchSuccess(j.kid, {j}, 100);
 
 	const auto r = cache.Lookup("k1", 200);
 	REQUIRE(r.status == JwksLookupStatus::Hit);
-	REQUIRE(r.jwk.has_value());
-	CHECK(r.jwk->kid == "k1");
-	CHECK(r.jwk->kty == "RSA");
-	CHECK(r.jwk->alg == "RS256");
-	CHECK(r.jwk->n == "fake-modulus-k1");
+	REQUIRE_FALSE(r.keys.empty());
+	CHECK(r.keys[0].kid == "k1");
+	CHECK(r.keys[0].kty == "RSA");
+	CHECK(r.keys[0].alg == "RS256");
+	CHECK(r.keys[0].n == "fake-modulus-k1");
 	CHECK(cache.Size() == 1);
 }
 
@@ -49,7 +50,8 @@ TEST_CASE("JwksCache: cached entries never expire on hit", "[jwks][cache]") {
 	// Architecture section 6 "IdP outage" scenario: hits keep serving
 	// indefinitely; only misses are rate-limited.
 	JwksCache cache(kRefresh);
-	cache.OnFetchSuccess(MakeRsaJwk("k1"), 0);
+	const auto j = MakeRsaJwk("k1");
+	cache.OnFetchSuccess(j.kid, {j}, 0);
 
 	const auto far_future = cache.Lookup("k1", 365L * 24 * 3600);
 	CHECK(far_future.status == JwksLookupStatus::Hit);
@@ -59,23 +61,16 @@ TEST_CASE("JwksCache: OnFetchMiss rate-limits subsequent fetches per R-S-4", "[j
 	JwksCache cache(kRefresh);
 	cache.OnFetchMiss("nope", 0);
 
-	// 10 s later: still inside the rate-limit window.
-	const auto r_inside = cache.Lookup("nope", 10);
-	CHECK(r_inside.status == JwksLookupStatus::RateLimited);
-	CHECK(r_inside.retry_after_s == 20);
+	const auto r0 = cache.Lookup("nope", 0);
+	CHECK(r0.status == JwksLookupStatus::RateLimited);
+	CHECK(r0.retry_after_s == kRefresh);
 
-	// At exactly the boundary: still rate-limited (strict inequality).
-	const auto r_at_boundary = cache.Lookup("nope", kRefresh - 1);
-	CHECK(r_at_boundary.status == JwksLookupStatus::RateLimited);
+	const auto r10 = cache.Lookup("nope", 10);
+	CHECK(r10.status == JwksLookupStatus::RateLimited);
+	CHECK(r10.retry_after_s == kRefresh - 10);
 
-	// Past the window: caller may try again.
-	const auto r_after = cache.Lookup("nope", kRefresh);
-	CHECK(r_after.status == JwksLookupStatus::Miss);
-}
-
-TEST_CASE("JwksCache: rate-limit is per-kid, not global", "[jwks][cache][rate-limit]") {
-	JwksCache cache(kRefresh);
-	cache.OnFetchMiss("k1", 0);
+	const auto r30 = cache.Lookup("nope", 30);
+	CHECK(r30.status == JwksLookupStatus::Miss);
 
 	// k2 has no recent miss recorded -- it should not inherit k1's rate limit.
 	const auto r = cache.Lookup("k2", 5);
@@ -85,38 +80,35 @@ TEST_CASE("JwksCache: rate-limit is per-kid, not global", "[jwks][cache][rate-li
 TEST_CASE("JwksCache: a later success on a previously-missed kid clears the limit", "[jwks][cache][rate-limit]") {
 	JwksCache cache(kRefresh);
 	cache.OnFetchMiss("k1", 0);
-	cache.OnFetchSuccess(MakeRsaJwk("k1"), 5);
+	const auto j = MakeRsaJwk("k1");
+	cache.OnFetchSuccess(j.kid, {j}, 5);
 
 	const auto r = cache.Lookup("k1", 6);
 	REQUIRE(r.status == JwksLookupStatus::Hit);
-	REQUIRE(r.jwk.has_value());
-	CHECK(r.jwk->kid == "k1");
+	REQUIRE_FALSE(r.keys.empty());
+	CHECK(r.keys[0].kid == "k1");
 }
 
 TEST_CASE("JwksCache: Size() reflects only successful fetches", "[jwks][cache]") {
 	JwksCache cache(kRefresh);
 	cache.OnFetchMiss("absent-1", 0);
 	cache.OnFetchMiss("absent-2", 0);
-	cache.OnFetchSuccess(MakeRsaJwk("present"), 0);
+	const auto j = MakeRsaJwk("present");
+	cache.OnFetchSuccess(j.kid, {j}, 0);
 	CHECK(cache.Size() == 1);
 }
 
-TEST_CASE("JwksCache: re-fetching the same kid preserves both JWKs in multi-key entry", "[jwks][cache]") {
-	// Under multi-key cache entries, re-fetching rotated key material with the same kid
-	// is additive: it preserves both keys so tokens signed by either key can verify (F1).
+TEST_CASE("JwksCache: multi-key entry preserves multiple published JWKs", "[jwks][cache]") {
 	JwksCache cache(kRefresh);
 
 	Jwk first = MakeRsaJwk("k1");
 	first.n = "first-modulus";
-	cache.OnFetchSuccess(first, 0);
-
 	Jwk second = MakeRsaJwk("k1");
 	second.n = "rotated-modulus";
-	cache.OnFetchSuccess(second, 100);
+	cache.OnFetchSuccess("k1", {first, second}, 100);
 
 	const auto r = cache.Lookup("k1", 200);
 	REQUIRE(r.status == JwksLookupStatus::Hit);
-	REQUIRE(r.jwk.has_value());
 	REQUIRE(r.keys.size() == 2);
 	CHECK(r.keys[0].n == "first-modulus");
 	CHECK(r.keys[1].n == "rotated-modulus");
@@ -125,7 +117,8 @@ TEST_CASE("JwksCache: re-fetching the same kid preserves both JWKs in multi-key 
 
 TEST_CASE("JwksCache: cached-key refresh attempts are rate-limited", "[jwks][cache][rate-limit]") {
 	JwksCache cache(kRefresh);
-	cache.OnFetchSuccess(MakeRsaJwk("k1"), 100);
+	const auto j = MakeRsaJwk("k1");
+	cache.OnFetchSuccess(j.kid, {j}, 100);
 
 	CHECK(cache.TryReserveRefresh("k1", 110) == 0);
 	CHECK(cache.TryReserveRefresh("k1", 130) != 0);
@@ -137,14 +130,15 @@ TEST_CASE("JwksCache: cached-key refresh attempts are rate-limited", "[jwks][cac
 
 TEST_CASE("JwksCache: min_refresh_s is clamped to at least 1 second", "[jwks][cache][rate-limit]") {
 	JwksCache cache(/*min_refresh_s=*/0);
-	cache.OnFetchSuccess(MakeRsaJwk("k1"), 100);
+	const auto j = MakeRsaJwk("k1");
+	cache.OnFetchSuccess(j.kid, {j}, 100);
 
 	CHECK(cache.TryReserveRefresh("k1", 100) == 0);
 	CHECK(cache.TryReserveRefresh("k1", 101) != 0);
 	CHECK(cache.TryReserveRefresh("k1", 101) == 0);
 
 	JwksCache cache_neg(/*min_refresh_s=*/-5);
-	cache_neg.OnFetchSuccess(MakeRsaJwk("k1"), 100);
+	cache_neg.OnFetchSuccess("k1", {MakeRsaJwk("k1")}, 100);
 	CHECK(cache_neg.TryReserveRefresh("k1", 100) == 0);
 	CHECK(cache_neg.TryReserveRefresh("k1", 101) != 0);
 	CHECK(cache_neg.TryReserveRefresh("k1", 101) == 0);
@@ -153,7 +147,7 @@ TEST_CASE("JwksCache: min_refresh_s is clamped to at least 1 second", "[jwks][ca
 TEST_CASE("JwksCache: decreasing now_s sequence fails closed and enforces rate limit",
           "[jwks][cache][rate-limit][clock-skew]") {
 	JwksCache cache(30);
-	cache.OnFetchSuccess(MakeRsaJwk("k1"), 1000);
+	cache.OnFetchSuccess("k1", {MakeRsaJwk("k1")}, 1000);
 
 	// Chunk B at t=1030 reserves a refresh.
 	const auto res1 = cache.TryReserveRefresh("k1", 1030);
@@ -177,7 +171,7 @@ TEST_CASE("JwksCache: out-of-order refresh completions do not overwrite newer ke
           "[jwks][cache][reservation][concurrency]") {
 	JwksCache cache(30);
 	const auto k0 = MakeRsaJwk("k1");
-	cache.OnFetchSuccess(k0, 1000);
+	cache.OnFetchSuccess(k0.kid, {k0}, 1000);
 
 	// Request A starts at t=1030 and gets reservation id res_a
 	const auto res_a = cache.TryReserveRefresh("k1", 1030);
@@ -194,26 +188,27 @@ TEST_CASE("JwksCache: out-of-order refresh completions do not overwrite newer ke
 	k2.n = "key-K2";
 
 	// Request B finishes faster and commits K2
-	CHECK(cache.CommitRefresh("k1", res_b, k2, 1066));
-	CHECK(cache.Lookup("k1", 1066).jwk->n == "key-K2");
+	CHECK(cache.CommitRefresh("k1", res_b, {k2}, 1066));
+	CHECK(cache.Lookup("k1", 1066).keys.back().n == "key-K2");
 
 	// Request A finishes later (out-of-order) and tries to commit K1 using stale res_a
-	CHECK_FALSE(cache.CommitRefresh("k1", res_a, k1, 1070));
+	CHECK_FALSE(cache.CommitRefresh("k1", res_a, {k1}, 1070));
 
 	// The newer key K2 must still be in the cache!
-	CHECK(cache.Lookup("k1", 1070).jwk->n == "key-K2");
+	CHECK(cache.Lookup("k1", 1070).keys.back().n == "key-K2");
 }
 
 TEST_CASE("JwksCache: out-of-order fetch completion preserves the latest refresh attempt timestamp",
           "[jwks][cache][rate-limit][monotonic]") {
 	JwksCache cache(30);
-	cache.OnFetchSuccess(MakeRsaJwk("k1"), 100);
+	const auto j = MakeRsaJwk("k1");
+	cache.OnFetchSuccess(j.kid, {j}, 100);
 
 	CHECK(cache.TryReserveRefresh("k1", 150) != 0);
 
 	// An out-of-order fetch completion arrives stamped at t=120.
 	// Calling OnFetchSuccess must not move last_refresh_attempt_s backwards from 150 to 120.
-	cache.OnFetchSuccess(MakeRsaJwk("k1"), 120);
+	cache.OnFetchSuccess(j.kid, {j}, 120);
 
 	CHECK(cache.TryReserveRefresh("k1", 160) == 0);
 	CHECK(cache.TryReserveRefresh("k1", 180) != 0);
@@ -221,9 +216,12 @@ TEST_CASE("JwksCache: out-of-order fetch completion preserves the latest refresh
 
 TEST_CASE("JwksCache: successful fetches are bounded by capacity", "[jwks][cache][capacity]") {
 	JwksCache cache(kRefresh, /*max_entries=*/2);
-	cache.OnFetchSuccess(MakeRsaJwk("k1"), 0);
-	cache.OnFetchSuccess(MakeRsaJwk("k2"), 1);
-	cache.OnFetchSuccess(MakeRsaJwk("k3"), 2);
+	const auto k1 = MakeRsaJwk("k1");
+	const auto k2 = MakeRsaJwk("k2");
+	const auto k3 = MakeRsaJwk("k3");
+	cache.OnFetchSuccess(k1.kid, {k1}, 0);
+	cache.OnFetchSuccess(k2.kid, {k2}, 1);
+	cache.OnFetchSuccess(k3.kid, {k3}, 2);
 
 	CHECK(cache.Size() == 2);
 	CHECK(cache.Lookup("k1", 3).status == JwksLookupStatus::Miss);
@@ -245,16 +243,19 @@ TEST_CASE("JwksCache: miss rate-limit entries are bounded by capacity", "[jwks][
 
 TEST_CASE("JwksCache: CommitRefresh updates LRU order for eviction", "[jwks][cache][capacity][lru]") {
 	JwksCache cache(kRefresh, /*max_entries=*/2);
-	cache.OnFetchSuccess(MakeRsaJwk("k1"), 0);
-	cache.OnFetchSuccess(MakeRsaJwk("k2"), 1);
+	const auto k1 = MakeRsaJwk("k1");
+	const auto k2 = MakeRsaJwk("k2");
+	cache.OnFetchSuccess(k1.kid, {k1}, 0);
+	cache.OnFetchSuccess(k2.kid, {k2}, 1);
 
 	// Reserve and commit refresh for k1 at t=35.
 	const auto res = cache.TryReserveRefresh("k1", 35);
 	REQUIRE(res != 0);
-	CHECK(cache.CommitRefresh("k1", res, MakeRsaJwk("k1"), 36));
+	CHECK(cache.CommitRefresh("k1", res, {MakeRsaJwk("k1")}, 36));
 
 	// Adding k3 should now evict k2 (which is now least recently used), keeping k1.
-	cache.OnFetchSuccess(MakeRsaJwk("k3"), 37);
+	const auto k3 = MakeRsaJwk("k3");
+	cache.OnFetchSuccess(k3.kid, {k3}, 37);
 	CHECK(cache.Lookup("k1", 38).status == JwksLookupStatus::Hit);
 	CHECK(cache.Lookup("k2", 38).status == JwksLookupStatus::Miss);
 	CHECK(cache.Lookup("k3", 38).status == JwksLookupStatus::Hit);
@@ -262,7 +263,8 @@ TEST_CASE("JwksCache: CommitRefresh updates LRU order for eviction", "[jwks][cac
 
 TEST_CASE("JwksCache: SetMinRefreshSeconds updates window and clamps to [1, 3600]", "[jwks][cache][settings]") {
 	JwksCache cache(30);
-	cache.OnFetchSuccess(MakeRsaJwk("k1"), 100);
+	const auto k1 = MakeRsaJwk("k1");
+	cache.OnFetchSuccess(k1.kid, {k1}, 100);
 
 	// At 110 (10s later), rate limited under 30s window
 	CHECK(cache.TryReserveRefresh("k1", 110) == 0);
@@ -290,8 +292,7 @@ TEST_CASE("JwksCache: multi-key entry preserves multiple keys under same kid", "
 	auto k1_b = MakeRsaJwk("k1");
 	k1_b.n = "modulus-b";
 
-	cache.OnFetchSuccess(k1_a, 100);
-	cache.OnFetchSuccess(k1_b, 100);
+	cache.OnFetchSuccess("k1", {k1_a, k1_b}, 100);
 
 	const auto r = cache.Lookup("k1", 200);
 	REQUIRE(r.status == JwksLookupStatus::Hit);
@@ -305,14 +306,14 @@ TEST_CASE("JwksCache: duplicate identical key material does not duplicate or inv
           "[jwks][cache][multi-key]") {
 	JwksCache cache(kRefresh);
 	auto k1 = MakeRsaJwk("k1");
-	cache.OnFetchSuccess(k1, 100);
+	cache.OnFetchSuccess(k1.kid, {k1}, 100);
 
 	const auto res = cache.TryReserveRefresh("k1", 200);
 	REQUIRE(res != 0);
 
 	// Ingesting the identical key material again (e.g., from sibling ingest or repeated fetch)
 	// should not duplicate the key, nor should it invalidate the active reservation ID.
-	cache.OnFetchSuccess(k1, 201);
+	cache.OnFetchSuccess(k1.kid, {k1}, 201);
 
 	const auto r = cache.Lookup("k1", 202);
 	REQUIRE(r.keys.size() == 1);
@@ -320,7 +321,7 @@ TEST_CASE("JwksCache: duplicate identical key material does not duplicate or inv
 	// Reservation must still be valid!
 	auto k1_new = MakeRsaJwk("k1");
 	k1_new.n = "modulus-new";
-	CHECK(cache.CommitRefresh("k1", res, k1_new, 203));
+	CHECK(cache.CommitRefresh("k1", res, {k1, k1_new}, 203));
 
 	const auto r2 = cache.Lookup("k1", 204);
 	REQUIRE(r2.keys.size() == 2);
@@ -333,12 +334,12 @@ TEST_CASE("JwksCache: global fetch budget rate-limits fetches across unknown kid
 	CHECK(cache.CanFetchJwks(100));
 
 	cache.RecordJwksFetch(100);
-	// Within 30s window, Cannot fetch again
-	CHECK_FALSE(cache.CanFetchJwks(110));
-	CHECK_FALSE(cache.CanFetchJwks(129));
+	// Within 2s window, cannot fetch again
+	CHECK_FALSE(cache.CanFetchJwks(100));
+	CHECK_FALSE(cache.CanFetchJwks(101));
 
-	// At or past 30s window, can fetch again
-	CHECK(cache.CanFetchJwks(130));
+	// At or past 2s window, can fetch again
+	CHECK(cache.CanFetchJwks(102));
 }
 
 TEST_CASE("JwksCache: CanFetchJwks fails closed on clock rewind and RecordJwksFetch is monotonic",
@@ -353,17 +354,19 @@ TEST_CASE("JwksCache: CanFetchJwks fails closed on clock rewind and RecordJwksFe
 	// RecordJwksFetch on backwards timestamp must be monotonic (does not move timestamp backward)
 	cache.RecordJwksFetch(80);
 	CHECK_FALSE(cache.CanFetchJwks(90));
-	CHECK_FALSE(cache.CanFetchJwks(120));
-	CHECK(cache.CanFetchJwks(130));
+	CHECK_FALSE(cache.CanFetchJwks(101));
+	CHECK(cache.CanFetchJwks(102));
 }
 
 TEST_CASE("JwksCache: Hard cap on Entry::keys preserves at most 4 keys", "[jwks][cache][cap][f1]") {
 	JwksCache cache(30);
+	std::vector<Jwk> keys;
 	for (int i = 0; i < 6; ++i) {
 		auto k = MakeRsaJwk("k1");
 		k.n = "modulus-" + std::to_string(i);
-		cache.OnFetchSuccess(k, 100 + i);
+		keys.push_back(k);
 	}
+	cache.OnFetchSuccess("k1", keys, 100);
 
 	const auto r = cache.Lookup("k1", 200);
 	REQUIRE(r.status == JwksLookupStatus::Hit);
@@ -381,7 +384,7 @@ TEST_CASE("JwksCache: Unknown kty is rejected and does not append unbounded dupl
 	bad.kty = "oct";
 	bad.n = "secret";
 
-	cache.OnFetchSuccess(bad, 100);
+	cache.OnFetchSuccess("k1", {bad}, 100);
 	const auto r = cache.Lookup("k1", 100);
 	// Unknown kty should be rejected from hits_
 	CHECK(r.status == JwksLookupStatus::Miss);
