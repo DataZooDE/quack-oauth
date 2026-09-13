@@ -238,15 +238,16 @@ SELECT quack_oauth_device_login('cli');
 
 `quack_oauth_diagnose() → TABLE(component VARCHAR, status VARCHAR, detail VARCHAR)`
 
-No parameters. Returns five rows (in alphabetical order on `component`)
+No parameters. Returns six rows (in alphabetical order on `component`)
 with a status and a `detail` string of `key=value` pairs:
 
 | `component`           | `status`                  | typical `detail` keys |
 |-----------------------|---------------------------|------------------------|
 | `decision_cache`      | `empty` \| `warm`         | `entries=` |
 | `extension`           | `configured` \| `unconfigured` | `enabled= secret_name= validation_mode= provider=` |
+| `idp_reachability`    | `reachable` \| `unreachable` \| `unconfigured` \| `unavailable_on_wasm` | `url= http_status= latency_ms=` |
 | `jwks_cache`          | `empty` \| `warm` \| `negative` | `entries= unknown_kids= min_refresh_s=` |
-| `recent_decisions`    | `empty` \| `active`       | `count=N/CAP accepted= rejected= allowed= denied= refreshed= refresh_failed=` |
+| `recent_decisions`    | `empty` \| `active`       | `count=N/CAP accepted= rejected= allowed= denied= refreshed= refresh_noop= refresh_failed=` |
 | `session_principals`  | `empty` \| `active`       | `sessions=` |
 
 ```sql
@@ -412,7 +413,7 @@ CREATE SECRET cli (
 
 ## Settings
 
-All settings are session-scoped (`SET` / `RESET`).
+All settings are globally scoped (`SetScope::GLOBAL`). In server mode, quack's auth thread runs authentication and authorization callbacks on fresh `ClientContext` instances per incoming wire request; global scope ensures all connections observe the configured settings.
 
 | Setting                              | Type    | Default     | Description |
 |--------------------------------------|---------|-------------|-------------|
@@ -420,7 +421,7 @@ All settings are session-scoped (`SET` / `RESET`).
 | `quack_oauth_validation_mode`        | VARCHAR | `'jwks'`    | `jwks` \| `introspect` \| `tokeninfo` (R-S-2). |
 | `quack_oauth_provider`               | VARCHAR | `'generic'` | First-class preset: `entra` \| `google` \| `keycloak` \| `okta` \| `github` \| `generic` (R-S-12). |
 | `quack_oauth_clock_skew_s`           | INTEGER | `60`        | Allowable clock skew (seconds) for JWT `exp`/`nbf`/`iat` (R-S-3). |
-| `quack_oauth_jwks_min_refresh_s`     | INTEGER | `30`        | Min seconds between per-`kid` JWKS refreshes (R-S-4). Must be between 1 and 3600. |
+| `quack_oauth_jwks_min_refresh_s`     | INTEGER | `30`        | Min seconds between JWKS refreshes (R-S-4). Must be between 1 and 3600; cannot be lowered below startup floor. |
 | `quack_oauth_introspect_cache_s`     | INTEGER | `30`        | Cache lifetime for `introspect`-mode decisions, capped at token `exp` (R-S-5). |
 | `quack_oauth_renew_skew_s`           | INTEGER | `60`        | Client refreshes the access token this many seconds before `expires_at` (R-C-2). |
 | `quack_oauth_policy_default`         | VARCHAR | `'deny'`    | Default decision when no `policy_table` rule matches: `allow` or `deny` (R-S-7). |
@@ -431,10 +432,10 @@ All settings are session-scoped (`SET` / `RESET`).
 
 When identity providers (such as Microsoft Entra ID) rotate key material while reusing the same `kid`, cached keys will fail signature verification on new tokens. The extension automatically detects this and triggers a rate-limited, synchronous on-demand JWKS refresh on the request path to recover the new key without requiring process restart or cache invalidation.
 
-- **Multi-key cache entry**: Ingest is additive per `kid`. If an IdP publishes multiple keys under the same `kid` (or rolls keys during active token lifespans), all valid candidates are preserved in cache. Legitimate older keys are not destructively evicted while tokens signed by them are still valid.
-- **Request-path latency**: Refreshes happen synchronously on the request thread encountering a signature verification failure against currently-cached keys, bounded by `quack_oauth_jwks_min_refresh_s` (default 30 seconds) per `kid` and a process-global fetch rate limit.
-- **Starvation & DoS resistance**: Fresh key material fetched from the IdP over TLS is committed to the multi-key cache even if the triggering token fails verification, preventing malicious or corrupted tokens from starving legitimate key rotation recovery. Repeated requests with already-known keys emit `refresh_no_rotation` and do not re-fetch.
-- **Troubleshooting**: If clients experience sudden bursts of `invalid_signature` errors during an IdP rotation, inspect `quack_oauth_audit_log()` for `jwks_refresh` events. If refresh events show `refresh_throttled` or `refresh_fetch_failed`, the extension is rate-limiting refreshes or the IdP JWKS endpoint is unreachable.
+- **Multi-key cache entry**: On a successful 200 OK JWKS fetch, cached keys for the target `kid` are synchronized with the keys currently published in the document, capped at 4 keys per `kid`. When an IdP removes a key from its published JWKS, it is revoked. If a fetch fails or times out, all existing cached keys are preserved.
+- **Request-path latency**: Refreshes happen synchronously on the request thread encountering an unusable key signature failure against currently-cached keys, bounded by `quack_oauth_jwks_min_refresh_s` (default 30 seconds) per `kid` and a process-global fetch rate limit.
+- **Starvation & DoS resistance**: Fresh key material fetched from the IdP over TLS is committed to the cache even if the triggering token fails verification, preventing forged or corrupted tokens from starving legitimate key rotation recovery. Repeated requests with already-known keys emit `refresh_no_rotation` and do not re-fetch.
+- **Troubleshooting**: If clients experience bursts of `invalid_signature` errors during an IdP rotation, inspect `quack_oauth_audit_log()` for `jwks_refresh` events. Rate-limiting is logged to the DuckDB logger as `refresh_throttled`; network failures appear as `refresh_fetch_failed`.
 
 ---
 

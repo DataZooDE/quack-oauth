@@ -113,17 +113,13 @@ static std::optional<std::string> Base64UrlDecode(const std::string &in) {
 // ---- JWK -> PEM ------------------------------------------------------------
 
 static std::optional<std::string> RsaPublicKeyToPem(const std::vector<unsigned char> &n_bin,
-                                                    const std::vector<unsigned char> &e_bin) {
+                                                    const std::vector<unsigned char> &e_bin, bool &out_sub_2048) {
+	out_sub_2048 = false;
 	BnPtr n_bn(BN_bin2bn(n_bin.data(), static_cast<int>(n_bin.size()), nullptr));
 	BnPtr e_bn(BN_bin2bn(e_bin.data(), static_cast<int>(e_bin.size()), nullptr));
 	if (!n_bn || !e_bn) {
 		return std::nullopt;
 	}
-	// Per RFC 7518 Section 3.3, RSA keys must be at least 2048 bits.
-	if (BN_num_bits(n_bn.get()) < 2048) {
-		return std::nullopt;
-	}
-
 	ParamBldPtr bld(OSSL_PARAM_BLD_new());
 	if (!bld || !OSSL_PARAM_BLD_push_BN(bld.get(), "n", n_bn.get()) ||
 	    !OSSL_PARAM_BLD_push_BN(bld.get(), "e", e_bn.get())) {
@@ -143,6 +139,18 @@ static std::optional<std::string> RsaPublicKeyToPem(const std::vector<unsigned c
 		return std::nullopt;
 	}
 	EvpPkeyPtr pkey(raw);
+
+	const auto bits = EVP_PKEY_get_bits(pkey.get());
+	// Per RFC 7518 Section 3.3, RSA keys must be at least 2048 bits.
+	// Genuine sub-2048 RSA keys (e.g. 512 or 1024-bit) return UnsupportedKeyType.
+	// Key material with fewer than 512 bits is malformed garbage.
+	if (bits >= 512 && bits < 2048) {
+		out_sub_2048 = true;
+		return std::nullopt;
+	}
+	if (bits < 512) {
+		return std::nullopt;
+	}
 
 	BioPtr bio(BIO_new(BIO_s_mem()));
 	if (!bio || PEM_write_bio_PUBKEY(bio.get(), pkey.get()) == 0) {
@@ -351,7 +359,8 @@ static VerifyResult VerifyWithVerifier(const jwt::decoded_jwt<TraitsT> &decoded,
 	return MapVerificationError(ec);
 }
 
-std::optional<std::string> JwkRsaToPem(const Jwk &jwk) {
+std::optional<std::string> JwkRsaToPem(const Jwk &jwk, bool &out_sub_2048) {
+	out_sub_2048 = false;
 	if (jwk.n.empty() || jwk.e.empty()) {
 		return std::nullopt;
 	}
@@ -362,7 +371,12 @@ std::optional<std::string> JwkRsaToPem(const Jwk &jwk) {
 	}
 	const std::vector<unsigned char> n_bin(n_decoded->begin(), n_decoded->end());
 	const std::vector<unsigned char> e_bin(e_decoded->begin(), e_decoded->end());
-	return RsaPublicKeyToPem(n_bin, e_bin);
+	return RsaPublicKeyToPem(n_bin, e_bin, out_sub_2048);
+}
+
+std::optional<std::string> JwkRsaToPem(const Jwk &jwk) {
+	bool sub = false;
+	return JwkRsaToPem(jwk, sub);
 }
 
 std::optional<std::string> JwkEcToPem(const Jwk &jwk) {
@@ -415,7 +429,11 @@ VerifyResult VerifyJwt(std::string_view token, const Jwk &jwk, const VerifyOptio
 
 	std::optional<std::string> pem;
 	if (jwk.kty == "RSA") {
-		pem = JwkRsaToPem(jwk);
+		bool sub_2048 = false;
+		pem = JwkRsaToPem(jwk, sub_2048);
+		if (sub_2048) {
+			return VerifyResult::UnsupportedKeyType;
+		}
 	} else if (jwk.kty == "EC") {
 		pem = JwkEcToPem(jwk);
 	} else if (jwk.kty == "OKP") {

@@ -59,8 +59,8 @@ VerifyResult VerifyJwt(std::string_view token, const Jwk &jwk, const VerifyOptio
 
 // Convert an RSA JWK (`n`, `e` base64url-encoded) to a PEM-encoded
 // SubjectPublicKeyInfo. Returns `std::nullopt` if `n` or `e` is empty or not
-// valid base64url. Exposed publicly to keep it Catch2-testable.
 std::optional<std::string> JwkRsaToPem(const Jwk &jwk);
+std::optional<std::string> JwkRsaToPem(const Jwk &jwk, bool &out_sub_2048);
 
 // Convert an EC JWK (`crv` ∈ {P-256, P-384}, `x`, `y` base64url-encoded) to
 // a PEM-encoded SubjectPublicKeyInfo. Returns nullopt for unsupported

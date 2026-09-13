@@ -340,3 +340,49 @@ TEST_CASE("JwksCache: global fetch budget rate-limits fetches across unknown kid
 	// At or past 30s window, can fetch again
 	CHECK(cache.CanFetchJwks(130));
 }
+
+TEST_CASE("JwksCache: CanFetchJwks fails closed on clock rewind and RecordJwksFetch is monotonic",
+          "[jwks][cache][budget][clock][f13]") {
+	JwksCache cache(30);
+	cache.RecordJwksFetch(100);
+
+	// Clock step backward (now_s < 100) must fail closed (cannot fetch)
+	CHECK_FALSE(cache.CanFetchJwks(90));
+	CHECK_FALSE(cache.CanFetchJwks(50));
+
+	// RecordJwksFetch on backwards timestamp must be monotonic (does not move timestamp backward)
+	cache.RecordJwksFetch(80);
+	CHECK_FALSE(cache.CanFetchJwks(90));
+	CHECK_FALSE(cache.CanFetchJwks(120));
+	CHECK(cache.CanFetchJwks(130));
+}
+
+TEST_CASE("JwksCache: Hard cap on Entry::keys preserves at most 4 keys", "[jwks][cache][cap][f1]") {
+	JwksCache cache(30);
+	for (int i = 0; i < 6; ++i) {
+		auto k = MakeRsaJwk("k1");
+		k.n = "modulus-" + std::to_string(i);
+		cache.OnFetchSuccess(k, 100 + i);
+	}
+
+	const auto r = cache.Lookup("k1", 200);
+	REQUIRE(r.status == JwksLookupStatus::Hit);
+	REQUIRE(r.keys.size() == 4);
+	// Should contain the last 4: modulus-2, modulus-3, modulus-4, modulus-5
+	CHECK(r.keys[0].n == "modulus-2");
+	CHECK(r.keys[3].n == "modulus-5");
+}
+
+TEST_CASE("JwksCache: Unknown kty is rejected and does not append unbounded duplicate keys",
+          "[jwks][cache][kty][f11]") {
+	JwksCache cache(30);
+	Jwk bad;
+	bad.kid = "k1";
+	bad.kty = "oct";
+	bad.n = "secret";
+
+	cache.OnFetchSuccess(bad, 100);
+	const auto r = cache.Lookup("k1", 100);
+	// Unknown kty should be rejected from hits_
+	CHECK(r.status == JwksLookupStatus::Miss);
+}

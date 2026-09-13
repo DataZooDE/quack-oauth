@@ -1,13 +1,14 @@
 // Trust policy for JWKS key caching and validation:
-// 1. TLS-fetched JWKS material is authoritative and ingested unconditionally (F1).
-// 2. Ingest is additive per kid and never evicts a key that still verifies (F1, F2).
+// 1. TLS-fetched JWKS material is authoritative and synchronizes cached keys per kid (F1).
+// 2. Multi-key verification supports overlapping keys during IdP rotation (F1).
 // 3. A (kid, alg) pair with a usable candidate in the fetched JWKS is never negative-cached (F3, F4).
-// 4. Outbound JWKS HTTP fetches are rate-limited per kid and bounded globally per min_refresh_s (F7).
+// 4. Outbound JWKS HTTP fetches are rate-limited per kid and bounded globally across all paths (F2, F3, F7).
 
 #include "validator.hpp"
 
 #include <algorithm>
 #include <string>
+#include <unordered_map>
 
 #include "decision_cache.hpp"
 #include "introspect.hpp"
@@ -53,16 +54,6 @@ static bool JwkMatchesTokenHeader(const Jwk &k, const std::string &token_alg) no
 	return true;
 }
 
-static bool JwkMaterialDiffers(const Jwk &a, const Jwk &b) noexcept {
-	if (a.kty != b.kty) {
-		return true;
-	}
-	if (a.kty == "RSA") {
-		return a.n != b.n || a.e != b.e;
-	}
-	return a.crv != b.crv || a.x != b.x || a.y != b.y;
-}
-
 static bool IsCachedKeyUnusable(VerifyResult res) noexcept {
 	return res == VerifyResult::InvalidSignature || res == VerifyResult::Malformed;
 }
@@ -97,17 +88,28 @@ static std::optional<VerifyResult> TryRefreshRotatedKid(std::string_view token, 
 		return std::nullopt;
 	}
 
+	// Global fetch budget check on hit-refresh path (F3)
+	if (!ctx.jwks_cache.CanFetchJwks(opts.now_s)) {
+		if (ctx.on_refresh) {
+			ctx.on_refresh(kid, "refresh_throttled", token);
+		}
+		return std::nullopt;
+	}
+
+	// Record fetch attempt before network call (F2)
+	ctx.jwks_cache.RecordJwksFetch(opts.now_s, false);
+
 	// A provider may rotate key material while reusing the same kid. One
 	// rate-limited refresh lets a valid token recover without allowing
 	// forged tokens to turn every verification into a JWKS request.
 	const auto refresh = ctx.http.Get(ctx.jwks_uri);
 	if (!refresh.has_value() || refresh->status_code != 200) {
+		ctx.jwks_cache.RecordJwksFetch(opts.now_s, true);
 		if (ctx.on_refresh) {
 			ctx.on_refresh(kid, "refresh_fetch_failed", token);
 		}
 		return std::nullopt;
 	}
-	ctx.jwks_cache.RecordJwksFetch(opts.now_s);
 
 	const auto keys = ParseJwksJson(refresh->body);
 	if (keys.empty()) {
@@ -117,24 +119,52 @@ static std::optional<VerifyResult> TryRefreshRotatedKid(std::string_view token, 
 		return std::nullopt;
 	}
 
-	// Ingest all sibling keys additively into cache (F5)
+	std::unordered_map<std::string, std::vector<Jwk>> keys_by_kid;
 	for (const auto &k : keys) {
-		if (k.kid != kid && (k.use.empty() || k.use == "sig")) {
-			ctx.jwks_cache.OnFetchSuccess(k, opts.now_s);
+		if (k.use.empty() || k.use == "sig") {
+			keys_by_kid[k.kid].push_back(k);
 		}
 	}
 
-	std::vector<Jwk> candidates_for_kid;
-	for (const auto &k : keys) {
-		if (k.kid == kid && (k.use.empty() || k.use == "sig")) {
-			candidates_for_kid.push_back(k);
-		}
-	}
-	if (candidates_for_kid.empty()) {
+	const auto cand_it = keys_by_kid.find(kid);
+	if (cand_it == keys_by_kid.end() || cand_it->second.empty()) {
 		if (ctx.on_refresh) {
 			ctx.on_refresh(kid, "refresh_kid_absent", token);
 		}
 		return std::nullopt;
+	}
+	const auto &raw_candidates = cand_it->second;
+
+	// Malformed keys in the IdP document must not poison cache or evict last-good key (test 210).
+	std::vector<Jwk> candidates_for_kid;
+	for (const auto &cand : raw_candidates) {
+		if (cand.kty == "RSA") {
+			bool sub_2048 = false;
+			if (JwkRsaToPem(cand, sub_2048).has_value() || sub_2048) {
+				candidates_for_kid.push_back(cand);
+			}
+		} else if (cand.kty == "EC") {
+			if (JwkEcToPem(cand).has_value()) {
+				candidates_for_kid.push_back(cand);
+			}
+		} else if (cand.kty == "OKP") {
+			if (JwkOkpToPem(cand).has_value()) {
+				candidates_for_kid.push_back(cand);
+			}
+		}
+	}
+	if (candidates_for_kid.empty()) {
+		if (ctx.on_refresh) {
+			ctx.on_refresh(kid, "refresh_parse_failed", token);
+		}
+		return std::nullopt;
+	}
+
+	// Ingest sibling keys additively/authoritatively into cache (F1, F5)
+	for (const auto &[s_kid, s_keys] : keys_by_kid) {
+		if (s_kid != kid) {
+			ctx.jwks_cache.OnFetchSuccess(s_kid, s_keys, opts.now_s);
+		}
 	}
 
 	// Early return if all candidates for this kid in the fetched JWKS match existing cached keys (F2).
@@ -212,8 +242,10 @@ VerifyResult ValidateToken(std::string_view token, const VerifyOptions &opts, Va
 				matching_keys.push_back(k);
 			}
 		}
-		const auto cached_result =
-		    VerifyWithCachedKeys(token, matching_keys.empty() ? first_lookup.keys : matching_keys, opts);
+		if (matching_keys.empty()) {
+			return VerifyResult::InvalidSignature;
+		}
+		const auto cached_result = VerifyWithCachedKeys(token, matching_keys, opts);
 		if (!IsCachedKeyUnusable(cached_result)) {
 			return cached_result;
 		}
@@ -228,19 +260,25 @@ VerifyResult ValidateToken(std::string_view token, const VerifyOptions &opts, Va
 		return VerifyResult::UnknownKid;
 	}
 
-	// Global fetch budget check (F7): if another request in this window already fetched the full JWKS,
-	// any kid not in hits_ is known-absent from the IdP.
+	// Global fetch budget check (F4, F7): if another request in this window already fetched the full JWKS,
+	// any kid not in hits_ is known-absent from the IdP. Do not stamp OnFetchMiss to avoid starvations (F4).
 	if (!ctx.jwks_cache.CanFetchJwks(opts.now_s)) {
-		ctx.jwks_cache.OnFetchMiss(parsed->kid, opts.now_s);
+		if (ctx.on_refresh) {
+			ctx.on_refresh(parsed->kid, "refresh_throttled", token);
+		}
+		if (ctx.jwks_cache.WasLastFetchFailed()) {
+			return VerifyResult::JwksFetchFailed;
+		}
 		return VerifyResult::UnknownKid;
 	}
 
-	// Cache miss: try to fetch the JWKS.
+	// Cache miss: record attempt before network call (F2).
+	ctx.jwks_cache.RecordJwksFetch(opts.now_s, false);
 	const auto resp = ctx.http.Get(ctx.jwks_uri);
 	if (!resp.has_value() || resp->status_code != 200) {
+		ctx.jwks_cache.RecordJwksFetch(opts.now_s, true);
 		return VerifyResult::JwksFetchFailed;
 	}
-	ctx.jwks_cache.RecordJwksFetch(opts.now_s);
 
 	const auto keys = ParseJwksJson(resp->body);
 	if (keys.empty()) {
@@ -248,18 +286,18 @@ VerifyResult ValidateToken(std::string_view token, const VerifyOptions &opts, Va
 		return VerifyResult::UnknownKid;
 	}
 
-	bool target_kid_found = false;
+	std::unordered_map<std::string, std::vector<Jwk>> keys_by_kid;
 	for (const auto &k : keys) {
-		if (!k.use.empty() && k.use != "sig") {
-			continue;
+		if (k.use.empty() || k.use == "sig") {
+			keys_by_kid[k.kid].push_back(k);
 		}
-		if (k.kid == parsed->kid) {
-			target_kid_found = true;
-		}
-		ctx.jwks_cache.OnFetchSuccess(k, opts.now_s);
 	}
 
-	if (!target_kid_found) {
+	for (const auto &[k_kid, k_keys] : keys_by_kid) {
+		ctx.jwks_cache.OnFetchSuccess(k_kid, k_keys, opts.now_s);
+	}
+
+	if (keys_by_kid.find(parsed->kid) == keys_by_kid.end()) {
 		ctx.jwks_cache.OnFetchMiss(parsed->kid, opts.now_s);
 		return VerifyResult::UnknownKid;
 	}

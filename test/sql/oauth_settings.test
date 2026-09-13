@@ -61,6 +61,11 @@ SELECT current_setting('quack_oauth_jwks_min_refresh_s');
 ----
 120
 
+query T
+SELECT detail FROM quack_oauth_diagnose() WHERE component = 'jwks_cache';
+----
+entries=0 unknown_kids=0 min_refresh_s=120
+
 # SET rejects values < 1 or > 3600 (F8)
 statement error
 SET quack_oauth_jwks_min_refresh_s = 0;
@@ -77,5 +82,22 @@ SET quack_oauth_jwks_min_refresh_s = 7200;
 ----
 Invalid Input Error: quack_oauth_jwks_min_refresh_s must be between 1 and 3600 (got 7200)
 
+# SET cannot lower below operator startup floor (F8/F9)
+statement error
+SET quack_oauth_jwks_min_refresh_s = 20;
+----
+Invalid Input Error: quack_oauth_jwks_min_refresh_s cannot be lowered below the startup floor of 30 (got 20)
+
 statement ok
 RESET quack_oauth_jwks_min_refresh_s;
+
+query I
+SELECT current_setting('quack_oauth_jwks_min_refresh_s');
+----
+30
+
+query T
+SELECT detail FROM quack_oauth_diagnose() WHERE component = 'jwks_cache';
+----
+entries=0 unknown_kids=0 min_refresh_s=30
+

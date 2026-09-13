@@ -80,6 +80,14 @@ static unique_ptr<FunctionData> DiagnoseBind(ClientContext &context, TableFuncti
 
 	// 2. JWKS cache
 	{
+		const auto setting_str = ReadSetting(context, "quack_oauth_jwks_min_refresh_s");
+		if (!setting_str.empty()) {
+			try {
+				const auto setting_val = std::stoi(setting_str);
+				state.jwks_cache.SetMinRefreshSeconds(setting_val);
+			} catch (...) {
+			}
+		}
 		const auto entries = state.jwks_cache.Size();
 		const auto unknown_kids = state.jwks_cache.MissSize();
 		std::ostringstream detail;
@@ -155,12 +163,8 @@ static unique_ptr<FunctionData> DiagnoseBind(ClientContext &context, TableFuncti
 	// and allowed vs denied authz decisions.
 	{
 		const auto snap = state.audit_ring.Snapshot();
-		std::size_t accepts = 0;
-		std::size_t rejects = 0;
-		std::size_t allows = 0;
-		std::size_t denies = 0;
-		std::size_t refreshes = 0;
-		std::size_t refresh_failures = 0;
+		size_t accepts = 0, rejects = 0, allows = 0, denies = 0;
+		size_t refreshes = 0, refresh_noops = 0, refresh_failures = 0;
 		for (const auto &e : snap) {
 			switch (e.event_type) {
 			case quack_oauth::AuditEventType::TokenAccepted:
@@ -178,6 +182,8 @@ static unique_ptr<FunctionData> DiagnoseBind(ClientContext &context, TableFuncti
 			case quack_oauth::AuditEventType::JwksRefresh:
 				if (e.reason == "rotated_key_refreshed") {
 					++refreshes;
+				} else if (e.reason == "refresh_no_rotation" || e.reason == "refresh_superseded") {
+					++refresh_noops;
 				} else {
 					++refresh_failures;
 				}
@@ -191,6 +197,7 @@ static unique_ptr<FunctionData> DiagnoseBind(ClientContext &context, TableFuncti
 		Append(detail, "allowed", std::to_string(allows));
 		Append(detail, "denied", std::to_string(denies));
 		Append(detail, "refreshed", std::to_string(refreshes));
+		Append(detail, "refresh_noop", std::to_string(refresh_noops));
 		Append(detail, "refresh_failed", std::to_string(refresh_failures));
 		data->rows.push_back({"recent_decisions", snap.empty() ? "empty" : "active", detail.str()});
 	}

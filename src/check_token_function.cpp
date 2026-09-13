@@ -412,6 +412,8 @@ static void ValidateChunk(Vector &tokens, idx_t count, Vector &result, ClientCon
 	DuckdbHttpClient base_http;
 
 	std::unique_lock<std::mutex> guard(shared_state.mu);
+	const auto min_refresh_s = ReadIntSetting(context, "quack_oauth_jwks_min_refresh_s", 30);
+	shared_state.jwks_cache.SetMinRefreshSeconds(min_refresh_s);
 	UnlockingHttpClient unlocking_http(base_http, guard);
 	quack_oauth::RetryingHttpClient http(unlocking_http, /*max_retries=*/1, std::chrono::milliseconds(1000),
 	                                     [&](std::chrono::milliseconds delay) {
@@ -471,14 +473,15 @@ static void ValidateChunk(Vector &tokens, idx_t count, Vector &result, ClientCon
 		struct RawRefreshItem {
 			std::string kid;
 			std::string reason;
-			std::string token;
+			std::string token_hash;
 		};
 		std::vector<RawRefreshItem> pending_refreshes;
 
 		quack_oauth::ValidateContext vctx {
 		    http, shared_state.jwks_cache, cfg.jwks_uri,
 		    [&](const std::string &kid, const std::string &reason, std::string_view token) {
-			    pending_refreshes.push_back({kid, reason, std::string(token)});
+			    // Hash token immediately to ensure no plaintext bearer tokens are retained (F6).
+			    pending_refreshes.push_back({kid, reason, quack_oauth::RedactSensitive(token)});
 		    }};
 		RunValidationLoop(tokens, count, result, context, session_ids, opts.now_s, shared_state, guard,
 		                  [&](string &token_str) -> RowValidation {
@@ -504,8 +507,15 @@ static void ValidateChunk(Vector &tokens, idx_t count, Vector &result, ClientCon
 			}
 			if (pr.reason == "refresh_throttled") {
 				// Drop refresh_throttled from 64-entry audit ring to avoid flooding; log to DUCKDB_LOG_INFO instead
-				// (F6).
-				DUCKDB_LOG_INFO(context, "quack_oauth: JWKS refresh throttled for kid='" + pr.kid + "'");
+				// (F6). Sanitize kid for log output.
+				std::string safe_kid;
+				for (char c : pr.kid) {
+					if (static_cast<unsigned char>(c) >= 32 && static_cast<unsigned char>(c) < 127 && c != '"' &&
+					    c != '\\') {
+						safe_kid.push_back(c);
+					}
+				}
+				DUCKDB_LOG_INFO(context, "quack_oauth: JWKS refresh throttled for kid='" + safe_kid + "'");
 				continue;
 			}
 			quack_oauth::AuditEvent e;
@@ -513,7 +523,7 @@ static void ValidateChunk(Vector &tokens, idx_t count, Vector &result, ClientCon
 			e.event_type = quack_oauth::AuditEventType::JwksRefresh;
 			e.kid = pr.kid;
 			e.reason = pr.reason;
-			e.token_hash = quack_oauth::RedactSensitive(pr.token);
+			e.token_hash = pr.token_hash;
 			EmitAuditEvent(context, e);
 		}
 	}

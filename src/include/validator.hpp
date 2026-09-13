@@ -58,13 +58,14 @@ struct IntrospectContext {
 //      HTTP call cannot be completed or returns non-200.
 //
 // Side effects: on initial cache miss, `ctx.jwks_cache` ingests keys from the
-// fetched JWKS. On hit-refresh for a rotated key, only the verified candidate
-// for the target `kid` is committed via its active reservation ID; unverified
-// sibling keys are not ingested. On a fetch that does not contain the target
-// `kid`, the cache records a miss so subsequent calls within the rate-limit
-// window short-circuit. Refresh failure on an existing hit preserves its
-// last-good cached key and returns the original InvalidSignature result
-// without mutating the cache.
+// fetched JWKS. On hit-refresh for a rotated key, sibling keys present in the
+// IdP document are ingested additively/authoritatively, and the verified
+// candidate for the target `kid` is committed via its active reservation ID.
+// When an IdP fetch succeeds (200 OK), keys for the target `kid` are synchronized
+// with the document. On a fetch that does not contain the target `kid`, the cache
+// records a miss so subsequent calls within the rate-limit window short-circuit.
+// Refresh failure or network error preserves the last-good cached keys without
+// mutating the cache.
 VerifyResult ValidateToken(std::string_view token, const VerifyOptions &opts, ValidateContext &ctx);
 
 // Dependencies for the Google-style tokeninfo path. Parallel to
