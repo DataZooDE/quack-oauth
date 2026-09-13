@@ -133,6 +133,50 @@ TEST_CASE("JwksCache: cached-key refresh attempts are rate-limited", "[jwks][cac
 	CHECK(cache.Lookup("k1", 200).status == JwksLookupStatus::Hit);
 }
 
+TEST_CASE("JwksCache: min_refresh_s is clamped to at least 1 second", "[jwks][cache][rate-limit]") {
+	JwksCache cache(/*min_refresh_s=*/0);
+	cache.OnFetchSuccess(MakeRsaJwk("k1"), 100);
+
+	CHECK_FALSE(cache.TryBeginHitRefresh("k1", 100));
+	CHECK(cache.TryBeginHitRefresh("k1", 101));
+	CHECK_FALSE(cache.TryBeginHitRefresh("k1", 101));
+
+	JwksCache cache_neg(/*min_refresh_s=*/-5);
+	cache_neg.OnFetchSuccess(MakeRsaJwk("k1"), 100);
+	CHECK_FALSE(cache_neg.TryBeginHitRefresh("k1", 100));
+	CHECK(cache_neg.TryBeginHitRefresh("k1", 101));
+	CHECK_FALSE(cache_neg.TryBeginHitRefresh("k1", 101));
+}
+
+TEST_CASE("JwksCache: backwards clock step resets rate limit and allows hit refresh",
+          "[jwks][cache][rate-limit][clock-skew]") {
+	JwksCache cache(30);
+	cache.OnFetchSuccess(MakeRsaJwk("k1"), 1000);
+
+	CHECK(cache.TryBeginHitRefresh("k1", 1030));
+	CHECK_FALSE(cache.TryBeginHitRefresh("k1", 1030));
+
+	// System clock steps backwards (NTP skew) to t=900 (130s in the past).
+	CHECK(cache.TryBeginHitRefresh("k1", 900));
+	CHECK_FALSE(cache.TryBeginHitRefresh("k1", 905));
+	CHECK(cache.TryBeginHitRefresh("k1", 930));
+}
+
+TEST_CASE("JwksCache: out-of-order fetch completion preserves the latest refresh attempt timestamp",
+          "[jwks][cache][rate-limit][monotonic]") {
+	JwksCache cache(30);
+	cache.OnFetchSuccess(MakeRsaJwk("k1"), 100);
+
+	CHECK(cache.TryBeginHitRefresh("k1", 150));
+
+	// An out-of-order fetch completion arrives stamped at t=120.
+	// Calling OnFetchSuccess must not move last_refresh_attempt_s backwards from 150 to 120.
+	cache.OnFetchSuccess(MakeRsaJwk("k1"), 120);
+
+	CHECK_FALSE(cache.TryBeginHitRefresh("k1", 160));
+	CHECK(cache.TryBeginHitRefresh("k1", 180));
+}
+
 TEST_CASE("JwksCache: successful fetches are bounded by capacity", "[jwks][cache][capacity]") {
 	JwksCache cache(kRefresh, /*max_entries=*/2);
 	cache.OnFetchSuccess(MakeRsaJwk("k1"), 0);

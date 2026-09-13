@@ -65,8 +65,10 @@ public:
 	void OnFetchMiss(const std::string &kid, std::int64_t now_s);
 
 	// Reserve one rate-limited refresh attempt for an already-cached kid.
-	// Returns false when another attempt occurred inside `min_refresh_s`.
-	// The cached JWK remains available even when the refresh later fails.
+	// Returns false when another attempt (or initial successful fetch) occurred
+	// inside `min_refresh_s`. The cached JWK remains available even when the
+	// refresh later fails. Clock rewinds (now_s < last_attempt) reset the stamp
+	// and allow the attempt.
 	bool TryBeginHitRefresh(const std::string &kid, std::int64_t now_s);
 
 	std::size_t Size() const noexcept;

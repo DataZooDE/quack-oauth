@@ -81,18 +81,45 @@ VerifyResult ValidateToken(std::string_view token, const VerifyOptions &opts, Va
 		// rate-limited refresh lets a valid token recover without allowing
 		// forged tokens to turn every verification into a JWKS request.
 		const auto refresh = ctx.http.Get(ctx.jwks_uri);
-		if (!refresh.has_value() || refresh->status_code != 200 ||
-		    !IngestJwks(parsed->kid, refresh->body, opts.now_s, ctx.jwks_cache)) {
+		if (!refresh.has_value() || refresh->status_code != 200) {
 			// Preserve the original authentication result and the last-good
 			// cached key during an IdP outage.
 			return cached_result;
 		}
 
-		const auto refreshed_lookup = ctx.jwks_cache.Lookup(parsed->kid, opts.now_s);
-		if (refreshed_lookup.status != JwksLookupStatus::Hit) {
+		const auto keys = ParseJwksJson(refresh->body);
+		if (keys.empty()) {
 			return cached_result;
 		}
-		return VerifyWithCachedKey(token, *refreshed_lookup.jwk, opts);
+
+		std::vector<const Jwk *> candidates;
+		for (const auto &k : keys) {
+			if (k.kid == parsed->kid) {
+				candidates.push_back(&k);
+			}
+		}
+		if (candidates.empty()) {
+			return cached_result;
+		}
+
+		const Jwk *verified_jwk = nullptr;
+		for (const auto *cand : candidates) {
+			if (VerifyWithCachedKey(token, *cand, opts) == VerifyResult::Ok) {
+				verified_jwk = cand;
+				break;
+			}
+		}
+		if (!verified_jwk) {
+			return cached_result;
+		}
+
+		for (const auto &k : keys) {
+			if (k.kid != parsed->kid) {
+				ctx.jwks_cache.OnFetchSuccess(k, opts.now_s);
+			}
+		}
+		ctx.jwks_cache.OnFetchSuccess(*verified_jwk, opts.now_s);
+		return VerifyResult::Ok;
 	}
 	if (first_lookup.status == JwksLookupStatus::RateLimited) {
 		// Within the per-kid rate-limit window (R-S-4) -- do not refetch.

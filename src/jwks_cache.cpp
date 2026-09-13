@@ -3,7 +3,8 @@
 namespace quack_oauth {
 
 JwksCache::JwksCache(std::int64_t min_refresh_s, std::size_t max_entries)
-    : min_refresh_s_(min_refresh_s), max_entries_(max_entries == 0 ? 1 : max_entries) {
+    : min_refresh_s_(min_refresh_s < 1 ? 1 : min_refresh_s),
+      max_entries_(max_entries == 0 ? 1 : max_entries) {
 }
 
 JwksLookup JwksCache::Lookup(const std::string &kid, std::int64_t now_s) const {
@@ -34,12 +35,19 @@ void JwksCache::OnFetchSuccess(const Jwk &jwk, std::int64_t now_s) {
 		miss_lru_.erase(miss->second.lru_it);
 		misses_.erase(miss);
 	}
+	std::int64_t last_refresh = now_s;
 	if (const auto hit = hits_.find(jwk.kid); hit != hits_.end()) {
+		last_refresh = std::max(hit->second.last_refresh_attempt_s, now_s);
 		hit_lru_.erase(hit->second.lru_it);
 		hits_.erase(hit);
 	}
 	hit_lru_.push_front(jwk.kid);
-	hits_[jwk.kid] = Entry {jwk, now_s, now_s, hit_lru_.begin()};
+	Entry entry;
+	entry.jwk = jwk;
+	entry.fetched_at_s = now_s;
+	entry.last_refresh_attempt_s = last_refresh;
+	entry.lru_it = hit_lru_.begin();
+	hits_[jwk.kid] = std::move(entry);
 	while (hits_.size() > max_entries_) {
 		const auto victim = hit_lru_.back();
 		hit_lru_.pop_back();
@@ -48,9 +56,17 @@ void JwksCache::OnFetchSuccess(const Jwk &jwk, std::int64_t now_s) {
 }
 
 bool JwksCache::TryBeginHitRefresh(const std::string &kid, std::int64_t now_s) {
+	if (min_refresh_s_ <= 0) {
+		return false;
+	}
 	const auto hit = hits_.find(kid);
 	if (hit == hits_.end()) {
 		return false;
+	}
+	if (now_s < hit->second.last_refresh_attempt_s) {
+		// Clock skew / NTP rewind: reset stamp and allow retry.
+		hit->second.last_refresh_attempt_s = now_s;
+		return true;
 	}
 	const auto elapsed = now_s - hit->second.last_refresh_attempt_s;
 	if (elapsed < min_refresh_s_) {
