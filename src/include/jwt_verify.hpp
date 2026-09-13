@@ -59,9 +59,16 @@ struct VerifyOptions {
 VerifyResult VerifyJwt(std::string_view token, const Jwk &jwk, const VerifyOptions &opts);
 
 // Convert an RSA JWK (`n`, `e` base64url-encoded) to a PEM-encoded
-// SubjectPublicKeyInfo. Returns `std::nullopt` if `n` or `e` is empty or not
+// SubjectPublicKeyInfo. Returns `std::nullopt` if `n` or `e` is empty,
+// not valid base64url, or modulus < 512 bits. The 2-argument overload sets
+// `out_sub_2048 = true` only when the key parsed successfully but has modulus
+// between 512 and 2047 bits.
 std::optional<std::string> JwkRsaToPem(const Jwk &jwk);
 std::optional<std::string> JwkRsaToPem(const Jwk &jwk, bool &out_sub_2048);
+
+// Determines whether a JWK has valid key material and meets minimum security
+// requirements for signing verification (e.g. RSA >= 2048 bits, valid EC/OKP curve).
+bool IsUsableSigningKey(const Jwk &jwk);
 
 // Convert an EC JWK (`crv` ∈ {P-256, P-384}, `x`, `y` base64url-encoded) to
 // a PEM-encoded SubjectPublicKeyInfo. Returns nullopt for unsupported

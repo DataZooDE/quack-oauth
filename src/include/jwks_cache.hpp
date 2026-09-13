@@ -1,6 +1,7 @@
 #pragma once
 
 #include <algorithm>
+#include <atomic>
 #include <cstddef>
 #include <cstdint>
 #include <list>
@@ -44,8 +45,16 @@ inline bool SameKeyMaterial(const Jwk &a, const Jwk &b) {
 	return false;
 }
 
-inline bool JwkMaterialDiffers(const Jwk &a, const Jwk &b) {
-	return !SameKeyMaterial(a, b);
+inline bool SameKeyMaterial(const std::vector<Jwk> &a, const std::vector<Jwk> &b) {
+	if (a.size() != b.size()) {
+		return false;
+	}
+	for (size_t i = 0; i < a.size(); ++i) {
+		if (!SameKeyMaterial(a[i], b[i])) {
+			return false;
+		}
+	}
+	return true;
 }
 
 enum class JwksLookupStatus {
@@ -63,10 +72,11 @@ struct JwksLookup {
 	std::int64_t retry_after_s = 0; // populated only on RateLimited
 };
 
-// Per-process JWKS cache. Thread-safety: the QuackOauthState mutex owns this
-// cache. Cache lookups, reservations, and commits must be performed while holding
-// that mutex. The mutex is dropped across outbound HTTP calls (UnlockingHttpClient),
-// during which callers must not hold references or pointers into cache entries.
+// Process-wide JWKS cache shared across all database instances. Thread-safety:
+// the QuackOauthState mutex owns this cache. Cache lookups, reservations, and commits
+// must be performed while holding that mutex. The mutex is dropped across outbound
+// HTTP calls (UnlockingHttpClient), during which callers must not hold references
+// or pointers into cache entries.
 // Caches successful kid -> JWK lookups indefinitely (architecture section 6 IdP-outage
 // scenario -- hits keep serving) and rate-limits misses and hit-refresh attempts
 // to at most one fetch per `min_refresh_s` per kid (R-S-4: JWKS-poll DoS protection).
@@ -98,15 +108,11 @@ public:
 	bool CanFetchJwks(std::int64_t now_s) const;
 	void RecordJwksFetch(std::int64_t now_s, bool failed = false);
 
-	bool WasLastFetchFailed() const noexcept {
-		return last_fetch_failed_;
-	}
-
 	void IncrementThrottledRefreshes() noexcept {
 		++throttled_refreshes_;
 	}
 	std::uint64_t GetThrottledRefreshesCount() const noexcept {
-		return throttled_refreshes_;
+		return throttled_refreshes_.load(std::memory_order_relaxed);
 	}
 
 	// Reserve one rate-limited refresh attempt for an already-cached kid.
@@ -142,8 +148,7 @@ private:
 	std::int64_t min_refresh_s_;
 	std::size_t max_entries_;
 	std::int64_t last_global_fetch_s_ = 0;
-	bool last_fetch_failed_ = false;
-	std::uint64_t throttled_refreshes_ = 0;
+	mutable std::atomic<std::uint64_t> throttled_refreshes_ {0};
 	std::uint64_t next_reservation_id_ = 1;
 	std::list<std::string> hit_lru_;
 	std::list<std::string> miss_lru_;

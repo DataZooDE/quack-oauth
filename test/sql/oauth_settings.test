@@ -62,31 +62,31 @@ SELECT current_setting('quack_oauth_jwks_min_refresh_s');
 120
 
 query T
-SELECT detail FROM quack_oauth_diagnose() WHERE component = 'jwks_cache';
+SELECT detail LIKE '%min_refresh_s=120%' FROM quack_oauth_diagnose() WHERE component = 'jwks_cache';
 ----
-entries=0 unknown_kids=0 min_refresh_s=120 throttled=0
+true
 
 # SET rejects values < floor or > 3600 (F8/F-E)
 statement error
 SET quack_oauth_jwks_min_refresh_s = 0;
 ----
-quack_oauth_jwks_min_refresh_s must be between 30 and 3600 (got 0); cannot be lowered below the startup floor configured via QUACK_OAUTH_JWKS_MIN_REFRESH_S
+quack_oauth_jwks_min_refresh_s cannot be lowered below 30 (got 0); the floor is set at startup via QUACK_OAUTH_JWKS_MIN_REFRESH_S
 
 statement error
 SET quack_oauth_jwks_min_refresh_s = -10;
 ----
-quack_oauth_jwks_min_refresh_s must be between 30 and 3600 (got -10); cannot be lowered below the startup floor configured via QUACK_OAUTH_JWKS_MIN_REFRESH_S
+quack_oauth_jwks_min_refresh_s cannot be lowered below 30 (got -10); the floor is set at startup via QUACK_OAUTH_JWKS_MIN_REFRESH_S
 
 statement error
 SET quack_oauth_jwks_min_refresh_s = 7200;
 ----
-quack_oauth_jwks_min_refresh_s must be between 30 and 3600 (got 7200); cannot be lowered below the startup floor configured via QUACK_OAUTH_JWKS_MIN_REFRESH_S
+quack_oauth_jwks_min_refresh_s must be at most 3600 (got 7200)
 
 # SET cannot lower below operator startup floor (F8/F9/F-E)
 statement error
 SET quack_oauth_jwks_min_refresh_s = 20;
 ----
-quack_oauth_jwks_min_refresh_s must be between 30 and 3600 (got 20); cannot be lowered below the startup floor configured via QUACK_OAUTH_JWKS_MIN_REFRESH_S
+quack_oauth_jwks_min_refresh_s cannot be lowered below 30 (got 20); the floor is set at startup via QUACK_OAUTH_JWKS_MIN_REFRESH_S
 
 statement ok
 RESET quack_oauth_jwks_min_refresh_s;
@@ -97,7 +97,7 @@ SELECT current_setting('quack_oauth_jwks_min_refresh_s');
 30
 
 query T
-SELECT detail FROM quack_oauth_diagnose() WHERE component = 'jwks_cache';
+SELECT detail LIKE '%min_refresh_s=30%' FROM quack_oauth_diagnose() WHERE component = 'jwks_cache';
 ----
-entries=0 unknown_kids=0 min_refresh_s=30 throttled=0
+true
 

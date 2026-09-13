@@ -449,4 +449,19 @@ VerifyResult VerifyJwt(std::string_view token, const Jwk &jwk, const VerifyOptio
 	return VerifyWithVerifier(*decoded, *pem, alg, opts);
 }
 
+bool IsUsableSigningKey(const Jwk &jwk) {
+	if (jwk.kty == "RSA") {
+		bool sub_2048 = false;
+		auto pem = JwkRsaToPem(jwk, sub_2048);
+		return pem.has_value() && !sub_2048;
+	}
+	if (jwk.kty == "EC") {
+		return JwkEcToPem(jwk).has_value();
+	}
+	if (jwk.kty == "OKP") {
+		return JwkOkpToPem(jwk).has_value();
+	}
+	return false;
+}
+
 } // namespace quack_oauth

@@ -63,24 +63,47 @@ static VerifyResult VerifyWithCachedKeys(std::string_view token, const std::vect
 	if (keys.empty()) {
 		return VerifyResult::UnknownKid;
 	}
-	VerifyResult best_failure = VerifyResult::InvalidSignature;
 	bool all_unsupported = true;
+	bool saw_invalid_sig = false;
+	VerifyResult fallback_failure = VerifyResult::InvalidSignature;
 	for (const auto &k : keys) {
 		const auto res = VerifyJwt(token, k, opts);
 		if (SignatureMatchesCandidate(res)) {
 			return res;
 		}
-		if (res != VerifyResult::UnsupportedKeyType) {
+		if (res == VerifyResult::InvalidSignature) {
+			saw_invalid_sig = true;
+		} else if (res != VerifyResult::UnsupportedKeyType) {
 			all_unsupported = false;
+			fallback_failure = res;
 		}
-		if (res != VerifyResult::InvalidSignature) {
-			best_failure = res;
-		}
+	}
+	if (saw_invalid_sig) {
+		return VerifyResult::InvalidSignature;
 	}
 	if (all_unsupported) {
 		return VerifyResult::UnsupportedKeyType;
 	}
-	return best_failure;
+	return fallback_failure;
+}
+
+static std::vector<Jwk> MatchingKeys(const std::vector<Jwk> &keys, const std::string &alg) {
+	std::vector<Jwk> matching;
+	for (const auto &k : keys) {
+		if (JwkMatchesTokenHeader(k, alg)) {
+			matching.push_back(k);
+		}
+	}
+	return matching;
+}
+
+static VerifyResult VerifyAgainstCachedKid(std::string_view token, const std::string &alg,
+                                           const std::vector<Jwk> &cached_keys, const VerifyOptions &opts) {
+	const auto matching = MatchingKeys(cached_keys, alg);
+	if (matching.empty()) {
+		return VerifyResult::InvalidSignature;
+	}
+	return VerifyWithCachedKeys(token, matching, opts);
 }
 
 static std::unordered_map<std::string, std::vector<Jwk>> GroupSigningKeysByKid(const std::vector<Jwk> &keys) {
@@ -96,19 +119,8 @@ static std::unordered_map<std::string, std::vector<Jwk>> GroupSigningKeysByKid(c
 static std::vector<Jwk> ScreenUsableKeys(const std::vector<Jwk> &raw_keys) {
 	std::vector<Jwk> valid;
 	for (const auto &cand : raw_keys) {
-		if (cand.kty == "RSA") {
-			bool sub_2048 = false;
-			if (JwkRsaToPem(cand, sub_2048).has_value() && !sub_2048) {
-				valid.push_back(cand);
-			}
-		} else if (cand.kty == "EC") {
-			if (JwkEcToPem(cand).has_value()) {
-				valid.push_back(cand);
-			}
-		} else if (cand.kty == "OKP") {
-			if (JwkOkpToPem(cand).has_value()) {
-				valid.push_back(cand);
-			}
+		if (IsUsableSigningKey(cand)) {
+			valid.push_back(cand);
 		}
 	}
 	return valid;
@@ -127,79 +139,14 @@ static std::optional<VerifyResult> SelectAndVerify(std::string_view token, const
 	return std::nullopt;
 }
 
-static std::optional<VerifyResult> TryRefreshRotatedKid(std::string_view token, const std::string &kid,
-                                                        const std::string &token_alg,
-                                                        const std::vector<Jwk> &cached_keys, const VerifyOptions &opts,
-                                                        ValidateContext &ctx) {
-	// Global fetch budget check first (F-C)
-	if (!ctx.jwks_cache.CanFetchJwks(opts.now_s)) {
-		ctx.jwks_cache.IncrementThrottledRefreshes();
-		if (ctx.on_refresh) {
-			ctx.on_refresh(kid, "refresh_throttled", token);
-		}
-		return std::nullopt;
-	}
-
-	const auto reservation_id = ctx.jwks_cache.TryReserveRefresh(kid, opts.now_s);
-	if (reservation_id == 0) {
-		ctx.jwks_cache.IncrementThrottledRefreshes();
-		if (ctx.on_refresh) {
-			ctx.on_refresh(kid, "refresh_throttled", token);
-		}
-		return std::nullopt;
-	}
-
-	// Record fetch attempt before network call
-	ctx.jwks_cache.RecordJwksFetch(opts.now_s, false);
-
-	const auto refresh = ctx.http.Get(ctx.jwks_uri);
-	if (!refresh.has_value() || refresh->status_code != 200) {
-		ctx.jwks_cache.RecordJwksFetch(opts.now_s, true);
-		if (ctx.on_refresh) {
-			ctx.on_refresh(kid, "refresh_fetch_failed", token);
-		}
-		return std::nullopt;
-	}
-
-	const auto keys = ParseJwksJson(refresh->body);
-	if (keys.empty()) {
-		ctx.jwks_cache.RecordJwksFetch(opts.now_s, true);
-		if (ctx.on_refresh) {
-			ctx.on_refresh(kid, "refresh_parse_failed", token);
-		}
-		return std::nullopt;
-	}
-
-	const auto keys_by_kid = GroupSigningKeysByKid(keys);
-
-	// Ingest sibling keys additively/authoritatively into cache (F-A)
-	for (const auto &[s_kid, s_keys] : keys_by_kid) {
-		if (s_kid != kid) {
-			ctx.jwks_cache.OnFetchSuccess(s_kid, s_keys, opts.now_s);
-		}
-	}
-
-	const auto cand_it = keys_by_kid.find(kid);
-	if (cand_it == keys_by_kid.end() || cand_it->second.empty()) {
-		if (ctx.on_refresh) {
-			ctx.on_refresh(kid, "refresh_kid_absent", token);
-		}
-		return std::nullopt;
-	}
-
-	const auto candidates_for_kid = ScreenUsableKeys(cand_it->second);
-	if (candidates_for_kid.empty()) {
-		if (ctx.on_refresh) {
-			ctx.on_refresh(kid, "refresh_parse_failed", token);
-		}
-		return std::nullopt;
-	}
-
+static bool CommitAndAudit(const std::string &kid, uint64_t reservation_id, const std::vector<Jwk> &candidates,
+                           const std::vector<Jwk> &cached_keys, int64_t now_s, ValidateContext &ctx,
+                           RefreshEvent *out_refresh) {
 	bool has_new_material = false;
-	for (const auto &cand : candidates_for_kid) {
+	for (const auto &cand : candidates) {
 		bool matches_existing = false;
 		for (const auto &cached : cached_keys) {
-			if (!JwkMaterialDiffers(cand, cached)) {
+			if (SameKeyMaterial(cand, cached)) {
 				matches_existing = true;
 				break;
 			}
@@ -210,14 +157,96 @@ static std::optional<VerifyResult> TryRefreshRotatedKid(std::string_view token, 
 		}
 	}
 
-	// Commit fresh published key set for this kid under active reservation (F-B, Decision A3)
-	const bool committed = ctx.jwks_cache.CommitRefresh(kid, reservation_id, candidates_for_kid, opts.now_s);
-	if (ctx.on_refresh) {
-		const char *reason = "refresh_superseded";
-		if (committed) {
-			reason = has_new_material ? "rotated_key_refreshed" : "refresh_no_rotation";
+	const bool committed = ctx.jwks_cache.CommitRefresh(kid, reservation_id, candidates, now_s);
+	if (out_refresh) {
+		out_refresh->kid = kid;
+		out_refresh->reason = committed ? (has_new_material ? kReasonRefreshRotated : kReasonRefreshNoRotation)
+		                                : kReasonRefreshSuperseded;
+	}
+	return committed;
+}
+
+static void IngestSiblingKeys(const std::unordered_map<std::string, std::vector<Jwk>> &keys_by_kid,
+                              const std::string &target_kid, int64_t now_s, ValidateContext &ctx) {
+	for (const auto &[s_kid, s_keys] : keys_by_kid) {
+		if (s_kid != target_kid) {
+			const auto usable = ScreenUsableKeys(s_keys);
+			if (!usable.empty()) {
+				ctx.jwks_cache.OnFetchSuccess(s_kid, usable, now_s);
+			}
 		}
-		ctx.on_refresh(kid, reason, token);
+	}
+}
+
+static std::optional<VerifyResult> TryRefreshRotatedKid(std::string_view token, const std::string &kid,
+                                                        const std::string &token_alg,
+                                                        const std::vector<Jwk> &cached_keys, const VerifyOptions &opts,
+                                                        ValidateContext &ctx, RefreshEvent *out_refresh) {
+	if (!ctx.jwks_cache.CanFetchJwks(opts.now_s)) {
+		ctx.jwks_cache.IncrementThrottledRefreshes();
+		if (out_refresh) {
+			out_refresh->kid = kid;
+			out_refresh->reason = kReasonRefreshBudgetThrottled;
+		}
+		return std::nullopt;
+	}
+
+	const auto reservation_id = ctx.jwks_cache.TryReserveRefresh(kid, opts.now_s);
+	if (reservation_id == 0) {
+		ctx.jwks_cache.IncrementThrottledRefreshes();
+		if (out_refresh) {
+			out_refresh->kid = kid;
+			out_refresh->reason = kReasonRefreshThrottled;
+		}
+		return std::nullopt;
+	}
+
+	ctx.jwks_cache.RecordJwksFetch(opts.now_s, false);
+
+	const auto refresh = ctx.http.Get(ctx.jwks_uri);
+	if (!refresh.has_value() || refresh->status_code != 200) {
+		ctx.jwks_cache.RecordJwksFetch(opts.now_s, true);
+		if (out_refresh) {
+			out_refresh->kid = kid;
+			out_refresh->reason = kReasonRefreshFetchFailed;
+		}
+		return std::nullopt;
+	}
+
+	const auto keys = ParseJwksJson(refresh->body);
+	if (keys.empty()) {
+		ctx.jwks_cache.RecordJwksFetch(opts.now_s, true);
+		if (out_refresh) {
+			out_refresh->kid = kid;
+			out_refresh->reason = kReasonRefreshParseFailed;
+		}
+		return std::nullopt;
+	}
+
+	const auto keys_by_kid = GroupSigningKeysByKid(keys);
+	const auto cand_it = keys_by_kid.find(kid);
+
+	// Target kid commit under active reservation MUST happen before sibling ingest (F7)
+	bool target_committed = false;
+	std::vector<Jwk> candidates_for_kid;
+	if (cand_it != keys_by_kid.end()) {
+		candidates_for_kid = ScreenUsableKeys(cand_it->second);
+		if (!candidates_for_kid.empty()) {
+			CommitAndAudit(kid, reservation_id, candidates_for_kid, cached_keys, opts.now_s, ctx, out_refresh);
+			target_committed = true;
+		} else if (out_refresh) {
+			out_refresh->kid = kid;
+			out_refresh->reason = kReasonRefreshParseFailed;
+		}
+	} else if (out_refresh) {
+		out_refresh->kid = kid;
+		out_refresh->reason = kReasonRefreshKidAbsent;
+	}
+
+	IngestSiblingKeys(keys_by_kid, kid, opts.now_s, ctx);
+
+	if (!target_committed) {
+		return std::nullopt;
 	}
 
 	const auto verified_result = SelectAndVerify(token, token_alg, candidates_for_kid, opts);
@@ -230,7 +259,8 @@ static std::optional<VerifyResult> TryRefreshRotatedKid(std::string_view token, 
 	return VerifyResult::InvalidSignature;
 }
 
-VerifyResult ValidateToken(std::string_view token, const VerifyOptions &opts, ValidateContext &ctx) {
+VerifyResult ValidateToken(std::string_view token, const VerifyOptions &opts, ValidateContext &ctx,
+                           RefreshEvent *out_refresh) {
 	const auto parsed = ParseJwt(token);
 	if (!parsed) {
 		return VerifyResult::Malformed;
@@ -249,20 +279,15 @@ VerifyResult ValidateToken(std::string_view token, const VerifyOptions &opts, Va
 
 	const auto first_lookup = ctx.jwks_cache.Lookup(parsed->kid, opts.now_s);
 	if (first_lookup.status == JwksLookupStatus::Hit) {
-		std::vector<Jwk> matching_keys;
-		for (const auto &k : first_lookup.keys) {
-			if (JwkMatchesTokenHeader(k, parsed->alg)) {
-				matching_keys.push_back(k);
-			}
-		}
-		if (!matching_keys.empty()) {
-			const auto cached_result = VerifyWithCachedKeys(token, matching_keys, opts);
+		const auto matching = MatchingKeys(first_lookup.keys, parsed->alg);
+		if (!matching.empty()) {
+			const auto cached_result = VerifyWithCachedKeys(token, matching, opts);
 			if (!IsCachedKeyUnusable(cached_result)) {
 				return cached_result;
 			}
 		}
 		if (const auto refreshed =
-		        TryRefreshRotatedKid(token, parsed->kid, parsed->alg, first_lookup.keys, opts, ctx)) {
+		        TryRefreshRotatedKid(token, parsed->kid, parsed->alg, first_lookup.keys, opts, ctx, out_refresh)) {
 			return *refreshed;
 		}
 		return VerifyResult::InvalidSignature;
@@ -275,11 +300,9 @@ VerifyResult ValidateToken(std::string_view token, const VerifyOptions &opts, Va
 	// Global fetch budget check (F4, F7, F-G):
 	if (!ctx.jwks_cache.CanFetchJwks(opts.now_s)) {
 		ctx.jwks_cache.IncrementThrottledRefreshes();
-		if (ctx.on_refresh) {
-			ctx.on_refresh(parsed->kid, "refresh_throttled", token);
-		}
-		if (ctx.jwks_cache.WasLastFetchFailed()) {
-			return VerifyResult::JwksFetchFailed;
+		if (out_refresh) {
+			out_refresh->kid = parsed->kid;
+			out_refresh->reason = kReasonRefreshBudgetThrottled;
 		}
 		return VerifyResult::JwksThrottled;
 	}
@@ -302,30 +325,19 @@ VerifyResult ValidateToken(std::string_view token, const VerifyOptions &opts, Va
 	const auto keys_by_kid = GroupSigningKeysByKid(keys);
 
 	for (const auto &[k_kid, k_keys] : keys_by_kid) {
-		ctx.jwks_cache.OnFetchSuccess(k_kid, k_keys, opts.now_s);
+		const auto usable = ScreenUsableKeys(k_keys);
+		if (!usable.empty()) {
+			ctx.jwks_cache.OnFetchSuccess(k_kid, usable, opts.now_s);
+		}
 	}
 
-	if (keys_by_kid.find(parsed->kid) == keys_by_kid.end()) {
+	const auto second_lookup = ctx.jwks_cache.Lookup(parsed->kid, opts.now_s);
+	if (second_lookup.status != JwksLookupStatus::Hit || second_lookup.keys.empty()) {
 		ctx.jwks_cache.OnFetchMiss(parsed->kid, opts.now_s);
 		return VerifyResult::UnknownKid;
 	}
 
-	// The target kid is published in the JWKS and now cached. Verify token against matching keys (F3, F4).
-	const auto second_lookup = ctx.jwks_cache.Lookup(parsed->kid, opts.now_s);
-	if (second_lookup.status == JwksLookupStatus::Hit) {
-		std::vector<Jwk> matching_keys;
-		for (const auto &k : second_lookup.keys) {
-			if (JwkMatchesTokenHeader(k, parsed->alg)) {
-				matching_keys.push_back(k);
-			}
-		}
-		if (matching_keys.empty()) {
-			return VerifyResult::InvalidSignature;
-		}
-		return VerifyWithCachedKeys(token, matching_keys, opts);
-	}
-
-	return VerifyResult::InvalidSignature;
+	return VerifyAgainstCachedKid(token, parsed->alg, second_lookup.keys, opts);
 }
 
 VerifyResult ValidateTokenViaTokeninfo(std::string_view token, const VerifyOptions &opts, TokeninfoContext &ctx,

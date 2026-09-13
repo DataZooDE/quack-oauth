@@ -1,7 +1,6 @@
 #pragma once
 
 #include <cstdint>
-#include <functional>
 #include <string>
 #include <string_view>
 
@@ -12,18 +11,28 @@
 
 namespace quack_oauth {
 
+inline constexpr const char *kReasonRefreshRotated = "refresh_rotated";
+inline constexpr const char *kReasonRefreshNoRotation = "refresh_no_rotation";
+inline constexpr const char *kReasonRefreshThrottled = "refresh_throttled";
+inline constexpr const char *kReasonRefreshBudgetThrottled = "refresh_budget_throttled";
+inline constexpr const char *kReasonRefreshFetchFailed = "refresh_fetch_failed";
+inline constexpr const char *kReasonRefreshParseFailed = "refresh_parse_failed";
+inline constexpr const char *kReasonRefreshKidAbsent = "refresh_kid_absent";
+inline constexpr const char *kReasonRefreshSuperseded = "refresh_superseded";
+
+struct RefreshEvent {
+	std::string kid;
+	std::string reason;
+};
+
 // Externally-owned dependencies for `ValidateToken`. The validator does not
 // own the cache or the HTTP client -- the caller passes references so the
 // same cache can be reused across many `ValidateToken` calls (the whole
 // point of caching).
-using RefreshAuditCallback =
-    std::function<void(const std::string &kid, const std::string &reason, std::string_view token)>;
-
 struct ValidateContext {
 	IHttpClient &http;
 	JwksCache &jwks_cache;
 	std::string jwks_uri;
-	RefreshAuditCallback on_refresh = nullptr;
 };
 
 // Dependencies for the introspection path. Shape parallels ValidateContext
@@ -38,6 +47,7 @@ struct IntrospectContext {
 	// Empty disables the check.
 	std::string expected_issuer;
 	// Expected audience to enforce when the IdP response includes `aud`.
+	// Empty disables the check.
 	std::string expected_audience;
 };
 
@@ -58,15 +68,16 @@ struct IntrospectContext {
 //      HTTP call cannot be completed or returns non-200.
 //
 // Side effects: on initial cache miss, `ctx.jwks_cache` ingests keys from the
-// fetched JWKS. On hit-refresh for a rotated key, sibling keys present in the
-// IdP document are ingested additively/authoritatively, and the verified
-// candidate for the target `kid` is committed via its active reservation ID.
+// fetched JWKS. On hit-refresh for a rotated key, the verified candidate for
+// the target `kid` is committed via its active reservation ID first, and
+// sibling keys present in the IdP document are authoritatively synchronized.
 // When an IdP fetch succeeds (200 OK), keys for the target `kid` are synchronized
 // with the document. On a fetch that does not contain the target `kid`, the cache
 // records a miss so subsequent calls within the rate-limit window short-circuit.
 // Refresh failure or network error preserves the last-good cached keys without
 // mutating the cache.
-VerifyResult ValidateToken(std::string_view token, const VerifyOptions &opts, ValidateContext &ctx);
+VerifyResult ValidateToken(std::string_view token, const VerifyOptions &opts, ValidateContext &ctx,
+                           RefreshEvent *out_refresh = nullptr);
 
 // Dependencies for the Google-style tokeninfo path. Parallel to
 // IntrospectContext but without HTTP Basic auth (Google's tokeninfo is

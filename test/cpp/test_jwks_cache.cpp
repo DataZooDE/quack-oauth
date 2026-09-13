@@ -329,6 +329,34 @@ TEST_CASE("JwksCache: duplicate identical key material does not duplicate or inv
 	CHECK(r2.keys[1].n == "modulus-new");
 }
 
+TEST_CASE("JwksCache: OnFetchSuccess with different key material invalidates active reservation",
+          "[jwks][cache][revocation][resurrection]") {
+	JwksCache cache(kRefresh);
+	auto k_old = MakeRsaJwk("k1");
+	k_old.n = "modulus-old";
+	cache.OnFetchSuccess("k1", {k_old}, 100);
+
+	// T1 reserves refresh at t=200
+	const auto res = cache.TryReserveRefresh("k1", 200);
+	REQUIRE(res != 0);
+
+	// T2 completes a refresh with newer/different key material at t=203 (e.g. from sibling ingest)
+	auto k_new = MakeRsaJwk("k1");
+	k_new.n = "modulus-new";
+	cache.OnFetchSuccess("k1", {k_new}, 203);
+
+	// T1's stale commit with older material at t=200 must FAIL (cannot overwrite k_new with k_old)
+	CHECK_FALSE(cache.CommitRefresh("k1", res, {k_old}, 200));
+
+	// Even if T1 passed t=204, the reservation was invalidated by OnFetchSuccess with different keys!
+	CHECK_FALSE(cache.CommitRefresh("k1", res, {k_old}, 204));
+
+	// Newer key material remains intact in cache
+	const auto r = cache.Lookup("k1", 205);
+	REQUIRE(r.keys.size() == 1);
+	CHECK(r.keys[0].n == "modulus-new");
+}
+
 TEST_CASE("JwksCache: global fetch budget rate-limits fetches across unknown kids", "[jwks][cache][budget]") {
 	JwksCache cache(30);
 	CHECK(cache.CanFetchJwks(100));
@@ -371,9 +399,9 @@ TEST_CASE("JwksCache: Hard cap on Entry::keys preserves at most 4 keys", "[jwks]
 	const auto r = cache.Lookup("k1", 200);
 	REQUIRE(r.status == JwksLookupStatus::Hit);
 	REQUIRE(r.keys.size() == 4);
-	// Should contain the last 4: modulus-2, modulus-3, modulus-4, modulus-5
-	CHECK(r.keys[0].n == "modulus-2");
-	CHECK(r.keys[3].n == "modulus-5");
+	// Retains the first 4 in document order (active/primary keys RFC 7517)
+	CHECK(r.keys[0].n == "modulus-0");
+	CHECK(r.keys[3].n == "modulus-3");
 }
 
 TEST_CASE("JwksCache: Unknown kty is rejected and does not append unbounded duplicate keys",

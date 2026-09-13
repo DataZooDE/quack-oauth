@@ -245,8 +245,8 @@ with a status and a `detail` string of `key=value` pairs:
 |-----------------------|---------------------------|------------------------|
 | `decision_cache`      | `empty` \| `warm`         | `entries=` |
 | `extension`           | `configured` \| `unconfigured` | `enabled= secret_name= validation_mode= provider=` |
-| `idp_reachability`    | `reachable` \| `unreachable` \| `unconfigured` \| `unavailable_on_wasm` | `url= http_status= latency_ms=` |
-| `jwks_cache`          | `empty` \| `warm` \| `negative` | `entries= unknown_kids= min_refresh_s=` |
+| `idp_reachability`    | `reachable` \| `unreachable` \| `unconfigured` \| `unavailable_on_wasm` | `uri= http_status=` (on wasm: `uri= reason=wasm_host_owns_network`) |
+| `jwks_cache`          | `empty` \| `warm` \| `misses_only` | `entries= unknown_kids= min_refresh_s= throttled=` |
 | `recent_decisions`    | `empty` \| `active`       | `count=N/CAP accepted= rejected= allowed= denied= refreshed= refresh_noop= refresh_failed=` |
 | `session_principals`  | `empty` \| `active`       | `sessions=` |
 
@@ -291,10 +291,11 @@ the first 8 hex characters of its SHA-256.
 | `token_rejected` | `unsupported_key_type` | Key type or size unsupported (e.g. sub-2048-bit RSA). |
 | `token_rejected` | `unknown_kid` | Token `kid` was not found in the IdP's JWKS document. |
 | `token_rejected` | `jwks_fetch_failed` | Outbound HTTP request to JWKS or introspection endpoint failed. |
-| `token_rejected` | `jwks_throttled` | Outbound JWKS fetch rate-limited by global budget window (2s) on cold miss. |
-| `jwks_refresh` | `refresh_rotated` | IdP rotated key material under the same `kid`; fresh keys successfully ingested (also logged as `rotated_key_refreshed`). |
+| `token_rejected` | `jwks_throttled` | Transient rejection: outbound JWKS fetch rate-limited by global budget window (2s) on cold miss. Callers should retry after the 2-second window. |
+| `jwks_refresh` | `refresh_rotated` | IdP rotated key material under the same `kid`; fresh keys successfully ingested. |
 | `jwks_refresh` | `refresh_no_rotation` | JWKS re-fetched following verification failure, but contains no new key material. |
 | `jwks_refresh` | `refresh_throttled` | Refresh rate-limited by `min_refresh_s` (logged to DuckDB logger; not emitted to ring). |
+| `jwks_refresh` | `refresh_budget_throttled` | Refresh rate-limited by global fetch budget (2s window) (logged to DuckDB logger; not emitted to ring). |
 | `jwks_refresh` | `refresh_fetch_failed` | Outbound JWKS HTTP GET failed or returned non-200. |
 | `jwks_refresh` | `refresh_parse_failed` | Outbound JWKS response was not valid JSON or contained no keys. |
 | `jwks_refresh` | `refresh_kid_absent` | Fresh JWKS document did not contain the requested `kid`. |
@@ -422,7 +423,7 @@ All settings are global (SET applies process-wide; there is no per-session overr
 | `quack_oauth_validation_mode`        | VARCHAR | `'jwks'`    | `jwks` \| `introspect` \| `tokeninfo` (R-S-2). |
 | `quack_oauth_provider`               | VARCHAR | `'generic'` | First-class preset: `entra` \| `google` \| `keycloak` \| `okta` \| `github` \| `generic` (R-S-12). |
 | `quack_oauth_clock_skew_s`           | INTEGER | `60`        | Allowable clock skew (seconds) for JWT `exp`/`nbf`/`iat` (R-S-3). |
-| `quack_oauth_jwks_min_refresh_s`     | INTEGER | `30`        | Min seconds between JWKS refreshes per kid (R-S-4). Must be between 1 and 3600; cannot be lowered below startup floor (default 30, override via `QUACK_OAUTH_JWKS_MIN_REFRESH_S`). |
+| `quack_oauth_jwks_min_refresh_s`     | INTEGER | `30`        | Min seconds between JWKS refreshes per kid (R-S-4). Must be between the startup floor and 3600; cannot be lowered below startup floor (default 30, override via `QUACK_OAUTH_JWKS_MIN_REFRESH_S`). Process-global setting that applies across all chunk validations until reset. |
 | `quack_oauth_introspect_cache_s`     | INTEGER | `30`        | Cache lifetime for `introspect`-mode decisions, capped at token `exp` (R-S-5). |
 | `quack_oauth_renew_skew_s`           | INTEGER | `60`        | Client refreshes the access token this many seconds before `expires_at` (R-C-2). |
 | `quack_oauth_policy_default`         | VARCHAR | `'deny'`    | Default decision when no `policy_table` rule matches: `allow` or `deny` (R-S-7). |
@@ -436,7 +437,7 @@ When identity providers (such as Microsoft Entra ID) rotate key material while r
 - **Multi-key cache entry**: On a successful 200 OK JWKS fetch, cached keys for the target `kid` are synchronized with the keys currently published in the document, capped at 4 keys per `kid`. When an IdP removes a key from its published JWKS, it is revoked. If a fetch fails or times out, all existing cached keys are preserved.
 - **Request-path latency**: Refreshes happen synchronously on the request thread encountering an unusable key signature failure against currently-cached keys, bounded by `quack_oauth_jwks_min_refresh_s` (default 30 seconds) per `kid` and a process-global fetch rate limit (2 seconds).
 - **Starvation & DoS resistance**: Fresh key material fetched from the IdP over TLS is committed to the cache even if the triggering token fails verification, preventing forged or corrupted tokens from starving legitimate key rotation recovery. Repeated requests with already-known keys emit `refresh_no_rotation` and do not re-fetch.
-- **Troubleshooting**: If clients experience bursts of `invalid_signature` or `jwks_throttled` errors during an IdP rotation, inspect `quack_oauth_audit_log()` for `jwks_refresh` events and `quack_oauth_diagnose()` for the `throttled=` counter on `jwks_cache`. Refresh rate-limiting is logged to the DuckDB logger as `quack_oauth: JWKS refresh throttled for kid='...'` (viewable via `SET enable_logging = true; SELECT * FROM duckdb_logs WHERE message LIKE 'quack_oauth:%';`); network failures appear as `refresh_fetch_failed`.
+- **Troubleshooting**: If clients experience bursts of `invalid_signature` or `jwks_throttled` errors during an IdP rotation, inspect `quack_oauth_audit_log()` for `jwks_refresh` events and `quack_oauth_diagnose()` for the `throttled=` counter on `jwks_cache`. Refresh rate-limiting is logged to the DuckDB logger as `quack_oauth: JWKS refresh rate-limited by min_refresh_s for kid='...'` or `quack_oauth: JWKS refresh throttled by global fetch budget (2s window) for kid='...'` (viewable via `SET enable_logging = true; SELECT * FROM duckdb_logs WHERE message LIKE 'quack_oauth:%';`); network failures appear as `refresh_fetch_failed`.
 
 ---
 

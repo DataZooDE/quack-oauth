@@ -33,10 +33,13 @@ static void OnJwksMinRefreshSeconds(ClientContext &, SetScope, Value &parameter)
 		throw InvalidInputException("quack_oauth_jwks_min_refresh_s cannot be NULL");
 	}
 	const auto val = parameter.GetValue<int32_t>();
-	if (val < g_startup_min_refresh_s || val > 3600) {
+	if (val > 3600) {
+		throw InvalidInputException("quack_oauth_jwks_min_refresh_s must be at most 3600 (got %d)", val);
+	}
+	if (val < g_startup_min_refresh_s) {
 		throw InvalidInputException(
-		    "quack_oauth_jwks_min_refresh_s must be between %d and 3600 (got %d); cannot be lowered below the "
-		    "startup floor configured via QUACK_OAUTH_JWKS_MIN_REFRESH_S",
+		    "quack_oauth_jwks_min_refresh_s cannot be lowered below %d (got %d); the floor is set at startup via "
+		    "QUACK_OAUTH_JWKS_MIN_REFRESH_S",
 		    g_startup_min_refresh_s, val);
 	}
 	auto &state = GetQuackOauthState();
@@ -100,7 +103,8 @@ void RegisterQuackOauthSettings(DBConfig &config) {
 		state.jwks_cache.SetMinRefreshSeconds(g_startup_min_refresh_s);
 	}
 	config.AddExtensionOption("quack_oauth_jwks_min_refresh_s",
-	                          "Minimum seconds between JWKS refreshes per kid (R-S-4). Must be between 1 and 3600.",
+	                          "Minimum seconds between JWKS refreshes per kid (R-S-4). Must be between the startup "
+	                          "floor and 3600.",
 	                          LogicalType::INTEGER, Value::INTEGER(g_startup_min_refresh_s), OnJwksMinRefreshSeconds,
 	                          SetScope::GLOBAL);
 

@@ -16,6 +16,7 @@
 #include "quack_oauth_state.hpp"
 #include "retry_http_client.hpp"
 #include "secret_accessor.hpp"
+#include "validator.hpp"
 #include "quack_oauth_banner.hpp"
 
 #ifndef EMSCRIPTEN
@@ -91,7 +92,7 @@ static unique_ptr<FunctionData> DiagnoseBind(ClientContext &context, TableFuncti
 		if (entries > 0) {
 			status = "warm";
 		} else if (unknown_kids > 0) {
-			status = "negative";
+			status = "misses_only";
 		}
 		data->rows.push_back({"jwks_cache", status, detail.str()});
 	}
@@ -153,6 +154,7 @@ static unique_ptr<FunctionData> DiagnoseBind(ClientContext &context, TableFuncti
 		// configured probe URI for visibility but report status as
 		// unavailable (the host page's fetch environment owns this).
 		Append(detail, "uri", probe_uri.empty() ? "(none)" : probe_uri);
+		Append(detail, "reason", "wasm_host_owns_network");
 		data->rows.push_back({"idp_reachability", "unavailable_on_wasm", detail.str()});
 #endif
 	}
@@ -177,9 +179,10 @@ static unique_ptr<FunctionData> DiagnoseBind(ClientContext &context, TableFuncti
 				++denies;
 				break;
 			case quack_oauth::AuditEventType::JwksRefresh:
-				if (e.reason == "rotated_key_refreshed" || e.reason == "refresh_rotated") {
+				if (e.reason == quack_oauth::kReasonRefreshRotated) {
 					++refreshes;
-				} else if (e.reason == "refresh_no_rotation" || e.reason == "refresh_superseded") {
+				} else if (e.reason == quack_oauth::kReasonRefreshNoRotation ||
+				           e.reason == quack_oauth::kReasonRefreshSuperseded) {
 					++refresh_noops;
 				} else {
 					++refresh_failures;

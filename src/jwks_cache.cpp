@@ -15,7 +15,7 @@ void JwksCache::SetMinRefreshSeconds(std::int64_t min_refresh_s) {
 
 void JwksCache::TrimToCap(Entry &entry) {
 	if (entry.keys.size() > kMaxKeysPerKid) {
-		entry.keys.erase(entry.keys.begin(), entry.keys.begin() + (entry.keys.size() - kMaxKeysPerKid));
+		entry.keys.resize(kMaxKeysPerKid);
 	}
 }
 
@@ -51,7 +51,6 @@ void JwksCache::OnFetchSuccess(const std::string &kid, const std::vector<Jwk> &k
 	if (valid_keys.empty()) {
 		return;
 	}
-	last_fetch_failed_ = false;
 
 	if (const auto miss = misses_.find(kid); miss != misses_.end()) {
 		miss_lru_.erase(miss->second.lru_it);
@@ -59,6 +58,9 @@ void JwksCache::OnFetchSuccess(const std::string &kid, const std::vector<Jwk> &k
 	}
 
 	if (const auto hit = hits_.find(kid); hit != hits_.end()) {
+		if (!SameKeyMaterial(hit->second.keys, valid_keys)) {
+			hit->second.current_reservation_id = 0;
+		}
 		hit->second.keys = std::move(valid_keys);
 		TrimToCap(hit->second);
 		hit->second.fetched_at_s = now_s;
@@ -92,9 +94,8 @@ bool JwksCache::CanFetchJwks(std::int64_t now_s) const {
 	return true;
 }
 
-void JwksCache::RecordJwksFetch(std::int64_t now_s, bool failed) {
+void JwksCache::RecordJwksFetch(std::int64_t now_s, bool /*failed*/) {
 	last_global_fetch_s_ = std::max(last_global_fetch_s_, now_s);
-	last_fetch_failed_ = failed;
 }
 
 std::uint64_t JwksCache::TryReserveRefresh(const std::string &kid, std::int64_t now_s) {
@@ -131,6 +132,10 @@ bool JwksCache::CommitRefresh(const std::string &kid, std::uint64_t reservation_
 		// Drop this stale completion to avoid overwriting a newer key.
 		return false;
 	}
+	if (now_s < hit->second.fetched_at_s) {
+		// Time inversion: newer material was already ingested.
+		return false;
+	}
 
 	std::vector<Jwk> valid_keys;
 	for (const auto &k : keys) {
@@ -142,6 +147,7 @@ bool JwksCache::CommitRefresh(const std::string &kid, std::uint64_t reservation_
 		return false;
 	}
 
+	hit->second.current_reservation_id = 0;
 	hit->second.keys = std::move(valid_keys);
 	TrimToCap(hit->second);
 	hit->second.fetched_at_s = now_s;

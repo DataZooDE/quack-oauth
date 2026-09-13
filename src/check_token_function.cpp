@@ -3,7 +3,6 @@
 #include <chrono>
 #include <cstdint>
 #include <mutex>
-#include <set>
 #include <string>
 #include <thread>
 
@@ -346,9 +345,8 @@ static void EmitAuditsAndScrub(ClientContext &context, string &token_str, const 
 	guard.unlock();
 	EmitTokenAudit(context, token_str, row.outcome, now_s, (ok && row.have_principal) ? &row.principal : nullptr);
 	if (!row.refresh_kid.empty()) {
-		if (row.refresh_reason == "refresh_throttled") {
-			// Drop refresh_throttled from 64-entry audit ring to avoid flooding; log to DUCKDB_LOG_INFO instead
-			// (F6). Sanitize kid for log output and cap length at 256.
+		if (row.refresh_reason == quack_oauth::kReasonRefreshThrottled ||
+		    row.refresh_reason == quack_oauth::kReasonRefreshBudgetThrottled) {
 			std::string safe_kid;
 			for (char c : row.refresh_kid) {
 				if (static_cast<unsigned char>(c) >= 32 && static_cast<unsigned char>(c) < 127 && c != '"' &&
@@ -359,7 +357,14 @@ static void EmitAuditsAndScrub(ClientContext &context, string &token_str, const 
 			if (safe_kid.size() > 256) {
 				safe_kid.resize(256);
 			}
-			DUCKDB_LOG_INFO(context, "quack_oauth: JWKS refresh throttled for kid='" + safe_kid + "'");
+			if (row.refresh_reason == quack_oauth::kReasonRefreshThrottled) {
+				DUCKDB_LOG_INFO(context,
+				                "quack_oauth: JWKS refresh rate-limited by min_refresh_s for kid='" + safe_kid + "'");
+			} else {
+				DUCKDB_LOG_INFO(context,
+				                "quack_oauth: JWKS refresh throttled by global fetch budget (2s window) for kid='" +
+				                    safe_kid + "'");
+			}
 		} else {
 			quack_oauth::AuditEvent e;
 			e.timestamp_unix_s = now_s;
@@ -442,8 +447,6 @@ static void ValidateChunk(Vector &tokens, idx_t count, Vector &result, ClientCon
 	DuckdbHttpClient base_http;
 
 	std::unique_lock<std::mutex> guard(shared_state.mu);
-	const auto min_refresh_s = ReadIntSetting(context, "quack_oauth_jwks_min_refresh_s", 30);
-	shared_state.jwks_cache.SetMinRefreshSeconds(min_refresh_s);
 	UnlockingHttpClient unlocking_http(base_http, guard);
 	quack_oauth::RetryingHttpClient http(unlocking_http, /*max_retries=*/1, std::chrono::milliseconds(1000),
 	                                     [&](std::chrono::milliseconds delay) {
@@ -500,16 +503,16 @@ static void ValidateChunk(Vector &tokens, idx_t count, Vector &result, ClientCon
 			                  return r;
 		                  });
 	} else { // jwks
-		quack_oauth::ValidateContext vctx {http, shared_state.jwks_cache, cfg.jwks_uri, nullptr};
+		quack_oauth::ValidateContext vctx {http, shared_state.jwks_cache, cfg.jwks_uri};
 		RunValidationLoop(tokens, count, result, context, session_ids, opts.now_s, shared_state, guard,
 		                  [&](string &token_str) -> RowValidation {
 			                  RowValidation r;
-			                  vctx.on_refresh = [&](const std::string &kid, const std::string &reason,
-			                                        std::string_view) {
-				                  r.refresh_kid = kid;
-				                  r.refresh_reason = reason;
-			                  };
-			                  r.outcome = quack_oauth::ValidateToken(token_str, opts, vctx);
+			                  quack_oauth::RefreshEvent refresh_event;
+			                  r.outcome = quack_oauth::ValidateToken(token_str, opts, vctx, &refresh_event);
+			                  if (!refresh_event.reason.empty()) {
+				                  r.refresh_kid = std::move(refresh_event.kid);
+				                  r.refresh_reason = std::move(refresh_event.reason);
+			                  }
 			                  if (r.outcome == quack_oauth::VerifyResult::Ok) {
 				                  const auto parsed = quack_oauth::ParseJwt(token_str);
 				                  if (parsed.has_value()) {
