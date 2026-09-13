@@ -119,6 +119,10 @@ static std::optional<std::string> RsaPublicKeyToPem(const std::vector<unsigned c
 	if (!n_bn || !e_bn) {
 		return std::nullopt;
 	}
+	// Per RFC 7518 Section 3.3, RSA keys must be at least 2048 bits.
+	if (BN_num_bits(n_bn.get()) < 2048) {
+		return std::nullopt;
+	}
 
 	ParamBldPtr bld(OSSL_PARAM_BLD_new());
 	if (!bld || !OSSL_PARAM_BLD_push_BN(bld.get(), "n", n_bn.get()) ||

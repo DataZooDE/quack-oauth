@@ -510,3 +510,166 @@ TEST_CASE("Validator: introspection cache hit returns cached Principal", "[valid
 	REQUIRE(out.scopes.size() == 1);
 	CHECK(out.scopes[0] == "quack:read");
 }
+
+TEST_CASE("Validator: forged token during real rotation commits new key from IdP and does not starve recovery",
+          "[validator][rotation][starvation][security]") {
+	const auto &old_key = GetValidatorKey();
+	const auto rotated_key = GenerateValidatorKey(old_key.jwk.kid);
+	const auto attacker_key = GenerateValidatorKey("attacker-key");
+
+	JwksCache cache(30);
+	cache.OnFetchSuccess(old_key.jwk, 1699999900);
+
+	// IdP serves the new rotated key
+	FakeHttpClient http;
+	http.next_response = IHttpClient::Response {200, JwksWith(rotated_key.jwk)};
+	ValidateContext ctx {http, cache, "https://idp.test/jwks"};
+
+	// Attacker presents a forged token for old_key.jwk.kid at t=1700000000
+	TestKey forged_key {attacker_key.priv_pem, old_key.jwk};
+	const auto forged_token = Sign(forged_key, 1700003600, 1700000000);
+
+	// The forged token must fail verification (InvalidSignature)
+	CHECK(ValidateToken(forged_token, BaseOpts(1700000000), ctx) == VerifyResult::InvalidSignature);
+	CHECK(http.call_count == 1);
+
+	// Crucially, the fresh TLS-fetched key material for old_key.jwk.kid from the IdP MUST be committed!
+	// So a legitimate client presenting a token signed with rotated_key at t+1 (1700000001) must succeed!
+	const auto legit_token = Sign(rotated_key, 1700003600, 1700000001);
+	CHECK(ValidateToken(legit_token, BaseOpts(1700000001), ctx) == VerifyResult::Ok);
+	// No additional HTTP call needed because rotated_key was committed!
+	CHECK(http.call_count == 1);
+}
+
+TEST_CASE("Validator: candidates with use=enc or mismatched alg are ignored",
+          "[validator][candidates][filtering][security]") {
+	const auto &valid_key = GetValidatorKey();
+	JwksCache cache(30);
+
+	// JWKS has an 'enc' key with the same kid FIRST, then the 'sig' key
+	std::string jwks_body = std::string(R"({"keys":[)") + R"({"kid":")" + valid_key.jwk.kid +
+	                        R"(","kty":"RSA","use":"enc","alg":"RS256","n":")" + valid_key.jwk.n + R"(","e":")" +
+	                        valid_key.jwk.e + R"("},)" + R"({"kid":")" + valid_key.jwk.kid +
+	                        R"(","kty":"RSA","use":"sig","alg":"RS256","n":")" + valid_key.jwk.n + R"(","e":")" +
+	                        valid_key.jwk.e + R"("}]})";
+
+	FakeHttpClient http;
+	http.next_response = IHttpClient::Response {200, std::move(jwks_body)};
+	ValidateContext ctx {http, cache, "https://idp.test/jwks"};
+
+	const auto token = Sign(valid_key, 1700003600, 1700000000);
+	CHECK(ValidateToken(token, BaseOpts(), ctx) == VerifyResult::Ok);
+
+	// The cached key must have use="sig"
+	const auto lookup = cache.Lookup(valid_key.jwk.kid, 1700000000);
+	REQUIRE(lookup.status == JwksLookupStatus::Hit);
+	CHECK(lookup.jwk->use == "sig");
+}
+
+TEST_CASE("Validator: cached malformed key triggers refresh and recovers",
+          "[validator][rotation][malformed-recovery]") {
+	const auto &valid_key = GetValidatorKey();
+	JwksCache cache(30);
+
+	// Poison the cache with a malformed RSA key for valid_key.jwk.kid
+	Jwk malformed_jwk;
+	malformed_jwk.kid = valid_key.jwk.kid;
+	malformed_jwk.kty = "RSA";
+	malformed_jwk.n = "bad-garbage-rsa-modulus";
+	malformed_jwk.e = "AQAB";
+	cache.OnFetchSuccess(malformed_jwk, 1699999900);
+
+	FakeHttpClient http;
+	http.next_response = IHttpClient::Response {200, JwksWith(valid_key.jwk)};
+	ValidateContext ctx {http, cache, "https://idp.test/jwks"};
+
+	const auto token = Sign(valid_key, 1700003600, 1700000000);
+	// Verification must detect the unusable cached key, trigger a refresh, and succeed!
+	CHECK(ValidateToken(token, BaseOpts(1700000000), ctx) == VerifyResult::Ok);
+	CHECK(http.call_count == 1);
+	CHECK(cache.Lookup(valid_key.jwk.kid, 1700000000).jwk->n == valid_key.jwk.n);
+}
+
+TEST_CASE("Validator: cache miss when no candidate verifies does not cache unverified candidate",
+          "[validator][cache-miss][poisoning][security]") {
+	const auto &valid_key = GetValidatorKey();
+	JwksCache cache(30);
+
+	Jwk bad_key;
+	bad_key.kid = valid_key.jwk.kid;
+	bad_key.kty = "RSA";
+	bad_key.use = "sig";
+	bad_key.alg = "RS256";
+	bad_key.n = "bad-modulus";
+	bad_key.e = "AQAB";
+
+	FakeHttpClient http;
+	http.next_response = IHttpClient::Response {200, JwksWith(bad_key)};
+	ValidateContext ctx {http, cache, "https://idp.test/jwks"};
+
+	const auto token = Sign(valid_key, 1700003600, 1700000000);
+	CHECK(ValidateToken(token, BaseOpts(), ctx) == VerifyResult::InvalidSignature);
+
+	// The cache must NOT have cached bad_key as a Hit!
+	CHECK(cache.Lookup(valid_key.jwk.kid, 1700000000).status != JwksLookupStatus::Hit);
+}
+
+TEST_CASE("Validator: on_refresh callback receives kid, reason, and token on refresh events",
+          "[validator][audit][jwks-refresh]") {
+	const auto &initial_key = GetValidatorKey();
+	const auto rotated_key = GenerateValidatorKey(initial_key.jwk.kid);
+	JwksCache cache(30);
+	cache.OnFetchSuccess(initial_key.jwk, 1000);
+
+	struct RefreshCall {
+		std::string kid;
+		std::string reason;
+		std::string token;
+	};
+	std::vector<RefreshCall> calls;
+
+	FakeHttpClient http;
+	ValidateContext ctx {http, cache, "https://idp.test/jwks",
+	                     [&](const std::string &kid, const std::string &reason, std::string_view token) {
+		                     calls.push_back({kid, reason, std::string(token)});
+	                     }};
+
+	// 1. Success on rotated key
+	http.next_response = IHttpClient::Response {200, JwksWith(rotated_key.jwk)};
+	const auto token1 = Sign(rotated_key, 2000, 1030);
+	CHECK(ValidateToken(token1, BaseOpts(1030), ctx) == VerifyResult::Ok);
+	REQUIRE(calls.size() == 1);
+	CHECK(calls[0].kid == initial_key.jwk.kid);
+	CHECK(calls[0].reason == "rotated_key_refreshed");
+	CHECK(calls[0].token == token1);
+
+	// 2. Throttled within rate-limit window
+	calls.clear();
+	const auto token2 = Sign(initial_key, 2000, 1040); // old key fails against new key
+	CHECK(ValidateToken(token2, BaseOpts(1040), ctx) == VerifyResult::InvalidSignature);
+	REQUIRE(calls.size() == 1);
+	CHECK(calls[0].reason == "refresh_throttled");
+
+	// 3. Fetch failed (e.g. 500)
+	calls.clear();
+	http.next_response = IHttpClient::Response {500, "internal error"};
+	CHECK(ValidateToken(token2, BaseOpts(1080), ctx) == VerifyResult::InvalidSignature);
+	REQUIRE(calls.size() == 1);
+	CHECK(calls[0].reason == "refresh_fetch_failed");
+
+	// 4. Parse failed (e.g. invalid json)
+	calls.clear();
+	http.next_response = IHttpClient::Response {200, "not-json"};
+	CHECK(ValidateToken(token2, BaseOpts(1120), ctx) == VerifyResult::InvalidSignature);
+	REQUIRE(calls.size() == 1);
+	CHECK(calls[0].reason == "refresh_parse_failed");
+
+	// 5. Kid absent in fresh JWKS
+	calls.clear();
+	Jwk other_key = rotated_key.jwk;
+	other_key.kid = "some-other-kid";
+	http.next_response = IHttpClient::Response {200, JwksWith(other_key)};
+	CHECK(ValidateToken(token2, BaseOpts(1160), ctx) == VerifyResult::InvalidSignature);
+	REQUIRE(calls.size() == 1);
+	CHECK(calls[0].reason == "refresh_kid_absent");
+}

@@ -27,6 +27,9 @@ static void OnTelemetryKey(ClientContext &, SetScope, Value &parameter) {
 #endif
 
 static void OnJwksMinRefreshSeconds(ClientContext &, SetScope, Value &parameter) {
+	if (parameter.IsNull() || parameter.GetValue<int32_t>() < 1) {
+		throw InvalidInputException("quack_oauth_jwks_min_refresh_s must be >= 1 (got %s)", parameter.ToString());
+	}
 	auto &state = GetQuackOauthState();
 	std::lock_guard<std::mutex> guard(state.mu);
 	state.jwks_cache.SetMinRefreshSeconds(parameter.GetValue<int32_t>());

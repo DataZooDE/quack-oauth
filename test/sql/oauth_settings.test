@@ -60,3 +60,14 @@ query I
 SELECT current_setting('quack_oauth_jwks_min_refresh_s');
 ----
 120
+
+# SET rejects values < 1 (F6/F12)
+statement error
+SET quack_oauth_jwks_min_refresh_s = 0;
+----
+Invalid Input Error: quack_oauth_jwks_min_refresh_s must be >= 1 (got 0)
+
+statement error
+SET quack_oauth_jwks_min_refresh_s = -10;
+----
+Invalid Input Error: quack_oauth_jwks_min_refresh_s must be >= 1 (got -10)

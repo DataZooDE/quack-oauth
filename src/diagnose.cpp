@@ -81,11 +81,11 @@ static unique_ptr<FunctionData> DiagnoseBind(ClientContext &context, TableFuncti
 	// 2. JWKS cache
 	{
 		const auto entries = state.jwks_cache.Size();
-		const auto misses = state.jwks_cache.MissSize();
+		const auto unknown_kids = state.jwks_cache.MissSize();
 		std::ostringstream detail;
 		Append(detail, "entries", std::to_string(entries));
-		Append(detail, "misses", std::to_string(misses));
-		data->rows.push_back({"jwks_cache", entries == 0 ? "empty" : "warm", detail.str()});
+		Append(detail, "unknown_kids", std::to_string(unknown_kids));
+		data->rows.push_back({"jwks_cache", (entries == 0 && unknown_kids == 0) ? "empty" : "warm", detail.str()});
 	}
 
 	// 3. Decision cache

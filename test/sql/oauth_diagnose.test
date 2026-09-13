@@ -33,7 +33,7 @@ true
 
 # Cache rows must carry `entries=`; recent_decisions carries `count=`.
 query I
-SELECT detail LIKE 'entries=%' FROM quack_oauth_diagnose() WHERE component = 'jwks_cache';
+SELECT detail LIKE '%entries=%' AND detail LIKE '%unknown_kids=%' FROM quack_oauth_diagnose() WHERE component = 'jwks_cache';
 ----
 true
 

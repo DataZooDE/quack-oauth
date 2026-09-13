@@ -16,11 +16,14 @@ namespace quack_oauth {
 // own the cache or the HTTP client -- the caller passes references so the
 // same cache can be reused across many `ValidateToken` calls (the whole
 // point of caching).
+using RefreshAuditCallback =
+    std::function<void(const std::string &kid, const std::string &reason, std::string_view token)>;
+
 struct ValidateContext {
 	IHttpClient &http;
 	JwksCache &jwks_cache;
 	std::string jwks_uri;
-	std::function<void(const std::string &kid)> on_refresh = nullptr;
+	RefreshAuditCallback on_refresh = nullptr;
 };
 
 // Dependencies for the introspection path. Shape parallels ValidateContext

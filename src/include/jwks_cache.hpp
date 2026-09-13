@@ -1,5 +1,6 @@
 #pragma once
 
+#include <algorithm>
 #include <cstddef>
 #include <cstdint>
 #include <list>
@@ -48,7 +49,7 @@ struct JwksLookup {
 // Caches successful kid -> JWK lookups indefinitely (architecture section 6 IdP-outage
 // scenario -- hits keep serving) and rate-limits misses and hit-refresh attempts
 // to at most one fetch per `min_refresh_s` per kid (R-S-4: JWKS-poll DoS protection).
-// Values of min_refresh_s below 1 are clamped to 1.
+// Values of min_refresh_s are clamped to [1, 3600].
 //
 // Clock is caller-injected (`now_s` parameters) so the cache is fully
 // deterministic in tests.
@@ -72,12 +73,9 @@ public:
 	// Reserve one rate-limited refresh attempt for an already-cached kid.
 	// Returns a non-zero reservation ID if granted, or 0 if rate-limited.
 	// On clock rewinds or overlapping concurrent chunks with decreasing now_s
-	// (now_s < last_attempt), the stamp is updated and the call fails closed
-	// (returns 0) to preserve the rate limit bound.
+	// (now_s < last_attempt), the stamp preserves monotonicity via std::max
+	// and the call fails closed (returns 0) to preserve the rate limit bound.
 	std::uint64_t TryReserveRefresh(const std::string &kid, std::int64_t now_s);
-
-	// Backwards-compatible boolean wrapper for TryReserveRefresh(kid, now_s) != 0.
-	bool TryBeginHitRefresh(const std::string &kid, std::int64_t now_s);
 
 	// Commit a verified refreshed JWK for the reserved kid.
 	// Succeeds only if `reservation_id` matches the active reservation for `kid`,

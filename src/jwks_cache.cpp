@@ -1,13 +1,16 @@
 #include "jwks_cache.hpp"
 
+#include <algorithm>
+
 namespace quack_oauth {
 
 JwksCache::JwksCache(std::int64_t min_refresh_s, std::size_t max_entries)
-    : min_refresh_s_(min_refresh_s < 1 ? 1 : min_refresh_s), max_entries_(max_entries == 0 ? 1 : max_entries) {
+    : min_refresh_s_(std::clamp<std::int64_t>(min_refresh_s, 1, 3600)),
+      max_entries_(max_entries == 0 ? 1 : max_entries) {
 }
 
 void JwksCache::SetMinRefreshSeconds(std::int64_t min_refresh_s) {
-	min_refresh_s_ = min_refresh_s < 1 ? 1 : min_refresh_s;
+	min_refresh_s_ = std::clamp<std::int64_t>(min_refresh_s, 1, 3600);
 }
 
 JwksLookup JwksCache::Lookup(const std::string &kid, std::int64_t now_s) const {
@@ -60,17 +63,14 @@ void JwksCache::OnFetchSuccess(const Jwk &jwk, std::int64_t now_s) {
 }
 
 std::uint64_t JwksCache::TryReserveRefresh(const std::string &kid, std::int64_t now_s) {
-	if (min_refresh_s_ <= 0) {
-		return 0;
-	}
 	const auto hit = hits_.find(kid);
 	if (hit == hits_.end()) {
 		return 0;
 	}
 	if (now_s < hit->second.last_refresh_attempt_s) {
 		// Clock rewind or concurrent chunk with earlier now_s:
-		// Fail closed to prevent rate-limit bypass, and update the stamp to now_s.
-		hit->second.last_refresh_attempt_s = now_s;
+		// Fail closed to prevent rate-limit bypass, and preserve monotonicity via std::max.
+		hit->second.last_refresh_attempt_s = std::max(hit->second.last_refresh_attempt_s, now_s);
 		return 0;
 	}
 	const auto elapsed = now_s - hit->second.last_refresh_attempt_s;
@@ -81,10 +81,6 @@ std::uint64_t JwksCache::TryReserveRefresh(const std::string &kid, std::int64_t 
 	const auto res_id = next_reservation_id_++;
 	hit->second.current_reservation_id = res_id;
 	return res_id;
-}
-
-bool JwksCache::TryBeginHitRefresh(const std::string &kid, std::int64_t now_s) {
-	return TryReserveRefresh(kid, now_s) != 0;
 }
 
 bool JwksCache::CommitRefresh(const std::string &kid, std::uint64_t reservation_id, const Jwk &jwk,

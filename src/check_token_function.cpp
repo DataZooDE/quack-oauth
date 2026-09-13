@@ -410,8 +410,6 @@ static void ValidateChunk(Vector &tokens, idx_t count, Vector &result, ClientCon
 	DuckdbHttpClient base_http;
 
 	std::unique_lock<std::mutex> guard(shared_state.mu);
-	const auto min_refresh_s = ReadIntSetting(context, "quack_oauth_jwks_min_refresh_s", 30);
-	shared_state.jwks_cache.SetMinRefreshSeconds(min_refresh_s);
 	UnlockingHttpClient unlocking_http(base_http, guard);
 	quack_oauth::RetryingHttpClient http(unlocking_http, /*max_retries=*/1, std::chrono::milliseconds(1000),
 	                                     [&](std::chrono::milliseconds delay) {
@@ -468,14 +466,18 @@ static void ValidateChunk(Vector &tokens, idx_t count, Vector &result, ClientCon
 			                  return r;
 		                  });
 	} else { // jwks
-		quack_oauth::ValidateContext vctx {http, shared_state.jwks_cache, cfg.jwks_uri, [&](const std::string &kid) {
-			                                   quack_oauth::AuditEvent e;
-			                                   e.timestamp_unix_s = opts.now_s;
-			                                   e.event_type = quack_oauth::AuditEventType::JwksRefresh;
-			                                   e.kid = kid;
-			                                   e.reason = "rotated_key_refreshed";
-			                                   EmitAuditEvent(context, e);
-		                                   }};
+		struct PendingRefreshAudit {
+			std::string kid;
+			std::string reason;
+			std::string token_hash;
+		};
+		std::vector<PendingRefreshAudit> pending_refreshes;
+
+		quack_oauth::ValidateContext vctx {
+		    http, shared_state.jwks_cache, cfg.jwks_uri,
+		    [&](const std::string &kid, const std::string &reason, std::string_view token) {
+			    pending_refreshes.push_back({kid, reason, quack_oauth::RedactSensitive(token)});
+		    }};
 		RunValidationLoop(tokens, count, result, context, session_ids, opts.now_s, shared_state, guard,
 		                  [&](string &token_str) -> RowValidation {
 			                  RowValidation r;
@@ -489,6 +491,19 @@ static void ValidateChunk(Vector &tokens, idx_t count, Vector &result, ClientCon
 			                  }
 			                  return r;
 		                  });
+
+		// Emit any recorded JWKS refresh audit events AFTER RunValidationLoop returns
+		// and guard is unlocked, avoiding deadlock on shared_state.mu (F1).
+		guard.unlock();
+		for (const auto &pr : pending_refreshes) {
+			quack_oauth::AuditEvent e;
+			e.timestamp_unix_s = opts.now_s;
+			e.event_type = quack_oauth::AuditEventType::JwksRefresh;
+			e.kid = pr.kid;
+			e.reason = pr.reason;
+			e.token_hash = pr.token_hash;
+			EmitAuditEvent(context, e);
+		}
 	}
 }
 

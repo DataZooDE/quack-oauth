@@ -245,8 +245,8 @@ with a status and a `detail` string of `key=value` pairs:
 |-----------------------|---------------------------|------------------------|
 | `decision_cache`      | `empty` \| `warm`         | `entries=` |
 | `extension`           | `configured` \| `unconfigured` | `enabled= secret_name= validation_mode= provider=` |
-| `jwks_cache`          | `empty` \| `warm`         | `entries=` |
-| `recent_decisions`    | `empty` \| `active`       | `count=N/CAP accepted= rejected= allowed= denied=` |
+| `jwks_cache`          | `empty` \| `warm`         | `entries= unknown_kids=` |
+| `recent_decisions`    | `empty` \| `active`       | `count=N/CAP accepted= rejected= allowed= denied= refreshed=` |
 | `session_principals`  | `empty` \| `active`       | `sessions=` |
 
 ```sql
@@ -399,6 +399,14 @@ All settings are session-scoped (`SET` / `RESET`).
 | `quack_oauth_policy_default`         | VARCHAR | `'deny'`    | Default decision when no `policy_table` rule matches: `allow` or `deny` (R-S-7). |
 | `quack_oauth_trust_plaintext`        | BOOLEAN | `false`     | Allow enabling auth without a TLS terminator (R-N-4). Disabled by default. |
 | `quack_oauth_server_secret_name`     | VARCHAR | `''`        | Name of the `quack_oauth_server` SECRET that `check_token` reads from. |
+
+### Key rotation
+
+When identity providers (such as Microsoft Entra ID) rotate key material while reusing the same `kid`, cached keys will fail signature verification on new tokens. The extension automatically detects this and triggers a rate-limited background JWKS refresh to recover the new key without requiring process restart or cache invalidation.
+
+- **Recovery latency**: Bounded by `quack_oauth_jwks_min_refresh_s` (default 30 seconds). A valid token presenting rotated key material initiates a refresh; if the IdP serves new key material over TLS, it is committed to cache.
+- **Starvation & DoS resistance**: Fresh key material from the IdP is committed even if an individual token fails verification, preventing malicious or corrupted tokens from starving legitimate key rotation recovery.
+- **Troubleshooting**: If clients experience sudden bursts of `invalid_signature` errors during an IdP rotation, inspect `quack_oauth_audit_log()` for `jwks_refresh` events. If refresh events show `refresh_throttled` or `refresh_fetch_failed`, the extension is rate-limiting refreshes or the IdP JWKS endpoint is unreachable.
 
 ---
 
