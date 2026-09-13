@@ -92,7 +92,7 @@ quack_oauth_jwks_min_refresh_s must be at most 3600 (got 7200)
 statement error
 SET quack_oauth_jwks_min_refresh_s = 20;
 ----
-quack_oauth_jwks_min_refresh_s cannot be lowered below 30 (got 20); the floor is set at startup via QUACK_OAUTH_JWKS_MIN_REFRESH_S
+quack_oauth_jwks_min_refresh_s cannot be lowered below 30 (got 20); the floor is set at startup via QUACK_OAUTH_JWKS_MIN_REFRESH_S (restart with QUACK_OAUTH_JWKS_MIN_REFRESH_S=20 to lower it)
 
 statement ok
 RESET quack_oauth_jwks_min_refresh_s;

@@ -508,3 +508,24 @@ TEST_CASE("JwksCache: OnPassiveFetchSuccess is strictly additive and preserves a
 	CHECK(cache.CommitRefresh("k1", res, {k1, k2}, 150));
 	CHECK(cache.Lookup("k1", 155).keys.size() == 2);
 }
+
+TEST_CASE("JwksCache: passive re-ingest resets consecutive_absent_count preventing premature eviction",
+          "[jwks][cache][evict][absent-reset]") {
+	JwksCache cache(30);
+	const auto k1 = MakeRsaJwk("k1");
+	cache.OnFetchSuccess("k1", {k1}, 100);
+
+	// First absent observation: count becomes 1
+	auto res1 = cache.TryReserveRefresh("k1", 140);
+	REQUIRE(res1 > 0);
+	CHECK_FALSE(cache.RecordKidAbsent("k1", res1, 140));
+
+	// Passive ingest observes k1 in a 200 OK document: must reset absent count to 0
+	cache.OnPassiveFetchSuccess("k1", {k1}, 160);
+
+	// Later, another single absent observation: must NOT evict because count was reset to 0!
+	auto res2 = cache.TryReserveRefresh("k1", 200);
+	REQUIRE(res2 > 0);
+	CHECK_FALSE(cache.RecordKidAbsent("k1", res2, 200));
+	CHECK(cache.Lookup("k1", 205).status == JwksLookupStatus::Hit);
+}

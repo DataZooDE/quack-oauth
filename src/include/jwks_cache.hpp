@@ -126,9 +126,6 @@ public:
 	bool RecordKidAbsent(const std::string &kid, std::uint64_t reservation_id, std::int64_t now_s,
 	                     const std::string &jwks_uri = "");
 
-	// Direct reserved eviction (F2).
-	bool EvictReserved(const std::string &kid, std::uint64_t reservation_id, const std::string &jwks_uri = "");
-
 	// Caller fetched JWKS but the kid was absent. Starts the rate-limit
 	// timer for this kid.
 	void OnFetchMiss(const std::string &kid, std::int64_t now_s, const std::string &jwks_uri = "");

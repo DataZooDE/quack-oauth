@@ -52,8 +52,8 @@ static void OnJwksMinRefreshSeconds(ClientContext &, SetScope scope, Value &para
 	if (val < floor) {
 		throw InvalidInputException(
 		    "quack_oauth_jwks_min_refresh_s cannot be lowered below %d (got %d); the floor is set at startup via "
-		    "QUACK_OAUTH_JWKS_MIN_REFRESH_S",
-		    floor, val);
+		    "QUACK_OAUTH_JWKS_MIN_REFRESH_S (restart with QUACK_OAUTH_JWKS_MIN_REFRESH_S=%d to lower it)",
+		    floor, val, val);
 	}
 	auto &state = GetQuackOauthState();
 	std::lock_guard<std::mutex> guard(state.mu);

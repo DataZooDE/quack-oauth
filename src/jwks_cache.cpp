@@ -21,62 +21,17 @@ void JwksCache::TrimToCap(Entry &entry) {
 
 std::unordered_map<std::string, JwksCache::Entry>::iterator JwksCache::FindHit(const std::string &jwks_uri,
                                                                                const std::string &kid) {
-	const auto cache_key = CacheKey(jwks_uri, kid);
-	auto hit = hits_.find(cache_key);
-	if (hit != hits_.end()) {
-		return hit;
-	}
-	if (!jwks_uri.empty()) {
-		return hits_.find(kid);
-	}
-	for (auto it = hits_.begin(); it != hits_.end(); ++it) {
-		if (it->first == kid ||
-		    (it->first.size() > kid.size() && it->first[it->first.size() - kid.size() - 1] == '\n' &&
-		     it->first.compare(it->first.size() - kid.size(), kid.size(), kid) == 0)) {
-			return it;
-		}
-	}
-	return hits_.end();
+	return hits_.find(CacheKey(jwks_uri, kid));
 }
 
 std::unordered_map<std::string, JwksCache::Entry>::const_iterator JwksCache::FindHit(const std::string &jwks_uri,
                                                                                      const std::string &kid) const {
-	const auto cache_key = CacheKey(jwks_uri, kid);
-	auto hit = hits_.find(cache_key);
-	if (hit != hits_.end()) {
-		return hit;
-	}
-	if (!jwks_uri.empty()) {
-		return hits_.find(kid);
-	}
-	for (auto it = hits_.begin(); it != hits_.end(); ++it) {
-		if (it->first == kid ||
-		    (it->first.size() > kid.size() && it->first[it->first.size() - kid.size() - 1] == '\n' &&
-		     it->first.compare(it->first.size() - kid.size(), kid.size(), kid) == 0)) {
-			return it;
-		}
-	}
-	return hits_.end();
+	return hits_.find(CacheKey(jwks_uri, kid));
 }
 
 std::unordered_map<std::string, JwksCache::MissEntry>::const_iterator
 JwksCache::FindMiss(const std::string &jwks_uri, const std::string &kid) const {
-	const auto cache_key = CacheKey(jwks_uri, kid);
-	auto miss = misses_.find(cache_key);
-	if (miss != misses_.end()) {
-		return miss;
-	}
-	if (!jwks_uri.empty()) {
-		return misses_.find(kid);
-	}
-	for (auto it = misses_.begin(); it != misses_.end(); ++it) {
-		if (it->first == kid ||
-		    (it->first.size() > kid.size() && it->first[it->first.size() - kid.size() - 1] == '\n' &&
-		     it->first.compare(it->first.size() - kid.size(), kid.size(), kid) == 0)) {
-			return it;
-		}
-	}
-	return misses_.end();
+	return misses_.find(CacheKey(jwks_uri, kid));
 }
 
 JwksLookup JwksCache::Lookup(const std::string &kid, std::int64_t now_s, const std::string &jwks_uri) const {
@@ -190,6 +145,7 @@ void JwksCache::OnPassiveFetchSuccess(const std::string &kid, const std::vector<
 			}
 		}
 		TrimToCap(hit->second);
+		hit->second.consecutive_absent_count = 0;
 		return;
 	}
 	OnFetchSuccess(kid, keys, now_s, jwks_uri);
@@ -213,19 +169,6 @@ bool JwksCache::RecordKidAbsent(const std::string &kid, std::uint64_t reservatio
 		return true;
 	}
 	return false;
-}
-
-bool JwksCache::EvictReserved(const std::string &kid, std::uint64_t reservation_id, const std::string &jwks_uri) {
-	const auto hit = FindHit(jwks_uri, kid);
-	if (hit == hits_.end()) {
-		return false;
-	}
-	if (reservation_id != 0 && hit->second.current_reservation_id != reservation_id) {
-		return false;
-	}
-	hit_lru_.erase(hit->second.lru_it);
-	hits_.erase(hit);
-	return true;
 }
 
 bool JwksCache::CanFetchJwks(std::int64_t now_s) const {

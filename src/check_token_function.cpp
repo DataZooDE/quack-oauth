@@ -291,6 +291,20 @@ struct RowValidation {
 	quack_oauth::Principal principal;
 	std::string refresh_kid;
 	std::string refresh_reason;
+	quack_oauth::RefreshReason refresh_reason_enum = quack_oauth::RefreshReason::None;
+};
+
+struct ThrottledLogEvent {
+	std::string kid;
+	std::string reason;
+	std::string jwks_uri;
+
+	bool operator<(const ThrottledLogEvent &o) const {
+		return std::tie(kid, reason, jwks_uri) < std::tie(o.kid, o.reason, o.jwks_uri);
+	}
+	bool operator==(const ThrottledLogEvent &o) const {
+		return std::tie(kid, reason, jwks_uri) == std::tie(o.kid, o.reason, o.jwks_uri);
+	}
 };
 
 class UnlockingHttpClient : public quack_oauth::IHttpClient {
@@ -347,23 +361,25 @@ static void StoreSessionPrincipal(QuackOauthState &shared_state, const string &s
 }
 
 static void EmitAuditsAndScrub(ClientContext &context, string &token_str, const RowValidation &row, int64_t now_s,
-                               std::unique_lock<std::mutex> &guard,
-                               std::vector<std::pair<std::string, std::string>> &throttled_events) {
+                               std::unique_lock<std::mutex> &guard, const std::string &jwks_uri,
+                               std::vector<ThrottledLogEvent> &throttled_events) {
 	const bool ok = row.outcome == quack_oauth::VerifyResult::Ok;
 	guard.unlock();
 	EmitTokenAudit(context, token_str, row.outcome, now_s, (ok && row.have_principal) ? &row.principal : nullptr);
 	if (!row.refresh_kid.empty()) {
-		quack_oauth::AuditEvent e;
-		e.timestamp_unix_s = now_s;
-		e.event_type = quack_oauth::AuditEventType::JwksRefresh;
-		e.kid = row.refresh_kid;
-		e.reason = row.refresh_reason;
-		e.token_hash = quack_oauth::RedactSensitive(token_str);
-		EmitAuditEvent(context, e);
+		if (row.refresh_reason_enum == quack_oauth::RefreshReason::Throttled ||
+		    row.refresh_reason_enum == quack_oauth::RefreshReason::BudgetThrottled) {
+			throttled_events.push_back({row.refresh_kid, row.refresh_reason, jwks_uri});
+		}
 
-		if (row.refresh_reason == quack_oauth::kReasonRefreshThrottled ||
-		    row.refresh_reason == quack_oauth::kReasonRefreshBudgetThrottled) {
-			throttled_events.emplace_back(row.refresh_kid, row.refresh_reason);
+		if (quack_oauth::ShouldAudit(row.refresh_reason_enum)) {
+			quack_oauth::AuditEvent e;
+			e.timestamp_unix_s = now_s;
+			e.event_type = quack_oauth::AuditEventType::JwksRefresh;
+			e.kid = row.refresh_kid;
+			e.reason = row.refresh_reason;
+			e.token_hash = quack_oauth::RedactSensitive(token_str);
+			EmitAuditEvent(context, e);
 		}
 	}
 	guard.lock();
@@ -377,8 +393,8 @@ static void EmitAuditsAndScrub(ClientContext &context, string &token_str, const 
 template <class Fn>
 static void RunValidationLoop(Vector &tokens, idx_t count, Vector &result, ClientContext &context, Vector *session_ids,
                               int64_t now_s, QuackOauthState &shared_state, std::unique_lock<std::mutex> &guard,
-                              Fn &&validate_row) {
-	std::vector<std::pair<std::string, std::string>> throttled_events;
+                              const std::string &jwks_uri, Fn &&validate_row) {
+	std::vector<ThrottledLogEvent> throttled_events;
 	if (session_ids != nullptr) {
 		UnifiedVectorFormat tok_format;
 		UnifiedVectorFormat sid_format;
@@ -403,14 +419,14 @@ static void RunValidationLoop(Vector &tokens, idx_t count, Vector &result, Clien
 			if (ok && row.have_principal && !sid_str.empty()) {
 				StoreSessionPrincipal(shared_state, sid_str, row.principal, now_s);
 			}
-			EmitAuditsAndScrub(context, token_str, row, now_s, guard, throttled_events);
+			EmitAuditsAndScrub(context, token_str, row, now_s, guard, jwks_uri, throttled_events);
 		}
 	} else {
 		UnaryExecutor::Execute<string_t, bool>(tokens, result, count, [&](string_t token) {
 			auto token_str = token.GetString();
 			const auto row = validate_row(token_str);
 			const bool ok = row.outcome == quack_oauth::VerifyResult::Ok;
-			EmitAuditsAndScrub(context, token_str, row, now_s, guard, throttled_events);
+			EmitAuditsAndScrub(context, token_str, row, now_s, guard, jwks_uri, throttled_events);
 			return ok;
 		});
 	}
@@ -419,7 +435,7 @@ static void RunValidationLoop(Vector &tokens, idx_t count, Vector &result, Clien
 		std::sort(throttled_events.begin(), throttled_events.end());
 		throttled_events.erase(std::unique(throttled_events.begin(), throttled_events.end()), throttled_events.end());
 		for (const auto &item : throttled_events) {
-			const string dedup_key = item.first + ":" + item.second;
+			const string dedup_key = item.kid + ":" + item.reason + ":" + item.jwks_uri;
 			auto it = shared_state.last_throttle_logged_s.find(dedup_key);
 			if (it != shared_state.last_throttle_logged_s.end() && (now_s - it->second < 30)) {
 				continue;
@@ -427,7 +443,7 @@ static void RunValidationLoop(Vector &tokens, idx_t count, Vector &result, Clien
 			shared_state.last_throttle_logged_s[dedup_key] = now_s;
 
 			std::string safe_kid;
-			for (char c : item.first) {
+			for (char c : item.kid) {
 				if (static_cast<unsigned char>(c) >= 32 && static_cast<unsigned char>(c) < 127 && c != '"' &&
 				    c != '\\') {
 					safe_kid.push_back(c);
@@ -436,23 +452,27 @@ static void RunValidationLoop(Vector &tokens, idx_t count, Vector &result, Clien
 			if (safe_kid.size() > 256) {
 				safe_kid.resize(256);
 			}
-			if (item.second == quack_oauth::kReasonRefreshThrottled) {
+			const std::string uri_suffix = item.jwks_uri.empty() ? "" : (" jwks_uri='" + item.jwks_uri + "'");
+			if (item.reason == quack_oauth::kReasonRefreshThrottled) {
 				DUCKDB_LOG_WARNING(context, "quack_oauth: JWKS refresh rate-limited by min_refresh_s for kid='" +
-				                                safe_kid + "'");
+				                                safe_kid + "'" + uri_suffix);
 			} else {
 				DUCKDB_LOG_WARNING(context,
 				                   "quack_oauth: JWKS refresh throttled by global fetch budget (2s window) for kid='" +
-				                       safe_kid + "'");
+				                       safe_kid + "'" + uri_suffix);
 			}
 		}
 		if (shared_state.last_throttle_logged_s.size() > 1000) {
 			for (auto it = shared_state.last_throttle_logged_s.begin();
 			     it != shared_state.last_throttle_logged_s.end();) {
-				if (now_s - it->second > 60) {
+				if (now_s - it->second > 30) {
 					it = shared_state.last_throttle_logged_s.erase(it);
 				} else {
 					++it;
 				}
+			}
+			if (shared_state.last_throttle_logged_s.size() > 1000) {
+				shared_state.last_throttle_logged_s.clear();
 			}
 		}
 	}
@@ -499,7 +519,7 @@ static void ValidateChunk(Vector &tokens, idx_t count, Vector &result, ClientCon
 		    cfg.issuer,
 		    cfg.audience,
 		};
-		RunValidationLoop(tokens, count, result, context, session_ids, opts.now_s, shared_state, guard,
+		RunValidationLoop(tokens, count, result, context, session_ids, opts.now_s, shared_state, guard, "",
 		                  [&](string &token_str) -> RowValidation {
 			                  RowValidation r;
 			                  r.outcome =
@@ -514,7 +534,7 @@ static void ValidateChunk(Vector &tokens, idx_t count, Vector &result, ClientCon
 		    cfg.introspection_endpoint,
 		    cfg.audience,
 		};
-		RunValidationLoop(tokens, count, result, context, session_ids, opts.now_s, shared_state, guard,
+		RunValidationLoop(tokens, count, result, context, session_ids, opts.now_s, shared_state, guard, "",
 		                  [&](string &token_str) -> RowValidation {
 			                  RowValidation r;
 			                  r.outcome = quack_oauth::ValidateTokenViaTokeninfo(token_str, opts, tctx, &r.principal);
@@ -529,7 +549,7 @@ static void ValidateChunk(Vector &tokens, idx_t count, Vector &result, ClientCon
 		    cfg.introspect_client_id,
 		    cfg.introspect_client_secret,
 		};
-		RunValidationLoop(tokens, count, result, context, session_ids, opts.now_s, shared_state, guard,
+		RunValidationLoop(tokens, count, result, context, session_ids, opts.now_s, shared_state, guard, "",
 		                  [&](string &token_str) -> RowValidation {
 			                  RowValidation r;
 			                  r.outcome = quack_oauth::ValidateTokenViaGithubCheck(token_str, opts, gctx, &r.principal);
@@ -538,7 +558,7 @@ static void ValidateChunk(Vector &tokens, idx_t count, Vector &result, ClientCon
 		                  });
 	} else { // jwks
 		quack_oauth::ValidateContext vctx {http, shared_state.jwks_cache, cfg.jwks_uri};
-		RunValidationLoop(tokens, count, result, context, session_ids, opts.now_s, shared_state, guard,
+		RunValidationLoop(tokens, count, result, context, session_ids, opts.now_s, shared_state, guard, cfg.jwks_uri,
 		                  [&](string &token_str) -> RowValidation {
 			                  RowValidation r;
 			                  quack_oauth::RefreshEvent refresh_event;
@@ -546,6 +566,7 @@ static void ValidateChunk(Vector &tokens, idx_t count, Vector &result, ClientCon
 			                  if (!refresh_event.reason.empty()) {
 				                  r.refresh_kid = std::move(refresh_event.kid);
 				                  r.refresh_reason = std::move(refresh_event.reason);
+				                  r.refresh_reason_enum = refresh_event.reason_enum;
 			                  }
 			                  if (r.outcome == quack_oauth::VerifyResult::Ok) {
 				                  const auto parsed = quack_oauth::ParseJwt(token_str);

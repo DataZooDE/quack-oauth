@@ -18,6 +18,7 @@ inline constexpr const char *kReasonRefreshBudgetThrottled = "refresh_budget_thr
 inline constexpr const char *kReasonRefreshFetchFailed = "refresh_fetch_failed";
 inline constexpr const char *kReasonRefreshParseFailed = "refresh_parse_failed";
 inline constexpr const char *kReasonRefreshKidAbsent = "refresh_kid_absent";
+inline constexpr const char *kReasonRefreshKidEvicted = "refresh_kid_evicted";
 inline constexpr const char *kReasonRefreshRevoked = "refresh_revoked";
 inline constexpr const char *kReasonRefreshSuperseded = "refresh_superseded";
 
@@ -30,6 +31,7 @@ enum class RefreshReason {
 	FetchFailed,
 	ParseFailed,
 	KidAbsent,
+	KidEvicted,
 	Revoked,
 	Superseded,
 };
@@ -50,6 +52,8 @@ inline const char *ToString(RefreshReason r) noexcept {
 		return kReasonRefreshParseFailed;
 	case RefreshReason::KidAbsent:
 		return kReasonRefreshKidAbsent;
+	case RefreshReason::KidEvicted:
+		return kReasonRefreshKidEvicted;
 	case RefreshReason::Revoked:
 		return kReasonRefreshRevoked;
 	case RefreshReason::Superseded:
@@ -67,6 +71,7 @@ inline bool ShouldAudit(RefreshReason r) noexcept {
 	case RefreshReason::FetchFailed:
 	case RefreshReason::ParseFailed:
 	case RefreshReason::KidAbsent:
+	case RefreshReason::KidEvicted:
 	case RefreshReason::Revoked:
 	case RefreshReason::Superseded:
 		return true;

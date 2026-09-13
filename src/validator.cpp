@@ -242,10 +242,10 @@ static void CommitTargetKid(const std::string &kid, std::uint64_t reservation_id
                             std::optional<VerifyResult> &out_verified) {
 	const auto cand_it = keys_by_kid.find(kid);
 	if (cand_it == keys_by_kid.end()) {
-		ctx.jwks_cache.RecordKidAbsent(kid, reservation_id, opts.now_s, ctx.jwks_uri);
+		const bool evicted = ctx.jwks_cache.RecordKidAbsent(kid, reservation_id, opts.now_s, ctx.jwks_uri);
 		if (out_refresh) {
 			out_refresh->kid = kid;
-			out_refresh->SetReason(RefreshReason::KidAbsent);
+			out_refresh->SetReason(evicted ? RefreshReason::KidEvicted : RefreshReason::KidAbsent);
 		}
 		return;
 	}
@@ -262,18 +262,23 @@ static void CommitTargetKid(const std::string &kid, std::uint64_t reservation_id
 	if (candidates.size() > 1) {
 		for (std::size_t i = 0; i < candidates.size(); ++i) {
 			std::vector<Jwk> single = {candidates[i]};
-			if (SelectAndVerify(token, token_alg, single, opts) == VerifyResult::Ok) {
+			const auto res = SelectAndVerify(token, token_alg, single, opts);
+			if (res.has_value() && SignatureMatchesCandidate(*res)) {
 				if (i > 0) {
 					std::swap(candidates[0], candidates[i]);
 				}
-				out_verified = VerifyResult::Ok;
+				out_verified = res;
 				break;
 			}
 		}
 	}
 
 	const auto live_lookup = ctx.jwks_cache.Lookup(kid, opts.now_s, ctx.jwks_uri);
-	CommitAndAudit(kid, reservation_id, candidates, live_lookup.keys, opts.now_s, ctx, out_refresh);
+	const bool committed =
+	    CommitAndAudit(kid, reservation_id, candidates, live_lookup.keys, opts.now_s, ctx, out_refresh);
+	if (!committed) {
+		out_verified.reset();
+	}
 }
 
 static std::optional<VerifyResult> ReverifyAfterCommit(std::string_view token, const std::string &kid,
@@ -285,7 +290,11 @@ static std::optional<VerifyResult> ReverifyAfterCommit(std::string_view token, c
 	}
 	const auto recheck = ctx.jwks_cache.Lookup(kid, opts.now_s, ctx.jwks_uri);
 	if (recheck.status == JwksLookupStatus::Hit && !recheck.keys.empty()) {
-		const auto verified_result = SelectAndVerify(token, token_alg, recheck.keys, opts);
+		const auto matching = MatchingKeys(recheck.keys, token_alg);
+		if (matching.empty()) {
+			return VerifyResult::NoMatchingKey;
+		}
+		const auto verified_result = SelectAndVerify(token, token_alg, matching, opts);
 		if (verified_result.has_value()) {
 			return *verified_result;
 		}
@@ -296,35 +305,39 @@ static std::optional<VerifyResult> ReverifyAfterCommit(std::string_view token, c
 static std::optional<VerifyResult> TryRefreshRotatedKid(std::string_view token, const std::string &kid,
                                                         const std::string &token_alg, const VerifyOptions &opts,
                                                         ValidateContext &ctx, RefreshEvent *out_refresh) {
+	RefreshEvent local_refresh;
+	RefreshEvent *effective_refresh = out_refresh ? out_refresh : &local_refresh;
+
 	if (!ctx.jwks_cache.CanFetchJwks(opts.now_s)) {
 		ctx.jwks_cache.IncrementThrottledRefreshes(/*is_budget=*/true, opts.now_s);
-		if (out_refresh) {
-			out_refresh->kid = kid;
-			out_refresh->SetReason(RefreshReason::BudgetThrottled);
-		}
+		effective_refresh->kid = kid;
+		effective_refresh->SetReason(RefreshReason::BudgetThrottled);
+		ctx.jwks_cache.SetLastRefreshReason(ToString(RefreshReason::BudgetThrottled));
 		return std::nullopt;
 	}
 
 	const auto reservation_id = ctx.jwks_cache.TryReserveRefresh(kid, opts.now_s, ctx.jwks_uri);
 	if (reservation_id == 0) {
 		ctx.jwks_cache.IncrementThrottledRefreshes(/*is_budget=*/false, opts.now_s);
-		if (out_refresh) {
-			out_refresh->kid = kid;
-			out_refresh->SetReason(RefreshReason::Throttled);
-		}
+		effective_refresh->kid = kid;
+		effective_refresh->SetReason(RefreshReason::Throttled);
+		ctx.jwks_cache.SetLastRefreshReason(ToString(RefreshReason::Throttled));
 		return std::nullopt;
 	}
 
-	const auto keys = FetchAndParseJwks(kid, opts, ctx, out_refresh);
+	const auto keys = FetchAndParseJwks(kid, opts, ctx, effective_refresh);
 	if (!keys.has_value()) {
+		ctx.jwks_cache.SetLastRefreshReason(ToString(effective_refresh->reason_enum));
 		return std::nullopt;
 	}
 
 	const auto keys_by_kid = GroupSigningKeysByKid(*keys);
 	std::optional<VerifyResult> verified_candidate;
-	CommitTargetKid(kid, reservation_id, token, token_alg, keys_by_kid, opts, ctx, out_refresh, verified_candidate);
+	CommitTargetKid(kid, reservation_id, token, token_alg, keys_by_kid, opts, ctx, effective_refresh,
+	                verified_candidate);
 	IngestSiblingKeys(keys_by_kid, kid, opts.now_s, ctx);
 
+	ctx.jwks_cache.SetLastRefreshReason(ToString(effective_refresh->reason_enum));
 	return ReverifyAfterCommit(token, kid, token_alg, opts, ctx, verified_candidate);
 }
 
@@ -346,17 +359,21 @@ VerifyResult ValidateToken(std::string_view token, const VerifyOptions &opts, Va
 	const auto first_lookup = ctx.jwks_cache.Lookup(parsed->kid, opts.now_s, ctx.jwks_uri);
 	if (first_lookup.status == JwksLookupStatus::Hit) {
 		const auto matching = MatchingKeys(first_lookup.keys, parsed->alg);
-		if (matching.empty()) {
-			return VerifyResult::NoMatchingKey;
-		}
-		const auto cached_result = VerifyWithCachedKeys(token, matching, opts);
-		if (!IsCachedKeyUnusable(cached_result)) {
+		if (!matching.empty()) {
+			const auto cached_result = VerifyWithCachedKeys(token, matching, opts);
+			if (!IsCachedKeyUnusable(cached_result)) {
+				return cached_result;
+			}
+			if (const auto refreshed = TryRefreshRotatedKid(token, parsed->kid, parsed->alg, opts, ctx, out_refresh)) {
+				return *refreshed;
+			}
 			return cached_result;
 		}
+		// matching is empty: cached key has different alg or use. Attempt rate-limited refresh.
 		if (const auto refreshed = TryRefreshRotatedKid(token, parsed->kid, parsed->alg, opts, ctx, out_refresh)) {
 			return *refreshed;
 		}
-		return cached_result;
+		return VerifyResult::NoMatchingKey;
 	}
 	if (first_lookup.status == JwksLookupStatus::RateLimited) {
 		ctx.jwks_cache.IncrementThrottledRefreshes(/*is_budget=*/false, opts.now_s);
@@ -409,7 +426,11 @@ VerifyResult ValidateToken(std::string_view token, const VerifyOptions &opts, Va
 			bool saw_rsa_too_small = false;
 			for (const auto &k : cand_it->second) {
 				if (k.kty == "RSA") {
-					saw_rsa_too_small = true;
+					bool sub_2048 = false;
+					JwkRsaToPem(k, sub_2048);
+					if (sub_2048) {
+						saw_rsa_too_small = true;
+					}
 				}
 			}
 			return saw_rsa_too_small ? VerifyResult::UnsupportedKeyType : VerifyResult::UnusableKey;

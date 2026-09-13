@@ -100,8 +100,8 @@ static unique_ptr<FunctionData> DiagnoseBind(ClientContext &context, TableFuncti
 		Append(detail, "unknown_kids", std::to_string(unknown_kids));
 		Append(detail, "min_refresh_s", std::to_string(state.jwks_cache.GetMinRefreshSeconds()));
 		Append(detail, "throttled", std::to_string(state.jwks_cache.GetThrottledRefreshesCount()));
-		Append(detail, "throttled_per_kid", std::to_string(state.jwks_cache.GetThrottledPerKidCount()));
-		Append(detail, "throttled_budget", std::to_string(state.jwks_cache.GetThrottledBudgetCount()));
+		Append(detail, "budget_throttled", std::to_string(state.jwks_cache.GetThrottledBudgetCount()));
+		Append(detail, "kid_throttled", std::to_string(state.jwks_cache.GetThrottledPerKidCount()));
 		const auto last_reason = state.jwks_cache.GetLastRefreshReason();
 		if (!last_reason.empty()) {
 			Append(detail, "last_refresh_reason", last_reason);
@@ -224,12 +224,14 @@ static unique_ptr<FunctionData> DiagnoseBind(ClientContext &context, TableFuncti
 				break;
 			case quack_oauth::AuditEventType::JwksRefresh:
 				if (e.reason == quack_oauth::kReasonRefreshRotated || e.reason == quack_oauth::kReasonRefreshRevoked ||
-				    e.reason == quack_oauth::kReasonRefreshKidAbsent) {
+				    e.reason == quack_oauth::kReasonRefreshKidAbsent ||
+				    e.reason == quack_oauth::kReasonRefreshKidEvicted) {
 					++refreshes;
 				} else if (e.reason == quack_oauth::kReasonRefreshNoRotation ||
 				           e.reason == quack_oauth::kReasonRefreshSuperseded) {
 					++refresh_noops;
-				} else {
+				} else if (e.reason != quack_oauth::kReasonRefreshThrottled &&
+				           e.reason != quack_oauth::kReasonRefreshBudgetThrottled) {
 					++refresh_failures;
 				}
 				break;

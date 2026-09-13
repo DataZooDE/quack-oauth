@@ -253,7 +253,7 @@ with a status and a `detail` string of `key=value` pairs:
 | `decision_cache`      | `empty` \| `warm`         | `entries=` |
 | `extension`           | `configured` \| `unconfigured` | `enabled= secret_name= validation_mode= provider=` |
 | `idp_reachability`    | `reachable` \| `unreachable` \| `unconfigured` \| `unavailable_on_wasm` | `uri= http_status=` (on wasm: `uri= reason=wasm_host_owns_network`) |
-| `jwks_cache`          | `empty` \| `warm` \| `misses_only` | `entries= unknown_kids= min_refresh_s= throttled=` |
+| `jwks_cache`          | `empty` \| `warm` \| `misses_only` | `entries= unknown_kids= min_refresh_s= throttled= budget_throttled= kid_throttled=` |
 | `recent_decisions`    | `empty` \| `active`       | `count=N/CAP accepted= rejected= allowed= denied= refreshed= refresh_noop= refresh_failed=` |
 | `session_principals`  | `empty` \| `active`       | `sessions=` |
 
@@ -298,6 +298,7 @@ the first 8 hex characters of its SHA-256.
 | `token_rejected` | `unsupported_key_type` | Key type or size unsupported (e.g. sub-2048-bit RSA). |
 | `token_rejected` | `unusable_key` | Key contents unparseable or curve unrecognised (e.g. malformed base64url or missing parameters). |
 | `token_rejected` | `unknown_kid` | Token `kid` was not found in the IdP's JWKS document. |
+| `token_rejected` | `no_matching_key` | Token algorithm or use did not match any active key for the `kid` in the JWKS document. |
 | `token_rejected` | `jwks_fetch_failed` | Outbound HTTP request to JWKS or introspection endpoint failed. |
 | `token_rejected` | `jwks_throttled` | Transient rejection: outbound JWKS fetch rate-limited by global budget window (2s) on cold miss. Callers should retry after the 2-second window. |
 | `jwks_refresh` | `refresh_rotated` | IdP rotated key material under the same `kid`; fresh keys successfully ingested. |
@@ -305,7 +306,8 @@ the first 8 hex characters of its SHA-256.
 | `jwks_refresh` | `refresh_no_rotation` | JWKS re-fetched following verification failure, but contains no new key material. |
 | `jwks_refresh` | `refresh_fetch_failed` | Outbound JWKS HTTP GET failed or returned non-200. |
 | `jwks_refresh` | `refresh_parse_failed` | Outbound JWKS response was not valid JSON or contained no keys. |
-| `jwks_refresh` | `refresh_kid_absent` | Fresh JWKS document did not contain the requested `kid`; cached key authoritatively evicted. |
+| `jwks_refresh` | `refresh_kid_absent` | Fresh JWKS document did not contain the requested `kid` (first observation; cached key retained pending corroboration). |
+| `jwks_refresh` | `refresh_kid_evicted` | Consecutive fresh JWKS documents confirmed `kid` absence; cached key authoritatively evicted (F2 corroboration). |
 | `jwks_refresh` | `refresh_superseded` | Refresh discarded because a concurrent reservation committed first. |
 | `authz_allow` | `rule allow` | Explicit allow rule matched in `policy_table`. |
 | `authz_allow` | `default allow` | No rule matched; fallback to `quack_oauth_policy_default='allow'`. |
@@ -447,7 +449,7 @@ When identity providers (such as Microsoft Entra ID) rotate key material while r
 
 - **Multi-key cache entry**: On a successful 200 OK JWKS fetch, cached keys for the target `kid` are synchronized with the keys currently published in the document, capped at 4 keys per `kid`. If a fetch fails or times out, all existing cached keys are preserved.
 - **Corroborated key eviction**: To protect against transient network glitches or partial IdP responses evicting valid keys, key absence from a 200 OK response must be observed across **2 consecutive distinct refreshes** before the cached key is evicted. Existing keys continue to verify until absence is corroborated.
-- **Multi-tenant partitioning**: JWKS documents and cached keys are strictly partitioned by `jwks_uri`. Refreshing keys for Tenant A cannot mutate, invalidate, or starve the refresh window for Tenant B.
+- **Multi-tenant partitioning**: JWKS documents, cached keys, and per-kid cooldowns are strictly partitioned by `(jwks_uri, kid)` composite keys. Refreshing or evicting keys for Tenant A cannot mutate, invalidate, leak across, or starve the per-kid refresh window for Tenant B. (The 2-second outbound fetch budget window operates as a process-global protection to prevent network storms).
 - **Request-path latency**: Refreshes happen synchronously on the request thread encountering an unusable key signature failure against currently-cached keys, bounded by `quack_oauth_jwks_min_refresh_s` (default 30 seconds) per `kid` and a process-global fetch rate limit (2 seconds).
 - **Starvation & DoS resistance**: Fresh key material fetched from the IdP over TLS is committed to the cache even if the triggering token fails verification, preventing forged or corrupted tokens from starving legitimate key rotation recovery. Cold misses during a fresh document window (<2s) reject immediately as `unknown_kid` without burning the global fetch slot. Repeated requests with already-known keys emit `refresh_no_rotation` and do not re-fetch.
 - **Troubleshooting**: If clients experience bursts of `invalid_signature` or `jwks_throttled` errors during an IdP rotation, inspect `quack_oauth_audit_log()` for `jwks_refresh` events and `quack_oauth_diagnose()` for granular throttle counters (`throttled=N`, `budget_throttled=N`, `kid_throttled=N`) on `jwks_cache`. Refresh rate-limiting is logged to the DuckDB logger as `quack_oauth: JWKS refresh rate-limited by min_refresh_s for kid='...'` or `quack_oauth: JWKS refresh throttled by global fetch budget (2s window) for kid='...'` (viewable via `SET enable_logging = true; SELECT * FROM duckdb_logs WHERE message LIKE 'quack_oauth:%';`); network failures appear as `refresh_fetch_failed`.
