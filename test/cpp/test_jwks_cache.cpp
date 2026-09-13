@@ -101,9 +101,9 @@ TEST_CASE("JwksCache: Size() reflects only successful fetches", "[jwks][cache]")
 	CHECK(cache.Size() == 1);
 }
 
-TEST_CASE("JwksCache: re-fetching the same kid overwrites the cached JWK", "[jwks][cache]") {
-	// Models IdP key rotation that reuses a kid (rare but legal): the latest
-	// JWK MUST replace the previous one.
+TEST_CASE("JwksCache: re-fetching the same kid preserves both JWKs in multi-key entry", "[jwks][cache]") {
+	// Under multi-key cache entries, re-fetching rotated key material with the same kid
+	// is additive: it preserves both keys so tokens signed by either key can verify (F1).
 	JwksCache cache(kRefresh);
 
 	Jwk first = MakeRsaJwk("k1");
@@ -117,7 +117,9 @@ TEST_CASE("JwksCache: re-fetching the same kid overwrites the cached JWK", "[jwk
 	const auto r = cache.Lookup("k1", 200);
 	REQUIRE(r.status == JwksLookupStatus::Hit);
 	REQUIRE(r.jwk.has_value());
-	CHECK(r.jwk->n == "rotated-modulus");
+	REQUIRE(r.keys.size() == 2);
+	CHECK(r.keys[0].n == "first-modulus");
+	CHECK(r.keys[1].n == "rotated-modulus");
 	CHECK(cache.Size() == 1);
 }
 
@@ -279,4 +281,62 @@ TEST_CASE("JwksCache: SetMinRefreshSeconds updates window and clamps to [1, 3600
 	cache.SetMinRefreshSeconds(5000);
 	CHECK(cache.TryReserveRefresh("k1", 3700) == 0);
 	CHECK(cache.TryReserveRefresh("k1", 3711) != 0);
+}
+
+TEST_CASE("JwksCache: multi-key entry preserves multiple keys under same kid", "[jwks][cache][multi-key]") {
+	JwksCache cache(kRefresh);
+	auto k1_a = MakeRsaJwk("k1");
+	k1_a.n = "modulus-a";
+	auto k1_b = MakeRsaJwk("k1");
+	k1_b.n = "modulus-b";
+
+	cache.OnFetchSuccess(k1_a, 100);
+	cache.OnFetchSuccess(k1_b, 100);
+
+	const auto r = cache.Lookup("k1", 200);
+	REQUIRE(r.status == JwksLookupStatus::Hit);
+	REQUIRE(r.keys.size() == 2);
+	CHECK(r.keys[0].n == "modulus-a");
+	CHECK(r.keys[1].n == "modulus-b");
+	CHECK(cache.Size() == 1);
+}
+
+TEST_CASE("JwksCache: duplicate identical key material does not duplicate or invalidate reservation",
+          "[jwks][cache][multi-key]") {
+	JwksCache cache(kRefresh);
+	auto k1 = MakeRsaJwk("k1");
+	cache.OnFetchSuccess(k1, 100);
+
+	const auto res = cache.TryReserveRefresh("k1", 200);
+	REQUIRE(res != 0);
+
+	// Ingesting the identical key material again (e.g., from sibling ingest or repeated fetch)
+	// should not duplicate the key, nor should it invalidate the active reservation ID.
+	cache.OnFetchSuccess(k1, 201);
+
+	const auto r = cache.Lookup("k1", 202);
+	REQUIRE(r.keys.size() == 1);
+
+	// Reservation must still be valid!
+	auto k1_new = MakeRsaJwk("k1");
+	k1_new.n = "modulus-new";
+	CHECK(cache.CommitRefresh("k1", res, k1_new, 203));
+
+	const auto r2 = cache.Lookup("k1", 204);
+	REQUIRE(r2.keys.size() == 2);
+	CHECK(r2.keys[0].n == k1.n);
+	CHECK(r2.keys[1].n == "modulus-new");
+}
+
+TEST_CASE("JwksCache: global fetch budget rate-limits fetches across unknown kids", "[jwks][cache][budget]") {
+	JwksCache cache(30);
+	CHECK(cache.CanFetchJwks(100));
+
+	cache.RecordJwksFetch(100);
+	// Within 30s window, Cannot fetch again
+	CHECK_FALSE(cache.CanFetchJwks(110));
+	CHECK_FALSE(cache.CanFetchJwks(129));
+
+	// At or past 30s window, can fetch again
+	CHECK(cache.CanFetchJwks(130));
 }

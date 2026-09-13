@@ -27,8 +27,9 @@ static void OnTelemetryKey(ClientContext &, SetScope, Value &parameter) {
 #endif
 
 static void OnJwksMinRefreshSeconds(ClientContext &, SetScope, Value &parameter) {
-	if (parameter.IsNull() || parameter.GetValue<int32_t>() < 1) {
-		throw InvalidInputException("quack_oauth_jwks_min_refresh_s must be >= 1 (got %s)", parameter.ToString());
+	if (parameter.IsNull() || parameter.GetValue<int32_t>() < 1 || parameter.GetValue<int32_t>() > 3600) {
+		throw InvalidInputException("quack_oauth_jwks_min_refresh_s must be between 1 and 3600 (got %s)",
+		                            parameter.ToString());
 	}
 	auto &state = GetQuackOauthState();
 	std::lock_guard<std::mutex> guard(state.mu);
@@ -83,11 +84,10 @@ void RegisterQuackOauthSettings(DBConfig &config) {
 	    LogicalType::INTEGER, EnvIntDefault("QUACK_OAUTH_CLOCK_SKEW_S", 60), nullptr, SetScope::GLOBAL);
 
 	// R-S-4: rate-limit per-kid JWKS refresh to guard against poll DoS.
-	config.AddExtensionOption(
-	    "quack_oauth_jwks_min_refresh_s",
-	    "Minimum seconds between JWKS refreshes per kid (R-S-4). Values below 1 are clamped to 1.",
-	    LogicalType::INTEGER, EnvIntDefault("QUACK_OAUTH_JWKS_MIN_REFRESH_S", 30), OnJwksMinRefreshSeconds,
-	    SetScope::GLOBAL);
+	config.AddExtensionOption("quack_oauth_jwks_min_refresh_s",
+	                          "Minimum seconds between JWKS refreshes per kid (R-S-4). Must be between 1 and 3600.",
+	                          LogicalType::INTEGER, EnvIntDefault("QUACK_OAUTH_JWKS_MIN_REFRESH_S", 30),
+	                          OnJwksMinRefreshSeconds, SetScope::GLOBAL);
 
 	// R-S-5: cache RFC 7662 introspect results.
 	config.AddExtensionOption("quack_oauth_introspect_cache_s",

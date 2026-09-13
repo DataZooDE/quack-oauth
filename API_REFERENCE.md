@@ -245,8 +245,8 @@ with a status and a `detail` string of `key=value` pairs:
 |-----------------------|---------------------------|------------------------|
 | `decision_cache`      | `empty` \| `warm`         | `entries=` |
 | `extension`           | `configured` \| `unconfigured` | `enabled= secret_name= validation_mode= provider=` |
-| `jwks_cache`          | `empty` \| `warm`         | `entries= unknown_kids=` |
-| `recent_decisions`    | `empty` \| `active`       | `count=N/CAP accepted= rejected= allowed= denied= refreshed=` |
+| `jwks_cache`          | `empty` \| `warm` \| `negative` | `entries= unknown_kids= min_refresh_s=` |
+| `recent_decisions`    | `empty` \| `active`       | `count=N/CAP accepted= rejected= allowed= denied= refreshed= refresh_failed=` |
 | `session_principals`  | `empty` \| `active`       | `sessions=` |
 
 ```sql
@@ -274,6 +274,33 @@ Returns the in-memory audit ring (last 64 decisions) as a typed table.
 Both `check_token` and `check_authorization` emit one event per row
 they evaluate. The raw bearer token is never exposed — `token_hash` is
 the first 8 hex characters of its SHA-256.
+
+#### Audit reason codes
+
+| `event_type` | `reason` | Description |
+|---|---|---|
+| `token_accepted` | `ok` | Token successfully verified against cached or fetched key/introspection. |
+| `token_rejected` | `malformed` | Token could not be parsed as a JWT or bearer token. |
+| `token_rejected` | `disallowed_algorithm` | Algorithm not in `allowed_algorithms` whitelist or forbidden (`none`, HMAC). |
+| `token_rejected` | `invalid_signature` | Cryptographic signature verification failed. |
+| `token_rejected` | `expired` | Token `exp` timestamp exceeded (accounting for clock skew). |
+| `token_rejected` | `not_yet_valid` | Token `nbf`/`iat` timestamp is in the future (accounting for clock skew). |
+| `token_rejected` | `wrong_issuer` | Token `iss` does not match configured server `issuer`. |
+| `token_rejected` | `wrong_audience` | Token `aud` does not match configured server `audience`. |
+| `token_rejected` | `unsupported_key_type` | Key type or size unsupported (e.g. sub-2048-bit RSA). |
+| `token_rejected` | `unknown_kid` | Token `kid` was not found in the IdP's JWKS document. |
+| `token_rejected` | `jwks_fetch_failed` | Outbound HTTP request to JWKS or introspection endpoint failed. |
+| `jwks_refresh` | `rotated_key_refreshed` | IdP rotated key material under the same `kid`; fresh keys successfully ingested. |
+| `jwks_refresh` | `refresh_no_rotation` | JWKS re-fetched following verification failure, but contains no new key material. |
+| `jwks_refresh` | `refresh_throttled` | Refresh rate-limited by `min_refresh_s` (logged to DuckDB logger; not emitted to ring). |
+| `jwks_refresh` | `refresh_fetch_failed` | Outbound JWKS HTTP GET failed or returned non-200. |
+| `jwks_refresh` | `refresh_parse_failed` | Outbound JWKS response was not valid JSON or contained no keys. |
+| `jwks_refresh` | `refresh_kid_absent` | Fresh JWKS document did not contain the requested `kid`. |
+| `jwks_refresh` | `refresh_superseded` | Refresh discarded because a concurrent reservation committed first. |
+| `authz_allow` | `rule allow` | Explicit allow rule matched in `policy_table`. |
+| `authz_allow` | `default allow` | No rule matched; fallback to `quack_oauth_policy_default='allow'`. |
+| `authz_deny` | `rule deny` | Explicit deny rule matched in `policy_table`. |
+| `authz_deny` | `default deny` | No rule matched; fallback to `quack_oauth_policy_default='deny'`. |
 
 For persistent audit, set `audit_table` on the server SECRET to a SQL
 table with the same column shape (BIGINT + 7 × VARCHAR); the extension
@@ -393,7 +420,7 @@ All settings are session-scoped (`SET` / `RESET`).
 | `quack_oauth_validation_mode`        | VARCHAR | `'jwks'`    | `jwks` \| `introspect` \| `tokeninfo` (R-S-2). |
 | `quack_oauth_provider`               | VARCHAR | `'generic'` | First-class preset: `entra` \| `google` \| `keycloak` \| `okta` \| `github` \| `generic` (R-S-12). |
 | `quack_oauth_clock_skew_s`           | INTEGER | `60`        | Allowable clock skew (seconds) for JWT `exp`/`nbf`/`iat` (R-S-3). |
-| `quack_oauth_jwks_min_refresh_s`     | INTEGER | `30`        | Min seconds between per-`kid` JWKS refreshes (R-S-4). Values `< 1` are clamped to `1`. |
+| `quack_oauth_jwks_min_refresh_s`     | INTEGER | `30`        | Min seconds between per-`kid` JWKS refreshes (R-S-4). Must be between 1 and 3600. |
 | `quack_oauth_introspect_cache_s`     | INTEGER | `30`        | Cache lifetime for `introspect`-mode decisions, capped at token `exp` (R-S-5). |
 | `quack_oauth_renew_skew_s`           | INTEGER | `60`        | Client refreshes the access token this many seconds before `expires_at` (R-C-2). |
 | `quack_oauth_policy_default`         | VARCHAR | `'deny'`    | Default decision when no `policy_table` rule matches: `allow` or `deny` (R-S-7). |
@@ -402,10 +429,11 @@ All settings are session-scoped (`SET` / `RESET`).
 
 ### Key rotation
 
-When identity providers (such as Microsoft Entra ID) rotate key material while reusing the same `kid`, cached keys will fail signature verification on new tokens. The extension automatically detects this and triggers a rate-limited background JWKS refresh to recover the new key without requiring process restart or cache invalidation.
+When identity providers (such as Microsoft Entra ID) rotate key material while reusing the same `kid`, cached keys will fail signature verification on new tokens. The extension automatically detects this and triggers a rate-limited, synchronous on-demand JWKS refresh on the request path to recover the new key without requiring process restart or cache invalidation.
 
-- **Recovery latency**: Bounded by `quack_oauth_jwks_min_refresh_s` (default 30 seconds). A valid token presenting rotated key material initiates a refresh; if the IdP serves new key material over TLS, it is committed to cache.
-- **Starvation & DoS resistance**: Fresh key material from the IdP is committed even if an individual token fails verification, preventing malicious or corrupted tokens from starving legitimate key rotation recovery.
+- **Multi-key cache entry**: Ingest is additive per `kid`. If an IdP publishes multiple keys under the same `kid` (or rolls keys during active token lifespans), all valid candidates are preserved in cache. Legitimate older keys are not destructively evicted while tokens signed by them are still valid.
+- **Request-path latency**: Refreshes happen synchronously on the request thread encountering a signature verification failure against currently-cached keys, bounded by `quack_oauth_jwks_min_refresh_s` (default 30 seconds) per `kid` and a process-global fetch rate limit.
+- **Starvation & DoS resistance**: Fresh key material fetched from the IdP over TLS is committed to the multi-key cache even if the triggering token fails verification, preventing malicious or corrupted tokens from starving legitimate key rotation recovery. Repeated requests with already-known keys emit `refresh_no_rotation` and do not re-fetch.
 - **Troubleshooting**: If clients experience sudden bursts of `invalid_signature` errors during an IdP rotation, inspect `quack_oauth_audit_log()` for `jwks_refresh` events. If refresh events show `refresh_throttled` or `refresh_fetch_failed`, the extension is rate-limiting refreshes or the IdP JWKS endpoint is unreachable.
 
 ---

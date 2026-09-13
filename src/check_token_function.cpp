@@ -3,10 +3,12 @@
 #include <chrono>
 #include <cstdint>
 #include <mutex>
-#include <thread>
+#include <set>
 #include <string>
+#include <thread>
 
 #include "duckdb/common/exception.hpp"
+#include "duckdb/logging/logger.hpp"
 #include "duckdb/common/types/data_chunk.hpp"
 #include "duckdb/common/types/vector.hpp"
 #include "duckdb/common/vector_operations/unary_executor.hpp"
@@ -466,17 +468,17 @@ static void ValidateChunk(Vector &tokens, idx_t count, Vector &result, ClientCon
 			                  return r;
 		                  });
 	} else { // jwks
-		struct PendingRefreshAudit {
+		struct RawRefreshItem {
 			std::string kid;
 			std::string reason;
-			std::string token_hash;
+			std::string token;
 		};
-		std::vector<PendingRefreshAudit> pending_refreshes;
+		std::vector<RawRefreshItem> pending_refreshes;
 
 		quack_oauth::ValidateContext vctx {
 		    http, shared_state.jwks_cache, cfg.jwks_uri,
 		    [&](const std::string &kid, const std::string &reason, std::string_view token) {
-			    pending_refreshes.push_back({kid, reason, quack_oauth::RedactSensitive(token)});
+			    pending_refreshes.push_back({kid, reason, std::string(token)});
 		    }};
 		RunValidationLoop(tokens, count, result, context, session_ids, opts.now_s, shared_state, guard,
 		                  [&](string &token_str) -> RowValidation {
@@ -495,13 +497,23 @@ static void ValidateChunk(Vector &tokens, idx_t count, Vector &result, ClientCon
 		// Emit any recorded JWKS refresh audit events AFTER RunValidationLoop returns
 		// and guard is unlocked, avoiding deadlock on shared_state.mu (F1).
 		guard.unlock();
+		std::set<std::pair<std::string, std::string>> seen_refreshes;
 		for (const auto &pr : pending_refreshes) {
+			if (!seen_refreshes.insert({pr.kid, pr.reason}).second) {
+				continue;
+			}
+			if (pr.reason == "refresh_throttled") {
+				// Drop refresh_throttled from 64-entry audit ring to avoid flooding; log to DUCKDB_LOG_INFO instead
+				// (F6).
+				DUCKDB_LOG_INFO(context, "quack_oauth: JWKS refresh throttled for kid='" + pr.kid + "'");
+				continue;
+			}
 			quack_oauth::AuditEvent e;
 			e.timestamp_unix_s = opts.now_s;
 			e.event_type = quack_oauth::AuditEventType::JwksRefresh;
 			e.kid = pr.kid;
 			e.reason = pr.reason;
-			e.token_hash = pr.token_hash;
+			e.token_hash = quack_oauth::RedactSensitive(pr.token);
 			EmitAuditEvent(context, e);
 		}
 	}

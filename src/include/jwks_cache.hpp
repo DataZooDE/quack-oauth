@@ -7,6 +7,7 @@
 #include <optional>
 #include <string>
 #include <unordered_map>
+#include <vector>
 
 namespace quack_oauth {
 
@@ -38,7 +39,8 @@ enum class JwksLookupStatus {
 
 struct JwksLookup {
 	JwksLookupStatus status = JwksLookupStatus::Miss;
-	std::optional<Jwk> jwk;         // populated only on Hit
+	std::vector<Jwk> keys;          // populated on Hit: all cached keys for this kid
+	std::optional<Jwk> jwk;         // populated on Hit: first key for backwards compatibility
 	std::int64_t retry_after_s = 0; // populated only on RateLimited
 };
 
@@ -58,36 +60,46 @@ public:
 	explicit JwksCache(std::int64_t min_refresh_s, std::size_t max_entries = 1000);
 
 	void SetMinRefreshSeconds(std::int64_t min_refresh_s);
+	std::int64_t GetMinRefreshSeconds() const noexcept {
+		return min_refresh_s_;
+	}
 
 	// Look up a kid. Does not mutate the cache.
 	JwksLookup Lookup(const std::string &kid, std::int64_t now_s) const;
 
-	// Caller learned the kid maps to this JWK at `now_s`. Replaces any prior
-	// entry for the same kid (covers kid-reuse rotations).
+	// Ingests key material for jwk.kid. If an entry for jwk.kid already exists,
+	// appends this key if not already present (material difference check),
+	// preserving the existing reservation ID and refresh attempt timestamp (F1, F5).
 	void OnFetchSuccess(const Jwk &jwk, std::int64_t now_s);
 
 	// Caller fetched JWKS but the kid was absent. Starts the rate-limit
 	// timer for this kid.
 	void OnFetchMiss(const std::string &kid, std::int64_t now_s);
 
+	// Global fetch budget: determines whether an outbound JWKS fetch is allowed
+	// at now_s, or if a recent successful fetch already answered all keys.
+	bool CanFetchJwks(std::int64_t now_s) const;
+	void RecordJwksFetch(std::int64_t now_s);
+
 	// Reserve one rate-limited refresh attempt for an already-cached kid.
 	// Returns a non-zero reservation ID if granted, or 0 if rate-limited.
-	// On clock rewinds or overlapping concurrent chunks with decreasing now_s
-	// (now_s < last_attempt), the stamp preserves monotonicity via std::max
-	// and the call fails closed (returns 0) to preserve the rate limit bound.
+	// On clock rewinds or concurrent chunks with earlier now_s (now_s < last_attempt),
+	// the call fails closed (returns 0).
 	std::uint64_t TryReserveRefresh(const std::string &kid, std::int64_t now_s);
 
-	// Commit a verified refreshed JWK for the reserved kid.
+	// Commit verified refreshed JWK(s) for the reserved kid.
 	// Succeeds only if `reservation_id` matches the active reservation for `kid`,
 	// dropping stale out-of-order completions so they cannot overwrite newer keys.
 	bool CommitRefresh(const std::string &kid, std::uint64_t reservation_id, const Jwk &jwk, std::int64_t now_s);
+	bool CommitRefresh(const std::string &kid, std::uint64_t reservation_id, const std::vector<Jwk> &keys,
+	                   std::int64_t now_s);
 
 	std::size_t Size() const noexcept;
 	std::size_t MissSize() const noexcept;
 
 private:
 	struct Entry {
-		Jwk jwk;
+		std::vector<Jwk> keys;
 		std::int64_t fetched_at_s = 0;
 		std::int64_t last_refresh_attempt_s = 0;
 		std::uint64_t current_reservation_id = 0;
@@ -100,6 +112,7 @@ private:
 
 	std::int64_t min_refresh_s_;
 	std::size_t max_entries_;
+	std::int64_t last_global_fetch_s_ = 0;
 	std::uint64_t next_reservation_id_ = 1;
 	std::list<std::string> hit_lru_;
 	std::list<std::string> miss_lru_;

@@ -85,7 +85,14 @@ static unique_ptr<FunctionData> DiagnoseBind(ClientContext &context, TableFuncti
 		std::ostringstream detail;
 		Append(detail, "entries", std::to_string(entries));
 		Append(detail, "unknown_kids", std::to_string(unknown_kids));
-		data->rows.push_back({"jwks_cache", (entries == 0 && unknown_kids == 0) ? "empty" : "warm", detail.str()});
+		Append(detail, "min_refresh_s", std::to_string(state.jwks_cache.GetMinRefreshSeconds()));
+		string status = "empty";
+		if (entries > 0) {
+			status = "warm";
+		} else if (unknown_kids > 0) {
+			status = "negative";
+		}
+		data->rows.push_back({"jwks_cache", status, detail.str()});
 	}
 
 	// 3. Decision cache
@@ -138,22 +145,22 @@ static unique_ptr<FunctionData> DiagnoseBind(ClientContext &context, TableFuncti
 #else
 		// Wasm clients let the host page own the network. Surface the
 		// configured probe URI for visibility but report status as
-		// `skipped_wasm` so operators can tell at a glance why no
-		// http_status is attached.
-		if (probe_uri.empty()) {
-			Append(detail, "uri", "(none)");
-		} else {
-			Append(detail, "uri", probe_uri);
-		}
-		Append(detail, "reason", "network probe excluded from wasm build");
-		data->rows.push_back({"idp_reachability", "skipped_wasm", detail.str()});
+		// unavailable (the host page's fetch environment owns this).
+		Append(detail, "uri", probe_uri.empty() ? "(none)" : probe_uri);
+		data->rows.push_back({"idp_reachability", "unavailable_on_wasm", detail.str()});
 #endif
 	}
 
-	// 5. Audit ring: count + decision split
+	// 5. In-memory audit ring snapshot: count accepted vs rejected tokens
+	// and allowed vs denied authz decisions.
 	{
 		const auto snap = state.audit_ring.Snapshot();
-		std::size_t accepts = 0, rejects = 0, allows = 0, denies = 0, refreshes = 0;
+		std::size_t accepts = 0;
+		std::size_t rejects = 0;
+		std::size_t allows = 0;
+		std::size_t denies = 0;
+		std::size_t refreshes = 0;
+		std::size_t refresh_failures = 0;
 		for (const auto &e : snap) {
 			switch (e.event_type) {
 			case quack_oauth::AuditEventType::TokenAccepted:
@@ -169,7 +176,11 @@ static unique_ptr<FunctionData> DiagnoseBind(ClientContext &context, TableFuncti
 				++denies;
 				break;
 			case quack_oauth::AuditEventType::JwksRefresh:
-				++refreshes;
+				if (e.reason == "rotated_key_refreshed") {
+					++refreshes;
+				} else {
+					++refresh_failures;
+				}
 				break;
 			}
 		}
@@ -180,6 +191,7 @@ static unique_ptr<FunctionData> DiagnoseBind(ClientContext &context, TableFuncti
 		Append(detail, "allowed", std::to_string(allows));
 		Append(detail, "denied", std::to_string(denies));
 		Append(detail, "refreshed", std::to_string(refreshes));
+		Append(detail, "refresh_failed", std::to_string(refresh_failures));
 		data->rows.push_back({"recent_decisions", snap.empty() ? "empty" : "active", detail.str()});
 	}
 

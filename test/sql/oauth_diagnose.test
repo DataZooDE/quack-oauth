@@ -31,11 +31,12 @@ FROM quack_oauth_diagnose() WHERE component = 'extension';
 ----
 true
 
-# Cache rows must carry `entries=`; recent_decisions carries `count=`.
-query I
-SELECT detail LIKE '%entries=%' AND detail LIKE '%unknown_kids=%' FROM quack_oauth_diagnose() WHERE component = 'jwks_cache';
+# Cache rows must carry status and expected detail keys
+query II
+SELECT status, detail LIKE '%entries=%' AND detail LIKE '%unknown_kids=%' AND detail LIKE '%min_refresh_s=%'
+FROM quack_oauth_diagnose() WHERE component = 'jwks_cache';
 ----
-true
+empty	true
 
 query I
 SELECT detail LIKE 'entries=%' FROM quack_oauth_diagnose() WHERE component = 'decision_cache';
