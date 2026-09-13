@@ -18,6 +18,7 @@ inline constexpr const char *kReasonRefreshBudgetThrottled = "refresh_budget_thr
 inline constexpr const char *kReasonRefreshFetchFailed = "refresh_fetch_failed";
 inline constexpr const char *kReasonRefreshParseFailed = "refresh_parse_failed";
 inline constexpr const char *kReasonRefreshKidAbsent = "refresh_kid_absent";
+inline constexpr const char *kReasonRefreshRevoked = "refresh_revoked";
 inline constexpr const char *kReasonRefreshSuperseded = "refresh_superseded";
 
 struct RefreshEvent {

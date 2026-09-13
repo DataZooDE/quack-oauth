@@ -49,8 +49,15 @@ inline bool SameKeyMaterial(const std::vector<Jwk> &a, const std::vector<Jwk> &b
 	if (a.size() != b.size()) {
 		return false;
 	}
-	for (size_t i = 0; i < a.size(); ++i) {
-		if (!SameKeyMaterial(a[i], b[i])) {
+	for (const auto &ka : a) {
+		bool found = false;
+		for (const auto &kb : b) {
+			if (SameKeyMaterial(ka, kb)) {
+				found = true;
+				break;
+			}
+		}
+		if (!found) {
 			return false;
 		}
 	}
@@ -64,6 +71,7 @@ enum class JwksLookupStatus {
 };
 
 static constexpr std::int64_t kGlobalFetchBudgetWindowSeconds = 2;
+static constexpr std::int64_t kClockResetThresholdSeconds = 60;
 static constexpr std::size_t kMaxKeysPerKid = 4;
 
 struct JwksLookup {
@@ -99,6 +107,14 @@ public:
 	// Ingests key material authoritatively for kid.
 	void OnFetchSuccess(const std::string &kid, const std::vector<Jwk> &keys, std::int64_t now_s);
 
+	// Ingests key material passively from a multi-key document (cold miss or sibling keys).
+	// If `kid` is already cached, it is only updated if min_refresh_s has elapsed (F4).
+	void OnPassiveFetchSuccess(const std::string &kid, const std::vector<Jwk> &keys, std::int64_t now_s);
+
+	// Evict cached kid from hits_ (F2).
+	bool Evict(const std::string &kid);
+	bool EvictReserved(const std::string &kid, std::uint64_t reservation_id);
+
 	// Caller fetched JWKS but the kid was absent. Starts the rate-limit
 	// timer for this kid.
 	void OnFetchMiss(const std::string &kid, std::int64_t now_s);
@@ -106,7 +122,8 @@ public:
 	// Global fetch budget: determines whether an outbound JWKS fetch is allowed
 	// at now_s (decoupled to kGlobalFetchBudgetWindowSeconds for amplification control).
 	bool CanFetchJwks(std::int64_t now_s) const;
-	void RecordJwksFetch(std::int64_t now_s, bool failed = false);
+	bool HasFreshJwksDocument(std::int64_t now_s) const;
+	void RecordJwksFetch(std::int64_t now_s);
 
 	void IncrementThrottledRefreshes() noexcept {
 		++throttled_refreshes_;
@@ -148,6 +165,7 @@ private:
 	std::int64_t min_refresh_s_;
 	std::size_t max_entries_;
 	std::int64_t last_global_fetch_s_ = 0;
+	std::int64_t last_successful_fetch_s_ = 0;
 	mutable std::atomic<std::uint64_t> throttled_refreshes_ {0};
 	std::uint64_t next_reservation_id_ = 1;
 	std::list<std::string> hit_lru_;

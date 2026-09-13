@@ -1,5 +1,8 @@
 #include "settings.hpp"
 
+#include <atomic>
+#include <mutex>
+
 #include "duckdb/main/config.hpp"
 
 #include "env_overrides.hpp"
@@ -26,21 +29,29 @@ static void OnTelemetryKey(ClientContext &, SetScope, Value &parameter) {
 }
 #endif
 
-static int32_t g_startup_min_refresh_s = 30;
+static std::atomic<int32_t> g_startup_min_refresh_s {30};
+static std::once_flag g_startup_floor_once;
 
-static void OnJwksMinRefreshSeconds(ClientContext &, SetScope, Value &parameter) {
+static void OnJwksMinRefreshSeconds(ClientContext &, SetScope scope, Value &parameter) {
+	if (scope == SetScope::SESSION) {
+		throw InvalidInputException("quack_oauth_jwks_min_refresh_s must be SET GLOBAL, not SET SESSION");
+	}
 	if (parameter.IsNull()) {
 		throw InvalidInputException("quack_oauth_jwks_min_refresh_s cannot be NULL");
 	}
 	const auto val = parameter.GetValue<int32_t>();
+	if (val < 1) {
+		throw InvalidInputException("quack_oauth_jwks_min_refresh_s must be at least 1 (got %d)", val);
+	}
 	if (val > 3600) {
 		throw InvalidInputException("quack_oauth_jwks_min_refresh_s must be at most 3600 (got %d)", val);
 	}
-	if (val < g_startup_min_refresh_s) {
+	const auto floor = g_startup_min_refresh_s.load(std::memory_order_relaxed);
+	if (val < floor) {
 		throw InvalidInputException(
 		    "quack_oauth_jwks_min_refresh_s cannot be lowered below %d (got %d); the floor is set at startup via "
 		    "QUACK_OAUTH_JWKS_MIN_REFRESH_S",
-		    g_startup_min_refresh_s, val);
+		    floor, val);
 	}
 	auto &state = GetQuackOauthState();
 	std::lock_guard<std::mutex> guard(state.mu);
@@ -95,17 +106,19 @@ void RegisterQuackOauthSettings(DBConfig &config) {
 	    LogicalType::INTEGER, EnvIntDefault("QUACK_OAUTH_CLOCK_SKEW_S", 60), nullptr, SetScope::GLOBAL);
 
 	// R-S-4: rate-limit per-kid JWKS refresh to guard against poll DoS.
-	const int32_t startup_raw = quack_oauth::EnvIntOrDefault("QUACK_OAUTH_JWKS_MIN_REFRESH_S", 30);
-	g_startup_min_refresh_s = std::clamp(startup_raw, 1, 3600);
-	{
+	std::call_once(g_startup_floor_once, []() {
+		const int32_t startup_raw = quack_oauth::EnvIntOrDefault("QUACK_OAUTH_JWKS_MIN_REFRESH_S", 30);
+		const auto clamped_floor = std::clamp(startup_raw, 1, 3600);
+		g_startup_min_refresh_s.store(clamped_floor, std::memory_order_relaxed);
 		auto &state = GetQuackOauthState();
 		std::lock_guard<std::mutex> guard(state.mu);
-		state.jwks_cache.SetMinRefreshSeconds(g_startup_min_refresh_s);
-	}
+		state.jwks_cache.SetMinRefreshSeconds(clamped_floor);
+	});
+	const auto startup_floor = g_startup_min_refresh_s.load(std::memory_order_relaxed);
 	config.AddExtensionOption("quack_oauth_jwks_min_refresh_s",
 	                          "Minimum seconds between JWKS refreshes per kid (R-S-4). Must be between the startup "
 	                          "floor and 3600.",
-	                          LogicalType::INTEGER, Value::INTEGER(g_startup_min_refresh_s), OnJwksMinRefreshSeconds,
+	                          LogicalType::INTEGER, Value::INTEGER(startup_floor), OnJwksMinRefreshSeconds,
 	                          SetScope::GLOBAL);
 
 	// R-S-5: cache RFC 7662 introspect results.

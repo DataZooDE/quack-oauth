@@ -152,8 +152,17 @@ quack server receives ConnectionRequestMessage{token}
         │   └─ hit & not expired → return ok, set thread-local principal
         ├─ if validation_mode == jwks:
         │   ├─ parse JWT header, read kid
-        │   ├─ jwks_cache.get(kid) (refresh if absent, with rate-limit)
-        │   ├─ verify signature, iss, aud, exp, nbf, alg ∈ allowlist
+        │   ├─ jwks_cache.lookup(kid) (hit, miss, or rate-limited)
+        │   ├─ on cache hit: verify signature against cached keys
+        │   │   └─ if signature invalid or unusable key:
+        │   │       └─ rate-limited synchronous refresh via TryReserveRefresh
+        │   │           ├─ GET jwks_uri (subject to 2s global network budget)
+        │   │           ├─ if kid missing from 200 response: authoritatively evict cached kid
+        │   │           ├─ if kid present: synchronize cached keys with response (pruning removed keys)
+        │   │           └─ re-verify against committed keys
+        │   ├─ on cold miss: fetch JWKS under global budget window (2s)
+        │   ├─ clock reset resilience: rewinds > 60s automatically re-base stamps
+        │   ├─ verify claims: iss, aud, exp, nbf, alg in {RS256,RS384,RS512,ES256,ES384,EdDSA}
         │   └─ extract Principal
         ├─ if validation_mode == introspect:
         │   ├─ POST {token=…} to introspection_endpoint with client auth

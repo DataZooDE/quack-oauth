@@ -30,11 +30,19 @@ JwksLookup JwksCache::Lookup(const std::string &kid, std::int64_t now_s) const {
 	JwksLookup result;
 	const auto miss = misses_.find(kid);
 	if (miss != misses_.end()) {
-		const auto elapsed = now_s - miss->second.recorded_at_s;
-		if (elapsed < min_refresh_s_) {
+		if (now_s < miss->second.recorded_at_s - kClockResetThresholdSeconds) {
+			// Clock rewind larger than reset threshold: treat as expired miss (F3)
+		} else if (now_s < miss->second.recorded_at_s) {
 			result.status = JwksLookupStatus::RateLimited;
-			result.retry_after_s = min_refresh_s_ - elapsed;
+			result.retry_after_s = min_refresh_s_;
 			return result;
+		} else {
+			const auto elapsed = now_s - miss->second.recorded_at_s;
+			if (elapsed < min_refresh_s_) {
+				result.status = JwksLookupStatus::RateLimited;
+				result.retry_after_s = min_refresh_s_ - elapsed;
+				return result;
+			}
 		}
 	}
 	result.status = JwksLookupStatus::Miss;
@@ -42,15 +50,11 @@ JwksLookup JwksCache::Lookup(const std::string &kid, std::int64_t now_s) const {
 }
 
 void JwksCache::OnFetchSuccess(const std::string &kid, const std::vector<Jwk> &keys, std::int64_t now_s) {
-	std::vector<Jwk> valid_keys;
-	for (const auto &k : keys) {
-		if (k.kty == "RSA" || k.kty == "EC" || k.kty == "OKP") {
-			valid_keys.push_back(k);
-		}
-	}
-	if (valid_keys.empty()) {
+	if (keys.empty()) {
 		return;
 	}
+
+	last_successful_fetch_s_ = now_s;
 
 	if (const auto miss = misses_.find(kid); miss != misses_.end()) {
 		miss_lru_.erase(miss->second.lru_it);
@@ -58,10 +62,10 @@ void JwksCache::OnFetchSuccess(const std::string &kid, const std::vector<Jwk> &k
 	}
 
 	if (const auto hit = hits_.find(kid); hit != hits_.end()) {
-		if (!SameKeyMaterial(hit->second.keys, valid_keys)) {
+		if (!SameKeyMaterial(hit->second.keys, keys)) {
 			hit->second.current_reservation_id = 0;
 		}
-		hit->second.keys = std::move(valid_keys);
+		hit->second.keys = keys;
 		TrimToCap(hit->second);
 		hit->second.fetched_at_s = now_s;
 		hit_lru_.erase(hit->second.lru_it);
@@ -72,7 +76,7 @@ void JwksCache::OnFetchSuccess(const std::string &kid, const std::vector<Jwk> &k
 
 	hit_lru_.push_front(kid);
 	Entry entry;
-	entry.keys = std::move(valid_keys);
+	entry.keys = keys;
 	TrimToCap(entry);
 	entry.fetched_at_s = now_s;
 	entry.last_refresh_attempt_s = now_s;
@@ -86,16 +90,72 @@ void JwksCache::OnFetchSuccess(const std::string &kid, const std::vector<Jwk> &k
 	}
 }
 
+void JwksCache::OnPassiveFetchSuccess(const std::string &kid, const std::vector<Jwk> &keys, std::int64_t now_s) {
+	if (const auto hit = hits_.find(kid); hit != hits_.end()) {
+		if (now_s >= hit->second.fetched_at_s && (now_s - hit->second.fetched_at_s) < min_refresh_s_) {
+			// Kid was already refreshed recently; do not mutate it from passive ingest (F4)
+			return;
+		}
+	}
+	OnFetchSuccess(kid, keys, now_s);
+}
+
+bool JwksCache::Evict(const std::string &kid) {
+	const auto hit = hits_.find(kid);
+	if (hit == hits_.end()) {
+		return false;
+	}
+	hit_lru_.erase(hit->second.lru_it);
+	hits_.erase(hit);
+	return true;
+}
+
+bool JwksCache::EvictReserved(const std::string &kid, std::uint64_t reservation_id) {
+	const auto hit = hits_.find(kid);
+	if (hit == hits_.end()) {
+		return false;
+	}
+	if (reservation_id != 0 && hit->second.current_reservation_id != reservation_id) {
+		return false;
+	}
+	hit_lru_.erase(hit->second.lru_it);
+	hits_.erase(hit);
+	return true;
+}
+
 bool JwksCache::CanFetchJwks(std::int64_t now_s) const {
-	if (last_global_fetch_s_ > 0 &&
-	    (now_s < last_global_fetch_s_ || (now_s - last_global_fetch_s_) < kGlobalFetchBudgetWindowSeconds)) {
+	if (last_global_fetch_s_ <= 0) {
+		return true;
+	}
+	if (now_s < last_global_fetch_s_ - kClockResetThresholdSeconds) {
+		// Clock rewind larger than reset threshold: treat as reset (F3)
+		return true;
+	}
+	if (now_s < last_global_fetch_s_ || (now_s - last_global_fetch_s_) < kGlobalFetchBudgetWindowSeconds) {
 		return false;
 	}
 	return true;
 }
 
-void JwksCache::RecordJwksFetch(std::int64_t now_s, bool /*failed*/) {
-	last_global_fetch_s_ = std::max(last_global_fetch_s_, now_s);
+bool JwksCache::HasFreshJwksDocument(std::int64_t now_s) const {
+	if (last_successful_fetch_s_ <= 0) {
+		return false;
+	}
+	if (now_s < last_successful_fetch_s_ - kClockResetThresholdSeconds) {
+		return false;
+	}
+	if (now_s < last_successful_fetch_s_) {
+		return false;
+	}
+	return (now_s - last_successful_fetch_s_) < kGlobalFetchBudgetWindowSeconds;
+}
+
+void JwksCache::RecordJwksFetch(std::int64_t now_s) {
+	if (last_global_fetch_s_ > 0 && now_s < last_global_fetch_s_ - kClockResetThresholdSeconds) {
+		last_global_fetch_s_ = now_s;
+	} else {
+		last_global_fetch_s_ = std::max(last_global_fetch_s_, now_s);
+	}
 }
 
 std::uint64_t JwksCache::TryReserveRefresh(const std::string &kid, std::int64_t now_s) {
@@ -103,9 +163,16 @@ std::uint64_t JwksCache::TryReserveRefresh(const std::string &kid, std::int64_t 
 	if (hit == hits_.end()) {
 		return 0;
 	}
+	if (now_s < hit->second.last_refresh_attempt_s - kClockResetThresholdSeconds) {
+		// Clock rewind larger than reset threshold: re-base and grant reservation (F3)
+		hit->second.last_refresh_attempt_s = now_s;
+		const auto res_id = next_reservation_id_++;
+		hit->second.current_reservation_id = res_id;
+		return res_id;
+	}
 	if (now_s < hit->second.last_refresh_attempt_s) {
 		// Clock rewind or concurrent chunk with earlier now_s:
-		// Fail closed; the existing stamp is already newer (F13).
+		// Fail closed; the existing stamp is already newer.
 		return 0;
 	}
 	const auto elapsed = now_s - hit->second.last_refresh_attempt_s;
@@ -133,22 +200,16 @@ bool JwksCache::CommitRefresh(const std::string &kid, std::uint64_t reservation_
 		return false;
 	}
 	if (now_s < hit->second.fetched_at_s) {
-		// Time inversion: newer material was already ingested.
-		return false;
-	}
-
-	std::vector<Jwk> valid_keys;
-	for (const auto &k : keys) {
-		if (k.kty == "RSA" || k.kty == "EC" || k.kty == "OKP") {
-			valid_keys.push_back(k);
+		if (now_s < hit->second.fetched_at_s - kClockResetThresholdSeconds) {
+			// Clock rewind larger than reset threshold: allow commit and re-base (F3)
+		} else {
+			// Time inversion within window: newer material was already ingested.
+			return false;
 		}
-	}
-	if (valid_keys.empty()) {
-		return false;
 	}
 
 	hit->second.current_reservation_id = 0;
-	hit->second.keys = std::move(valid_keys);
+	hit->second.keys = keys;
 	TrimToCap(hit->second);
 	hit->second.fetched_at_s = now_s;
 	hit_lru_.erase(hit->second.lru_it);

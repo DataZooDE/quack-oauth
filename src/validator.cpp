@@ -55,7 +55,7 @@ static bool JwkMatchesTokenHeader(const Jwk &k, const std::string &token_alg) no
 }
 
 static bool IsCachedKeyUnusable(VerifyResult res) noexcept {
-	return res == VerifyResult::InvalidSignature || res == VerifyResult::Malformed;
+	return res == VerifyResult::InvalidSignature || res == VerifyResult::UnusableKey;
 }
 
 static VerifyResult VerifyWithCachedKeys(std::string_view token, const std::vector<Jwk> &keys,
@@ -156,12 +156,35 @@ static bool CommitAndAudit(const std::string &kid, uint64_t reservation_id, cons
 			break;
 		}
 	}
+	bool has_removed_material = false;
+	for (const auto &cached : cached_keys) {
+		bool matches_candidate = false;
+		for (const auto &cand : candidates) {
+			if (SameKeyMaterial(cand, cached)) {
+				matches_candidate = true;
+				break;
+			}
+		}
+		if (!matches_candidate) {
+			has_removed_material = true;
+			break;
+		}
+	}
 
 	const bool committed = ctx.jwks_cache.CommitRefresh(kid, reservation_id, candidates, now_s);
 	if (out_refresh) {
 		out_refresh->kid = kid;
-		out_refresh->reason = committed ? (has_new_material ? kReasonRefreshRotated : kReasonRefreshNoRotation)
-		                                : kReasonRefreshSuperseded;
+		if (committed) {
+			if (has_new_material) {
+				out_refresh->reason = kReasonRefreshRotated;
+			} else if (has_removed_material) {
+				out_refresh->reason = kReasonRefreshRevoked;
+			} else {
+				out_refresh->reason = kReasonRefreshNoRotation;
+			}
+		} else {
+			out_refresh->reason = kReasonRefreshSuperseded;
+		}
 	}
 	return committed;
 }
@@ -172,7 +195,7 @@ static void IngestSiblingKeys(const std::unordered_map<std::string, std::vector<
 		if (s_kid != target_kid) {
 			const auto usable = ScreenUsableKeys(s_keys);
 			if (!usable.empty()) {
-				ctx.jwks_cache.OnFetchSuccess(s_kid, usable, now_s);
+				ctx.jwks_cache.OnPassiveFetchSuccess(s_kid, usable, now_s);
 			}
 		}
 	}
@@ -201,11 +224,10 @@ static std::optional<VerifyResult> TryRefreshRotatedKid(std::string_view token, 
 		return std::nullopt;
 	}
 
-	ctx.jwks_cache.RecordJwksFetch(opts.now_s, false);
+	ctx.jwks_cache.RecordJwksFetch(opts.now_s);
 
 	const auto refresh = ctx.http.Get(ctx.jwks_uri);
 	if (!refresh.has_value() || refresh->status_code != 200) {
-		ctx.jwks_cache.RecordJwksFetch(opts.now_s, true);
 		if (out_refresh) {
 			out_refresh->kid = kid;
 			out_refresh->reason = kReasonRefreshFetchFailed;
@@ -215,7 +237,6 @@ static std::optional<VerifyResult> TryRefreshRotatedKid(std::string_view token, 
 
 	const auto keys = ParseJwksJson(refresh->body);
 	if (keys.empty()) {
-		ctx.jwks_cache.RecordJwksFetch(opts.now_s, true);
 		if (out_refresh) {
 			out_refresh->kid = kid;
 			out_refresh->reason = kReasonRefreshParseFailed;
@@ -232,30 +253,45 @@ static std::optional<VerifyResult> TryRefreshRotatedKid(std::string_view token, 
 	if (cand_it != keys_by_kid.end()) {
 		candidates_for_kid = ScreenUsableKeys(cand_it->second);
 		if (!candidates_for_kid.empty()) {
-			CommitAndAudit(kid, reservation_id, candidates_for_kid, cached_keys, opts.now_s, ctx, out_refresh);
-			target_committed = true;
+			// If there are multiple candidates, prioritize any candidate that verifies this token (F8)
+			if (candidates_for_kid.size() > 1) {
+				for (std::size_t i = 0; i < candidates_for_kid.size(); ++i) {
+					std::vector<Jwk> single = {candidates_for_kid[i]};
+					if (SelectAndVerify(token, token_alg, single, opts) == VerifyResult::Ok) {
+						if (i > 0) {
+							std::swap(candidates_for_kid[0], candidates_for_kid[i]);
+						}
+						break;
+					}
+				}
+			}
+			target_committed =
+			    CommitAndAudit(kid, reservation_id, candidates_for_kid, cached_keys, opts.now_s, ctx, out_refresh);
 		} else if (out_refresh) {
 			out_refresh->kid = kid;
 			out_refresh->reason = kReasonRefreshParseFailed;
 		}
-	} else if (out_refresh) {
-		out_refresh->kid = kid;
-		out_refresh->reason = kReasonRefreshKidAbsent;
+	} else {
+		// Target kid is completely absent from 200 OK document: authoritatively evict (F2)
+		ctx.jwks_cache.EvictReserved(kid, reservation_id);
+		if (out_refresh) {
+			out_refresh->kid = kid;
+			out_refresh->reason = kReasonRefreshKidAbsent;
+		}
 	}
 
 	IngestSiblingKeys(keys_by_kid, kid, opts.now_s, ctx);
 
-	if (!target_committed) {
-		return std::nullopt;
+	// Recheck cache for kid and verify ONLY against keys actually committed (F1, F8)
+	const auto recheck = ctx.jwks_cache.Lookup(kid, opts.now_s);
+	if (recheck.status == JwksLookupStatus::Hit && !recheck.keys.empty()) {
+		const auto verified_result = SelectAndVerify(token, token_alg, recheck.keys, opts);
+		if (verified_result.has_value()) {
+			return *verified_result;
+		}
 	}
 
-	const auto verified_result = SelectAndVerify(token, token_alg, candidates_for_kid, opts);
-	if (verified_result.has_value()) {
-		return *verified_result;
-	}
-
-	// Presenting token did not verify with the rotated keys (e.g. forged or expired),
-	// but the IdP's fresh key material has been committed to cache.
+	// Presenting token did not verify with committed keys (or commit was refused/superseded).
 	return VerifyResult::InvalidSignature;
 }
 
@@ -280,8 +316,9 @@ VerifyResult ValidateToken(std::string_view token, const VerifyOptions &opts, Va
 	const auto first_lookup = ctx.jwks_cache.Lookup(parsed->kid, opts.now_s);
 	if (first_lookup.status == JwksLookupStatus::Hit) {
 		const auto matching = MatchingKeys(first_lookup.keys, parsed->alg);
+		VerifyResult cached_result = VerifyResult::InvalidSignature;
 		if (!matching.empty()) {
-			const auto cached_result = VerifyWithCachedKeys(token, matching, opts);
+			cached_result = VerifyWithCachedKeys(token, matching, opts);
 			if (!IsCachedKeyUnusable(cached_result)) {
 				return cached_result;
 			}
@@ -290,7 +327,7 @@ VerifyResult ValidateToken(std::string_view token, const VerifyOptions &opts, Va
 		        TryRefreshRotatedKid(token, parsed->kid, parsed->alg, first_lookup.keys, opts, ctx, out_refresh)) {
 			return *refreshed;
 		}
-		return VerifyResult::InvalidSignature;
+		return cached_result;
 	}
 	if (first_lookup.status == JwksLookupStatus::RateLimited) {
 		// Within the per-kid rate-limit window (R-S-4) -- do not refetch.
@@ -308,16 +345,14 @@ VerifyResult ValidateToken(std::string_view token, const VerifyOptions &opts, Va
 	}
 
 	// Cache miss: record attempt before network call (F2).
-	ctx.jwks_cache.RecordJwksFetch(opts.now_s, false);
+	ctx.jwks_cache.RecordJwksFetch(opts.now_s);
 	const auto resp = ctx.http.Get(ctx.jwks_uri);
 	if (!resp.has_value() || resp->status_code != 200) {
-		ctx.jwks_cache.RecordJwksFetch(opts.now_s, true);
 		return VerifyResult::JwksFetchFailed;
 	}
 
 	const auto keys = ParseJwksJson(resp->body);
 	if (keys.empty()) {
-		ctx.jwks_cache.RecordJwksFetch(opts.now_s, true);
 		ctx.jwks_cache.OnFetchMiss(parsed->kid, opts.now_s);
 		return VerifyResult::UnknownKid;
 	}
@@ -327,7 +362,7 @@ VerifyResult ValidateToken(std::string_view token, const VerifyOptions &opts, Va
 	for (const auto &[k_kid, k_keys] : keys_by_kid) {
 		const auto usable = ScreenUsableKeys(k_keys);
 		if (!usable.empty()) {
-			ctx.jwks_cache.OnFetchSuccess(k_kid, usable, opts.now_s);
+			ctx.jwks_cache.OnPassiveFetchSuccess(k_kid, usable, opts.now_s);
 		}
 	}
 

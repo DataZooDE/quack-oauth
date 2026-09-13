@@ -179,7 +179,7 @@ static unique_ptr<FunctionData> DiagnoseBind(ClientContext &context, TableFuncti
 				++denies;
 				break;
 			case quack_oauth::AuditEventType::JwksRefresh:
-				if (e.reason == quack_oauth::kReasonRefreshRotated) {
+				if (e.reason == quack_oauth::kReasonRefreshRotated || e.reason == quack_oauth::kReasonRefreshRevoked) {
 					++refreshes;
 				} else if (e.reason == quack_oauth::kReasonRefreshNoRotation ||
 				           e.reason == quack_oauth::kReasonRefreshSuperseded) {
@@ -201,6 +201,9 @@ static unique_ptr<FunctionData> DiagnoseBind(ClientContext &context, TableFuncti
 		Append(detail, "refresh_failed", std::to_string(refresh_failures));
 		data->rows.push_back({"recent_decisions", snap.empty() ? "empty" : "active", detail.str()});
 	}
+
+	std::sort(data->rows.begin(), data->rows.end(),
+	          [](const DiagnoseRow &a, const DiagnoseRow &b) { return a.component < b.component; });
 
 	return std::move(data);
 }

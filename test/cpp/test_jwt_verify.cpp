@@ -206,6 +206,14 @@ TEST_CASE("VerifyJwt: unsupported key type", "[jwt][verify][key]") {
 	CHECK(VerifyJwt(token, weird, BaseOpts()) == VerifyResult::UnsupportedKeyType);
 }
 
+TEST_CASE("VerifyJwt: unusable key with malformed JWK contents", "[jwt][verify][key][f17]") {
+	const auto &k = GetTestKey();
+	const auto token = SignRs256(k, 1700003600, 1700000000, "https://idp.test", "api://quack");
+	Jwk bad = k.jwk;
+	bad.n = "not-valid-base64url!!";
+	CHECK(VerifyJwt(token, bad, BaseOpts()) == VerifyResult::UnusableKey);
+}
+
 // ---------------------------------------------------------------------------
 // R-S-3 ES256 / ES384 (EC P-256 / P-384) round-trip
 // ---------------------------------------------------------------------------

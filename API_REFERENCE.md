@@ -79,6 +79,13 @@ picks the path:
 - `tokeninfo` — Google-style opaque-token endpoint; no Basic auth,
   numbers-as-strings tolerated.
 
+Returns `true` if the token is valid, or `false` on any validation failure.
+At the SQL scalar interface, callers see an undifferentiated `false` across
+all rejections (including expired tokens, invalid signatures, unknown kids,
+and transient cold-miss fetch budget throttling). The underlying reason is
+disambiguated in `quack_oauth_audit_log()` (e.g. `jwks_throttled`, `invalid_signature`,
+`expired`) and logged to the DuckDB logger at `WARNING` level.
+
 ```sql
 SELECT quack_oauth_check_token('eyJhbGciOiJSUzI1NiIs...');
 ```
@@ -289,21 +296,23 @@ the first 8 hex characters of its SHA-256.
 | `token_rejected` | `wrong_issuer` | Token `iss` does not match configured server `issuer`. |
 | `token_rejected` | `wrong_audience` | Token `aud` does not match configured server `audience`. |
 | `token_rejected` | `unsupported_key_type` | Key type or size unsupported (e.g. sub-2048-bit RSA). |
+| `token_rejected` | `unusable_key` | Key contents unparseable or curve unrecognised (e.g. malformed base64url or missing parameters). |
 | `token_rejected` | `unknown_kid` | Token `kid` was not found in the IdP's JWKS document. |
 | `token_rejected` | `jwks_fetch_failed` | Outbound HTTP request to JWKS or introspection endpoint failed. |
 | `token_rejected` | `jwks_throttled` | Transient rejection: outbound JWKS fetch rate-limited by global budget window (2s) on cold miss. Callers should retry after the 2-second window. |
 | `jwks_refresh` | `refresh_rotated` | IdP rotated key material under the same `kid`; fresh keys successfully ingested. |
+| `jwks_refresh` | `refresh_revoked` | Previously cached key for kid was removed from authoritative 200 JWKS response. |
 | `jwks_refresh` | `refresh_no_rotation` | JWKS re-fetched following verification failure, but contains no new key material. |
-| `jwks_refresh` | `refresh_throttled` | Refresh rate-limited by `min_refresh_s` (logged to DuckDB logger; not emitted to ring). |
-| `jwks_refresh` | `refresh_budget_throttled` | Refresh rate-limited by global fetch budget (2s window) (logged to DuckDB logger; not emitted to ring). |
 | `jwks_refresh` | `refresh_fetch_failed` | Outbound JWKS HTTP GET failed or returned non-200. |
 | `jwks_refresh` | `refresh_parse_failed` | Outbound JWKS response was not valid JSON or contained no keys. |
-| `jwks_refresh` | `refresh_kid_absent` | Fresh JWKS document did not contain the requested `kid`. |
+| `jwks_refresh` | `refresh_kid_absent` | Fresh JWKS document did not contain the requested `kid`; cached key authoritatively evicted. |
 | `jwks_refresh` | `refresh_superseded` | Refresh discarded because a concurrent reservation committed first. |
 | `authz_allow` | `rule allow` | Explicit allow rule matched in `policy_table`. |
 | `authz_allow` | `default allow` | No rule matched; fallback to `quack_oauth_policy_default='allow'`. |
 | `authz_deny` | `rule deny` | Explicit deny rule matched in `policy_table`. |
 | `authz_deny` | `default deny` | No rule matched; fallback to `quack_oauth_policy_default='deny'`. |
+
+> **Note on throttled refresh logging**: When a refresh attempt is suppressed by `min_refresh_s` or the 2-second global fetch budget window, internal reason codes `refresh_throttled` and `refresh_budget_throttled` are emitted directly to the DuckDB warning logger (`DUCKDB_LOG_WARNING`, deduplicated per vector chunk) rather than polluting the audit ring. The resulting token evaluation failure appears in the audit ring as `invalid_signature` (for existing cached keys) or `jwks_throttled` (for cold misses).
 
 For persistent audit, set `audit_table` on the server SECRET to a SQL
 table with the same column shape (BIGINT + 7 × VARCHAR); the extension
@@ -445,7 +454,7 @@ When identity providers (such as Microsoft Entra ID) rotate key material while r
 
 | Mode         | Use when                                                                 | Cache behaviour |
 |--------------|--------------------------------------------------------------------------|-----------------|
-| `jwks`       | The IdP issues JWTs (any RS256/384/512 / ES256/384/512) and exposes a JWKS endpoint. | Per-`kid` JWKS cache + per-token decision cache. |
+| `jwks`       | The IdP issues JWTs (RS256/384/512, ES256/384 on P-256/P-384, or EdDSA on Ed25519) and exposes a JWKS endpoint. | Per-`kid` JWKS cache + per-token decision cache. |
 | `introspect` | The IdP issues opaque tokens (or you want centralised revocation). RFC 7662. | Positive decisions cached up to `min(quack_oauth_introspect_cache_s, exp − now)`. **Negative** decisions never cached. |
 | `tokeninfo`  | Google-style endpoints that return JSON claims directly for opaque tokens. | Same as `introspect`. |
 

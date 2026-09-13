@@ -442,8 +442,8 @@ VerifyResult VerifyJwt(std::string_view token, const Jwk &jwk, const VerifyOptio
 		return VerifyResult::UnsupportedKeyType;
 	}
 	if (!pem) {
-		// Malformed JWK contents (missing fields, bad base64url, unknown curve).
-		return VerifyResult::Malformed;
+		// Unusable JWK contents (missing fields, bad base64url, unknown curve).
+		return VerifyResult::UnusableKey;
 	}
 
 	return VerifyWithVerifier(*decoded, *pem, alg, opts);

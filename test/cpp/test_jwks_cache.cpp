@@ -404,16 +404,33 @@ TEST_CASE("JwksCache: Hard cap on Entry::keys preserves at most 4 keys", "[jwks]
 	CHECK(r.keys[3].n == "modulus-3");
 }
 
-TEST_CASE("JwksCache: Unknown kty is rejected and does not append unbounded duplicate keys",
-          "[jwks][cache][kty][f11]") {
+TEST_CASE("JwksCache: Far-future timestamp rewinds are treated as clock resets rather than latching",
+          "[jwks][cache][clock_reset]") {
 	JwksCache cache(30);
-	Jwk bad;
-	bad.kid = "k1";
-	bad.kty = "oct";
-	bad.n = "secret";
 
-	cache.OnFetchSuccess("k1", {bad}, 100);
-	const auto r = cache.Lookup("k1", 100);
-	// Unknown kty should be rejected from hits_
-	CHECK(r.status == JwksLookupStatus::Miss);
+	// 1. Global fetch budget reset
+	cache.RecordJwksFetch(2000000000);
+	CHECK(cache.CanFetchJwks(1700000000));
+
+	// 2. Refresh reservation reset on far-future stamp
+	const auto k1 = MakeRsaJwk("k1");
+	cache.OnFetchSuccess("k1", {k1}, 2000000000);
+	CHECK(cache.TryReserveRefresh("k1", 1700000000) > 0);
+
+	// 3. Negative cache miss table reset
+	cache.OnFetchMiss("k_miss", 2000000000);
+	CHECK(cache.Lookup("k_miss", 1700000000).status == JwksLookupStatus::Miss);
+}
+
+TEST_CASE("JwksCache: SameKeyMaterial vector comparison is order-insensitive",
+          "[jwks][cache][same-key-material][f11]") {
+	const auto j1 = MakeRsaJwk("k1");
+	auto j2 = MakeRsaJwk("k2");
+	j2.n = "other-modulus-k2";
+
+	std::vector<Jwk> vec_a = {j1, j2};
+	std::vector<Jwk> vec_b = {j2, j1};
+
+	CHECK(SameKeyMaterial(vec_a, vec_b));
+	CHECK(SameKeyMaterial(vec_b, vec_a));
 }

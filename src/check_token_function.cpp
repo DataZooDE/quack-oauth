@@ -251,6 +251,8 @@ static const char *VerifyResultReason(quack_oauth::VerifyResult r) {
 		return "wrong_audience";
 	case quack_oauth::VerifyResult::UnsupportedKeyType:
 		return "unsupported_key_type";
+	case quack_oauth::VerifyResult::UnusableKey:
+		return "unusable_key";
 	case quack_oauth::VerifyResult::UnknownKid:
 		return "unknown_kid";
 	case quack_oauth::VerifyResult::JwksFetchFailed:
@@ -340,31 +342,15 @@ static void StoreSessionPrincipal(QuackOauthState &shared_state, const string &s
 }
 
 static void EmitAuditsAndScrub(ClientContext &context, string &token_str, const RowValidation &row, int64_t now_s,
-                               std::unique_lock<std::mutex> &guard) {
+                               std::unique_lock<std::mutex> &guard,
+                               std::vector<std::pair<std::string, std::string>> &throttled_events) {
 	const bool ok = row.outcome == quack_oauth::VerifyResult::Ok;
 	guard.unlock();
 	EmitTokenAudit(context, token_str, row.outcome, now_s, (ok && row.have_principal) ? &row.principal : nullptr);
 	if (!row.refresh_kid.empty()) {
 		if (row.refresh_reason == quack_oauth::kReasonRefreshThrottled ||
 		    row.refresh_reason == quack_oauth::kReasonRefreshBudgetThrottled) {
-			std::string safe_kid;
-			for (char c : row.refresh_kid) {
-				if (static_cast<unsigned char>(c) >= 32 && static_cast<unsigned char>(c) < 127 && c != '"' &&
-				    c != '\\') {
-					safe_kid.push_back(c);
-				}
-			}
-			if (safe_kid.size() > 256) {
-				safe_kid.resize(256);
-			}
-			if (row.refresh_reason == quack_oauth::kReasonRefreshThrottled) {
-				DUCKDB_LOG_INFO(context,
-				                "quack_oauth: JWKS refresh rate-limited by min_refresh_s for kid='" + safe_kid + "'");
-			} else {
-				DUCKDB_LOG_INFO(context,
-				                "quack_oauth: JWKS refresh throttled by global fetch budget (2s window) for kid='" +
-				                    safe_kid + "'");
-			}
+			throttled_events.emplace_back(row.refresh_kid, row.refresh_reason);
 		} else {
 			quack_oauth::AuditEvent e;
 			e.timestamp_unix_s = now_s;
@@ -387,6 +373,7 @@ template <class Fn>
 static void RunValidationLoop(Vector &tokens, idx_t count, Vector &result, ClientContext &context, Vector *session_ids,
                               int64_t now_s, QuackOauthState &shared_state, std::unique_lock<std::mutex> &guard,
                               Fn &&validate_row) {
+	std::vector<std::pair<std::string, std::string>> throttled_events;
 	if (session_ids != nullptr) {
 		UnifiedVectorFormat tok_format;
 		UnifiedVectorFormat sid_format;
@@ -411,16 +398,41 @@ static void RunValidationLoop(Vector &tokens, idx_t count, Vector &result, Clien
 			if (ok && row.have_principal && !sid_str.empty()) {
 				StoreSessionPrincipal(shared_state, sid_str, row.principal, now_s);
 			}
-			EmitAuditsAndScrub(context, token_str, row, now_s, guard);
+			EmitAuditsAndScrub(context, token_str, row, now_s, guard, throttled_events);
 		}
 	} else {
 		UnaryExecutor::Execute<string_t, bool>(tokens, result, count, [&](string_t token) {
 			auto token_str = token.GetString();
 			const auto row = validate_row(token_str);
 			const bool ok = row.outcome == quack_oauth::VerifyResult::Ok;
-			EmitAuditsAndScrub(context, token_str, row, now_s, guard);
+			EmitAuditsAndScrub(context, token_str, row, now_s, guard, throttled_events);
 			return ok;
 		});
+	}
+
+	if (!throttled_events.empty()) {
+		std::sort(throttled_events.begin(), throttled_events.end());
+		throttled_events.erase(std::unique(throttled_events.begin(), throttled_events.end()), throttled_events.end());
+		for (const auto &item : throttled_events) {
+			std::string safe_kid;
+			for (char c : item.first) {
+				if (static_cast<unsigned char>(c) >= 32 && static_cast<unsigned char>(c) < 127 && c != '"' &&
+				    c != '\\') {
+					safe_kid.push_back(c);
+				}
+			}
+			if (safe_kid.size() > 256) {
+				safe_kid.resize(256);
+			}
+			if (item.second == quack_oauth::kReasonRefreshThrottled) {
+				DUCKDB_LOG_WARNING(context, "quack_oauth: JWKS refresh rate-limited by min_refresh_s for kid='" +
+				                                safe_kid + "'");
+			} else {
+				DUCKDB_LOG_WARNING(context,
+				                   "quack_oauth: JWKS refresh throttled by global fetch budget (2s window) for kid='" +
+				                       safe_kid + "'");
+			}
+		}
 	}
 }
 
