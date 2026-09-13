@@ -8,6 +8,8 @@
 #include "telemetry.hpp"
 #endif
 
+#include "quack_oauth_state.hpp"
+
 namespace duckdb {
 
 #ifndef EMSCRIPTEN
@@ -23,6 +25,12 @@ static void OnTelemetryKey(ClientContext &, SetScope, Value &parameter) {
 	PostHogTelemetry::Instance().SetAPIKey(parameter.GetValue<std::string>());
 }
 #endif
+
+static void OnJwksMinRefreshSeconds(ClientContext &, SetScope, Value &parameter) {
+	auto &state = GetQuackOauthState();
+	std::lock_guard<std::mutex> guard(state.mu);
+	state.jwks_cache.SetMinRefreshSeconds(parameter.GetValue<int32_t>());
+}
 
 // R-S-11(c) helpers: resolve each setting's default from the matching
 // `QUACK_OAUTH_<UPPER>` environment variable when present. SET in SQL
@@ -72,9 +80,11 @@ void RegisterQuackOauthSettings(DBConfig &config) {
 	    LogicalType::INTEGER, EnvIntDefault("QUACK_OAUTH_CLOCK_SKEW_S", 60), nullptr, SetScope::GLOBAL);
 
 	// R-S-4: rate-limit per-kid JWKS refresh to guard against poll DoS.
-	config.AddExtensionOption("quack_oauth_jwks_min_refresh_s",
-	                          "Minimum seconds between JWKS refreshes per kid (R-S-4).", LogicalType::INTEGER,
-	                          EnvIntDefault("QUACK_OAUTH_JWKS_MIN_REFRESH_S", 30), nullptr, SetScope::GLOBAL);
+	config.AddExtensionOption(
+	    "quack_oauth_jwks_min_refresh_s",
+	    "Minimum seconds between JWKS refreshes per kid (R-S-4). Values below 1 are clamped to 1.",
+	    LogicalType::INTEGER, EnvIntDefault("QUACK_OAUTH_JWKS_MIN_REFRESH_S", 30), OnJwksMinRefreshSeconds,
+	    SetScope::GLOBAL);
 
 	// R-S-5: cache RFC 7662 introspect results.
 	config.AddExtensionOption("quack_oauth_introspect_cache_s",
@@ -113,16 +123,15 @@ void RegisterQuackOauthSettings(DBConfig &config) {
 	// on. Two opt-out paths -- this setting AND the `DATAZOO_DISABLE_TELEMETRY`
 	// env var checked inside posthog-telemetry's PostHogProcess(). See README
 	// "Telemetry" section.
+	config.AddExtensionOption("quack_oauth_telemetry_enabled",
+	                          "Enable anonymous usage telemetry, see https://erpl.io/telemetry for details.",
+	                          LogicalType::BOOLEAN, EnvBoolDefault("QUACK_OAUTH_TELEMETRY_ENABLED", true),
+	                          OnTelemetryEnabled, SetScope::GLOBAL);
 	config.AddExtensionOption(
-	    "quack_oauth_telemetry_enabled",
-	    "Enable anonymous usage telemetry, see https://erpl.io/telemetry for details.", LogicalType::BOOLEAN,
-	    EnvBoolDefault("QUACK_OAUTH_TELEMETRY_ENABLED", true), OnTelemetryEnabled, SetScope::GLOBAL);
-	config.AddExtensionOption("quack_oauth_telemetry_key",
-	                          "PostHog API key for telemetry, see https://erpl.io/telemetry for details.",
-	                          LogicalType::VARCHAR,
-	                          EnvStringDefault("QUACK_OAUTH_TELEMETRY_KEY",
-	                                           "phc_t3wwRLtpyEmLHYaZCSszG0MqVr74J6wnCrj9D41zk2t"),
-	                          OnTelemetryKey, SetScope::GLOBAL);
+	    "quack_oauth_telemetry_key", "PostHog API key for telemetry, see https://erpl.io/telemetry for details.",
+	    LogicalType::VARCHAR,
+	    EnvStringDefault("QUACK_OAUTH_TELEMETRY_KEY", "phc_t3wwRLtpyEmLHYaZCSszG0MqVr74J6wnCrj9D41zk2t"),
+	    OnTelemetryKey, SetScope::GLOBAL);
 #endif
 }
 

@@ -24,6 +24,7 @@ using quack_oauth::IHttpClient;
 using quack_oauth::IntrospectContext;
 using quack_oauth::Jwk;
 using quack_oauth::JwksCache;
+using quack_oauth::JwksLookupStatus;
 using quack_oauth::Principal;
 using quack_oauth::TokeninfoContext;
 using quack_oauth::ValidateContext;
@@ -215,8 +216,8 @@ TEST_CASE("Validator: malformed JWKS on refresh preserves last-good key and vali
 
 	FakeHttpClient http;
 	http.next_response = IHttpClient::Response {
-	    200,
-	    R"({"keys":[{"kid":")" + old_key.jwk.kid + R"(","kty":"RSA","use":"sig","alg":"RS256","n":"bad_garbage_rsa_n","e":"AQAB"}]})"};
+	    200, R"({"keys":[{"kid":")" + old_key.jwk.kid +
+	             R"(","kty":"RSA","use":"sig","alg":"RS256","n":"bad_garbage_rsa_n","e":"AQAB"}]})"};
 	ValidateContext ctx {http, cache, "https://idp.test/jwks"};
 
 	const auto rotated_token = Sign(rotated_key, 1700003600, 1700000000);
@@ -234,9 +235,11 @@ TEST_CASE("Validator: duplicate kid in refreshed JWKS tests candidate keys until
 	JwksCache cache(30);
 	cache.OnFetchSuccess(old_key.jwk, 1699999900);
 
-	std::string jwks_body = std::string(R"({"keys":[)") +
-	    R"({"kid":")" + rotated_key.jwk.kid + R"(","kty":"RSA","use":"sig","alg":"RS256","n":")" + rotated_key.jwk.n + R"(","e":")" + rotated_key.jwk.e + R"("},)" +
-	    R"({"kid":")" + old_key.jwk.kid + R"(","kty":"RSA","use":"sig","alg":"RS256","n":")" + old_key.jwk.n + R"(","e":")" + old_key.jwk.e + R"("}]})";
+	std::string jwks_body = std::string(R"({"keys":[)") + R"({"kid":")" + rotated_key.jwk.kid +
+	                        R"(","kty":"RSA","use":"sig","alg":"RS256","n":")" + rotated_key.jwk.n + R"(","e":")" +
+	                        rotated_key.jwk.e + R"("},)" + R"({"kid":")" + old_key.jwk.kid +
+	                        R"(","kty":"RSA","use":"sig","alg":"RS256","n":")" + old_key.jwk.n + R"(","e":")" +
+	                        old_key.jwk.e + R"("}]})";
 
 	FakeHttpClient http;
 	http.next_response = IHttpClient::Response {200, std::move(jwks_body)};
@@ -245,6 +248,82 @@ TEST_CASE("Validator: duplicate kid in refreshed JWKS tests candidate keys until
 	const auto rotated_token = Sign(rotated_key, 1700003600, 1700000000);
 	CHECK(ValidateToken(rotated_token, BaseOpts(), ctx) == VerifyResult::Ok);
 	CHECK(http.call_count == 1);
+}
+
+TEST_CASE("Validator: hit-refresh commits only verified key and ignores unverified sibling keys",
+          "[validator][rotation][sibling]") {
+	const auto &old_key = GetValidatorKey();
+	const auto rotated_key = GenerateValidatorKey(old_key.jwk.kid);
+	JwksCache cache(30);
+	cache.OnFetchSuccess(old_key.jwk, 1699999900);
+
+	std::string jwks_body =
+	    std::string(R"({"keys":[)") + R"({"kid":")" + rotated_key.jwk.kid +
+	    R"(","kty":"RSA","use":"sig","alg":"RS256","n":")" + rotated_key.jwk.n + R"(","e":")" + rotated_key.jwk.e +
+	    R"("},)" + R"({"kid":"unverified-sibling","kty":"RSA","use":"sig","alg":"RS256","n":"sibling-n","e":"AQAB"})" +
+	    R"(]})";
+
+	FakeHttpClient http;
+	http.next_response = IHttpClient::Response {200, std::move(jwks_body)};
+	ValidateContext ctx {http, cache, "https://idp.test/jwks"};
+
+	const auto rotated_token = Sign(rotated_key, 1700003600, 1700000000);
+	CHECK(ValidateToken(rotated_token, BaseOpts(), ctx) == VerifyResult::Ok);
+
+	// The sibling key must NOT have been ingested into the cache without verification.
+	CHECK(cache.Lookup("unverified-sibling", 1700000000).status == JwksLookupStatus::Miss);
+}
+
+TEST_CASE("Validator: rotated key with claim check failure updates cache and returns true claim error",
+          "[validator][rotation][claims]") {
+	const auto &old_key = GetValidatorKey();
+	const auto rotated_key = GenerateValidatorKey(old_key.jwk.kid);
+	JwksCache cache(30);
+	cache.OnFetchSuccess(old_key.jwk, 1699999900);
+
+	FakeHttpClient http;
+	http.next_response = IHttpClient::Response {200, JwksWith(rotated_key.jwk)};
+	ValidateContext ctx {http, cache, "https://idp.test/jwks"};
+
+	// Token was signed with rotated_key, but expired at t=1699999000 (now is 1700000000, skew is 60s).
+	const auto expired_token = Sign(rotated_key, 1699999000, 1699990000);
+
+	// The validator must recognize that rotated_key cryptographically signed the token,
+	// commit the rotated key to the cache, and return VerifyResult::Expired (NOT InvalidSignature!).
+	CHECK(ValidateToken(expired_token, BaseOpts(1700000000), ctx) == VerifyResult::Expired);
+	CHECK(http.call_count == 1);
+
+	// Cache must now hold the rotated key!
+	const auto lookup = cache.Lookup(old_key.jwk.kid, 1700000000);
+	REQUIRE(lookup.status == JwksLookupStatus::Hit);
+	CHECK(lookup.jwk->n == rotated_key.jwk.n);
+}
+
+TEST_CASE("Validator: cache miss with duplicate kid in JWKS tests candidate keys until one verifies",
+          "[validator][cache-miss][duplicate-kid]") {
+	const auto &valid_key = GetValidatorKey();
+	const auto invalid_key = GenerateValidatorKey(valid_key.jwk.kid);
+	JwksCache cache(30);
+
+	// JWKS body has the valid key FIRST, and a stale/invalid key with the same kid LAST.
+	std::string jwks_body = std::string(R"({"keys":[)") + R"({"kid":")" + valid_key.jwk.kid +
+	                        R"(","kty":"RSA","use":"sig","alg":"RS256","n":")" + valid_key.jwk.n + R"(","e":")" +
+	                        valid_key.jwk.e + R"("},)" + R"({"kid":")" + invalid_key.jwk.kid +
+	                        R"(","kty":"RSA","use":"sig","alg":"RS256","n":")" + invalid_key.jwk.n + R"(","e":")" +
+	                        invalid_key.jwk.e + R"("}]})";
+
+	FakeHttpClient http;
+	http.next_response = IHttpClient::Response {200, std::move(jwks_body)};
+	ValidateContext ctx {http, cache, "https://idp.test/jwks"};
+
+	const auto token = Sign(valid_key, 1700003600, 1700000000);
+	CHECK(ValidateToken(token, BaseOpts(), ctx) == VerifyResult::Ok);
+	CHECK(http.call_count == 1);
+
+	// The valid key must be the one cached.
+	const auto lookup = cache.Lookup(valid_key.jwk.kid, 1700000000);
+	REQUIRE(lookup.status == JwksLookupStatus::Hit);
+	CHECK(lookup.jwk->n == valid_key.jwk.n);
 }
 
 TEST_CASE("Validator: forged token signature failure triggers refresh once and rate-limits subsequent forged tokens",

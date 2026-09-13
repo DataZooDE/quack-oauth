@@ -148,18 +148,57 @@ TEST_CASE("JwksCache: min_refresh_s is clamped to at least 1 second", "[jwks][ca
 	CHECK_FALSE(cache_neg.TryBeginHitRefresh("k1", 101));
 }
 
-TEST_CASE("JwksCache: backwards clock step resets rate limit and allows hit refresh",
+TEST_CASE("JwksCache: decreasing now_s sequence fails closed and enforces rate limit",
           "[jwks][cache][rate-limit][clock-skew]") {
 	JwksCache cache(30);
 	cache.OnFetchSuccess(MakeRsaJwk("k1"), 1000);
 
-	CHECK(cache.TryBeginHitRefresh("k1", 1030));
-	CHECK_FALSE(cache.TryBeginHitRefresh("k1", 1030));
+	// Chunk B at t=1030 reserves a refresh.
+	const auto res1 = cache.TryReserveRefresh("k1", 1030);
+	CHECK(res1 != 0);
 
-	// System clock steps backwards (NTP skew) to t=900 (130s in the past).
-	CHECK(cache.TryBeginHitRefresh("k1", 900));
-	CHECK_FALSE(cache.TryBeginHitRefresh("k1", 905));
-	CHECK(cache.TryBeginHitRefresh("k1", 930));
+	// Concurrent Chunk A with slightly earlier sampled timestamp t=1029 arrives.
+	// Because 1029 < 1030, this is a backwards timestamp step.
+	// It must FAIL CLOSED (return 0) rather than granting a second refresh in the window.
+	CHECK(cache.TryReserveRefresh("k1", 1029) == 0);
+
+	// Another concurrent chunk at t=1028 also fails closed.
+	CHECK(cache.TryReserveRefresh("k1", 1028) == 0);
+
+	// Only after the full window from the last stamp (1028 + 30 = 1058) is a new reservation allowed.
+	CHECK(cache.TryReserveRefresh("k1", 1050) == 0);
+	CHECK(cache.TryReserveRefresh("k1", 1058) != 0);
+}
+
+TEST_CASE("JwksCache: out-of-order refresh completions do not overwrite newer keys",
+          "[jwks][cache][reservation][concurrency]") {
+	JwksCache cache(30);
+	const auto k0 = MakeRsaJwk("k1");
+	cache.OnFetchSuccess(k0, 1000);
+
+	// Request A starts at t=1030 and gets reservation id res_a
+	const auto res_a = cache.TryReserveRefresh("k1", 1030);
+	REQUIRE(res_a != 0);
+
+	// Request B starts later at t=1065 (after window) and gets reservation id res_b
+	const auto res_b = cache.TryReserveRefresh("k1", 1065);
+	REQUIRE(res_b != 0);
+	REQUIRE(res_b > res_a);
+
+	auto k1 = MakeRsaJwk("k1");
+	k1.n = "key-K1";
+	auto k2 = MakeRsaJwk("k1");
+	k2.n = "key-K2";
+
+	// Request B finishes faster and commits K2
+	CHECK(cache.CommitRefresh("k1", res_b, k2, 1066));
+	CHECK(cache.Lookup("k1", 1066).jwk->n == "key-K2");
+
+	// Request A finishes later (out-of-order) and tries to commit K1 using stale res_a
+	CHECK_FALSE(cache.CommitRefresh("k1", res_a, k1, 1070));
+
+	// The newer key K2 must still be in the cache!
+	CHECK(cache.Lookup("k1", 1070).jwk->n == "key-K2");
 }
 
 TEST_CASE("JwksCache: out-of-order fetch completion preserves the latest refresh attempt timestamp",
@@ -199,4 +238,39 @@ TEST_CASE("JwksCache: miss rate-limit entries are bounded by capacity", "[jwks][
 	CHECK(cache.Lookup("k1", 3).status == JwksLookupStatus::Miss);
 	CHECK(cache.Lookup("k2", 3).status == JwksLookupStatus::RateLimited);
 	CHECK(cache.Lookup("k3", 3).status == JwksLookupStatus::RateLimited);
+}
+
+TEST_CASE("JwksCache: CommitRefresh updates LRU order for eviction", "[jwks][cache][capacity][lru]") {
+	JwksCache cache(kRefresh, /*max_entries=*/2);
+	cache.OnFetchSuccess(MakeRsaJwk("k1"), 0);
+	cache.OnFetchSuccess(MakeRsaJwk("k2"), 1);
+
+	// Reserve and commit refresh for k1 at t=35.
+	const auto res = cache.TryReserveRefresh("k1", 35);
+	REQUIRE(res != 0);
+	CHECK(cache.CommitRefresh("k1", res, MakeRsaJwk("k1"), 36));
+
+	// Adding k3 should now evict k2 (which is now least recently used), keeping k1.
+	cache.OnFetchSuccess(MakeRsaJwk("k3"), 37);
+	CHECK(cache.Lookup("k1", 38).status == JwksLookupStatus::Hit);
+	CHECK(cache.Lookup("k2", 38).status == JwksLookupStatus::Miss);
+	CHECK(cache.Lookup("k3", 38).status == JwksLookupStatus::Hit);
+}
+
+TEST_CASE("JwksCache: SetMinRefreshSeconds updates window and clamps below 1", "[jwks][cache][settings]") {
+	JwksCache cache(30);
+	cache.OnFetchSuccess(MakeRsaJwk("k1"), 100);
+
+	// At 110 (10s later), rate limited under 30s window
+	CHECK_FALSE(cache.TryBeginHitRefresh("k1", 110));
+
+	// Dynamically change min refresh to 5s
+	cache.SetMinRefreshSeconds(5);
+	// Now at 110, 10s >= 5s, so it should be allowed!
+	CHECK(cache.TryBeginHitRefresh("k1", 110));
+
+	// Values below 1 are clamped to 1
+	cache.SetMinRefreshSeconds(0);
+	CHECK_FALSE(cache.TryBeginHitRefresh("k1", 110));
+	CHECK(cache.TryBeginHitRefresh("k1", 111));
 }

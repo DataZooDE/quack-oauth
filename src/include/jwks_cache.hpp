@@ -41,17 +41,22 @@ struct JwksLookup {
 	std::int64_t retry_after_s = 0; // populated only on RateLimited
 };
 
-// Per-process JWKS cache: thread-safety is a higher-slice concern; this layer
-// is pure logic and assumes single-threaded access. Caches successful kid →
-// JWK lookups indefinitely (architecture section 6 IdP-outage scenario --
-// hits keep serving) and rate-limits *misses* to at most one fetch per
-// `min_refresh_s` per kid (R-S-4: JWKS-poll DoS protection).
+// Per-process JWKS cache. Thread-safety: the QuackOauthState mutex owns this
+// cache. Cache lookups, reservations, and commits must be performed while holding
+// that mutex. The mutex is dropped across outbound HTTP calls (UnlockingHttpClient),
+// during which callers must not hold references or pointers into cache entries.
+// Caches successful kid -> JWK lookups indefinitely (architecture section 6 IdP-outage
+// scenario -- hits keep serving) and rate-limits misses and hit-refresh attempts
+// to at most one fetch per `min_refresh_s` per kid (R-S-4: JWKS-poll DoS protection).
+// Values of min_refresh_s below 1 are clamped to 1.
 //
 // Clock is caller-injected (`now_s` parameters) so the cache is fully
 // deterministic in tests.
 class JwksCache {
 public:
 	explicit JwksCache(std::int64_t min_refresh_s, std::size_t max_entries = 1000);
+
+	void SetMinRefreshSeconds(std::int64_t min_refresh_s);
 
 	// Look up a kid. Does not mutate the cache.
 	JwksLookup Lookup(const std::string &kid, std::int64_t now_s) const;
@@ -65,11 +70,19 @@ public:
 	void OnFetchMiss(const std::string &kid, std::int64_t now_s);
 
 	// Reserve one rate-limited refresh attempt for an already-cached kid.
-	// Returns false when another attempt (or initial successful fetch) occurred
-	// inside `min_refresh_s`. The cached JWK remains available even when the
-	// refresh later fails. Clock rewinds (now_s < last_attempt) reset the stamp
-	// and allow the attempt.
+	// Returns a non-zero reservation ID if granted, or 0 if rate-limited.
+	// On clock rewinds or overlapping concurrent chunks with decreasing now_s
+	// (now_s < last_attempt), the stamp is updated and the call fails closed
+	// (returns 0) to preserve the rate limit bound.
+	std::uint64_t TryReserveRefresh(const std::string &kid, std::int64_t now_s);
+
+	// Backwards-compatible boolean wrapper for TryReserveRefresh(kid, now_s) != 0.
 	bool TryBeginHitRefresh(const std::string &kid, std::int64_t now_s);
+
+	// Commit a verified refreshed JWK for the reserved kid.
+	// Succeeds only if `reservation_id` matches the active reservation for `kid`,
+	// dropping stale out-of-order completions so they cannot overwrite newer keys.
+	bool CommitRefresh(const std::string &kid, std::uint64_t reservation_id, const Jwk &jwk, std::int64_t now_s);
 
 	std::size_t Size() const noexcept;
 	std::size_t MissSize() const noexcept;
@@ -79,6 +92,7 @@ private:
 		Jwk jwk;
 		std::int64_t fetched_at_s = 0;
 		std::int64_t last_refresh_attempt_s = 0;
+		std::uint64_t current_reservation_id = 0;
 		std::list<std::string>::iterator lru_it;
 	};
 	struct MissEntry {
@@ -88,6 +102,7 @@ private:
 
 	std::int64_t min_refresh_s_;
 	std::size_t max_entries_;
+	std::uint64_t next_reservation_id_ = 1;
 	std::list<std::string> hit_lru_;
 	std::list<std::string> miss_lru_;
 	std::unordered_map<std::string, Entry> hits_;

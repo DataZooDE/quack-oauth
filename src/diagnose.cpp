@@ -81,8 +81,10 @@ static unique_ptr<FunctionData> DiagnoseBind(ClientContext &context, TableFuncti
 	// 2. JWKS cache
 	{
 		const auto entries = state.jwks_cache.Size();
+		const auto misses = state.jwks_cache.MissSize();
 		std::ostringstream detail;
 		Append(detail, "entries", std::to_string(entries));
+		Append(detail, "misses", std::to_string(misses));
 		data->rows.push_back({"jwks_cache", entries == 0 ? "empty" : "warm", detail.str()});
 	}
 
@@ -151,7 +153,7 @@ static unique_ptr<FunctionData> DiagnoseBind(ClientContext &context, TableFuncti
 	// 5. Audit ring: count + decision split
 	{
 		const auto snap = state.audit_ring.Snapshot();
-		std::size_t accepts = 0, rejects = 0, allows = 0, denies = 0;
+		std::size_t accepts = 0, rejects = 0, allows = 0, denies = 0, refreshes = 0;
 		for (const auto &e : snap) {
 			switch (e.event_type) {
 			case quack_oauth::AuditEventType::TokenAccepted:
@@ -167,6 +169,7 @@ static unique_ptr<FunctionData> DiagnoseBind(ClientContext &context, TableFuncti
 				++denies;
 				break;
 			case quack_oauth::AuditEventType::JwksRefresh:
+				++refreshes;
 				break;
 			}
 		}
@@ -176,6 +179,7 @@ static unique_ptr<FunctionData> DiagnoseBind(ClientContext &context, TableFuncti
 		Append(detail, "rejected", std::to_string(rejects));
 		Append(detail, "allowed", std::to_string(allows));
 		Append(detail, "denied", std::to_string(denies));
+		Append(detail, "refreshed", std::to_string(refreshes));
 		data->rows.push_back({"recent_decisions", snap.empty() ? "empty" : "active", detail.str()});
 	}
 
@@ -355,8 +359,7 @@ void RegisterQuackOauthDiagnose(ExtensionLoader &loader) {
 	}
 
 	{
-		TableFunction fn("quack_oauth_current_principal", {},
-		                 DATAZOO_GUARD(QUACK_OAUTH_BANNER, CurrentPrincipalScan),
+		TableFunction fn("quack_oauth_current_principal", {}, DATAZOO_GUARD(QUACK_OAUTH_BANNER, CurrentPrincipalScan),
 		                 DATAZOO_GUARD(QUACK_OAUTH_BANNER, CurrentPrincipalBind), CurrentPrincipalInit);
 		CreateTableFunctionInfo info(fn);
 		FunctionDescription desc;

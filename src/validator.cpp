@@ -29,27 +29,69 @@ static VerifyResult VerifyWithCachedKey(std::string_view token, const Jwk &jwk, 
 	return VerifyJwt(token, jwk, opts);
 }
 
-// Returns true iff the kid landed in the cache after a fetch + parse.
-static bool IngestJwks(const std::string &kid, const std::string &body, std::int64_t now_s, JwksCache &cache) {
-	const auto keys = ParseJwksJson(body);
-	if (keys.empty()) {
-		return false;
-	}
-	bool found = false;
-	for (const auto &k : keys) {
-		cache.OnFetchSuccess(k, now_s);
-		if (k.kid == kid) {
-			found = true;
-		}
-	}
-	return found;
-}
-
 static bool AudienceMatches(const std::vector<std::string> &actual, const std::string &expected) {
 	if (expected.empty()) {
 		return true;
 	}
 	return std::find(actual.begin(), actual.end(), expected) != actual.end();
+}
+
+static bool SignatureMatchesCandidate(VerifyResult res) noexcept {
+	return res == VerifyResult::Ok || res == VerifyResult::Expired || res == VerifyResult::NotYetValid ||
+	       res == VerifyResult::WrongIssuer || res == VerifyResult::WrongAudience;
+}
+
+static std::optional<VerifyResult> TryRefreshRotatedKid(std::string_view token, const std::string &kid,
+                                                        const VerifyOptions &opts, ValidateContext &ctx) {
+	const auto reservation_id = ctx.jwks_cache.TryReserveRefresh(kid, opts.now_s);
+	if (reservation_id == 0) {
+		return std::nullopt;
+	}
+
+	// A provider may rotate key material while reusing the same kid. One
+	// rate-limited refresh lets a valid token recover without allowing
+	// forged tokens to turn every verification into a JWKS request.
+	const auto refresh = ctx.http.Get(ctx.jwks_uri);
+	if (!refresh.has_value() || refresh->status_code != 200) {
+		return std::nullopt;
+	}
+
+	const auto keys = ParseJwksJson(refresh->body);
+	if (keys.empty()) {
+		return std::nullopt;
+	}
+
+	std::vector<const Jwk *> candidates;
+	for (const auto &k : keys) {
+		if (k.kid == kid) {
+			candidates.push_back(&k);
+		}
+	}
+	if (candidates.empty()) {
+		return std::nullopt;
+	}
+
+	const Jwk *verified_jwk = nullptr;
+	VerifyResult verified_result = VerifyResult::InvalidSignature;
+	for (const auto *cand : candidates) {
+		const auto cand_result = VerifyWithCachedKey(token, *cand, opts);
+		if (SignatureMatchesCandidate(cand_result)) {
+			verified_jwk = cand;
+			verified_result = cand_result;
+			break;
+		}
+	}
+	if (!verified_jwk) {
+		return std::nullopt;
+	}
+
+	// Two-phase commit: only commit the verified key into the cache.
+	// Never commit unverified sibling keys.
+	ctx.jwks_cache.CommitRefresh(kid, reservation_id, *verified_jwk, opts.now_s);
+	if (ctx.on_refresh) {
+		ctx.on_refresh(kid);
+	}
+	return verified_result;
 }
 
 VerifyResult ValidateToken(std::string_view token, const VerifyOptions &opts, ValidateContext &ctx) {
@@ -72,54 +114,13 @@ VerifyResult ValidateToken(std::string_view token, const VerifyOptions &opts, Va
 	const auto first_lookup = ctx.jwks_cache.Lookup(parsed->kid, opts.now_s);
 	if (first_lookup.status == JwksLookupStatus::Hit) {
 		const auto cached_result = VerifyWithCachedKey(token, *first_lookup.jwk, opts);
-		if (cached_result != VerifyResult::InvalidSignature ||
-		    !ctx.jwks_cache.TryBeginHitRefresh(parsed->kid, opts.now_s)) {
+		if (cached_result != VerifyResult::InvalidSignature) {
 			return cached_result;
 		}
-
-		// A provider may rotate key material while reusing the same kid. One
-		// rate-limited refresh lets a valid token recover without allowing
-		// forged tokens to turn every verification into a JWKS request.
-		const auto refresh = ctx.http.Get(ctx.jwks_uri);
-		if (!refresh.has_value() || refresh->status_code != 200) {
-			// Preserve the original authentication result and the last-good
-			// cached key during an IdP outage.
-			return cached_result;
+		if (const auto refreshed = TryRefreshRotatedKid(token, parsed->kid, opts, ctx)) {
+			return *refreshed;
 		}
-
-		const auto keys = ParseJwksJson(refresh->body);
-		if (keys.empty()) {
-			return cached_result;
-		}
-
-		std::vector<const Jwk *> candidates;
-		for (const auto &k : keys) {
-			if (k.kid == parsed->kid) {
-				candidates.push_back(&k);
-			}
-		}
-		if (candidates.empty()) {
-			return cached_result;
-		}
-
-		const Jwk *verified_jwk = nullptr;
-		for (const auto *cand : candidates) {
-			if (VerifyWithCachedKey(token, *cand, opts) == VerifyResult::Ok) {
-				verified_jwk = cand;
-				break;
-			}
-		}
-		if (!verified_jwk) {
-			return cached_result;
-		}
-
-		for (const auto &k : keys) {
-			if (k.kid != parsed->kid) {
-				ctx.jwks_cache.OnFetchSuccess(k, opts.now_s);
-			}
-		}
-		ctx.jwks_cache.OnFetchSuccess(*verified_jwk, opts.now_s);
-		return VerifyResult::Ok;
+		return cached_result;
 	}
 	if (first_lookup.status == JwksLookupStatus::RateLimited) {
 		// Within the per-kid rate-limit window (R-S-4) -- do not refetch.
@@ -132,19 +133,49 @@ VerifyResult ValidateToken(std::string_view token, const VerifyOptions &opts, Va
 		return VerifyResult::JwksFetchFailed;
 	}
 
-	const bool kid_present = IngestJwks(parsed->kid, resp->body, opts.now_s, ctx.jwks_cache);
-	if (!kid_present) {
+	const auto keys = ParseJwksJson(resp->body);
+	if (keys.empty()) {
 		ctx.jwks_cache.OnFetchMiss(parsed->kid, opts.now_s);
 		return VerifyResult::UnknownKid;
 	}
 
-	const auto second_lookup = ctx.jwks_cache.Lookup(parsed->kid, opts.now_s);
-	if (second_lookup.status != JwksLookupStatus::Hit) {
-		// Defensive: IngestJwks reported the kid landed, but the cache
-		// disagrees. Treat as UnknownKid rather than crashing.
+	std::vector<const Jwk *> candidates;
+	for (const auto &k : keys) {
+		if (k.kid == parsed->kid) {
+			candidates.push_back(&k);
+		}
+	}
+	if (candidates.empty()) {
+		for (const auto &k : keys) {
+			ctx.jwks_cache.OnFetchSuccess(k, opts.now_s);
+		}
+		ctx.jwks_cache.OnFetchMiss(parsed->kid, opts.now_s);
 		return VerifyResult::UnknownKid;
 	}
-	return VerifyWithCachedKey(token, *second_lookup.jwk, opts);
+
+	for (const auto &k : keys) {
+		if (k.kid != parsed->kid) {
+			ctx.jwks_cache.OnFetchSuccess(k, opts.now_s);
+		}
+	}
+
+	const Jwk *verified_jwk = nullptr;
+	VerifyResult verified_result = VerifyResult::InvalidSignature;
+	for (const auto *cand : candidates) {
+		const auto cand_result = VerifyWithCachedKey(token, *cand, opts);
+		if (SignatureMatchesCandidate(cand_result)) {
+			verified_jwk = cand;
+			verified_result = cand_result;
+			break;
+		}
+	}
+	if (verified_jwk != nullptr) {
+		ctx.jwks_cache.OnFetchSuccess(*verified_jwk, opts.now_s);
+		return verified_result;
+	}
+
+	ctx.jwks_cache.OnFetchSuccess(*candidates.front(), opts.now_s);
+	return VerifyResult::InvalidSignature;
 }
 
 VerifyResult ValidateTokenViaTokeninfo(std::string_view token, const VerifyOptions &opts, TokeninfoContext &ctx,

@@ -1,6 +1,7 @@
 #pragma once
 
 #include <cstdint>
+#include <functional>
 #include <string>
 #include <string_view>
 
@@ -19,6 +20,7 @@ struct ValidateContext {
 	IHttpClient &http;
 	JwksCache &jwks_cache;
 	std::string jwks_uri;
+	std::function<void(const std::string &kid)> on_refresh = nullptr;
 };
 
 // Dependencies for the introspection path. Shape parallels ValidateContext
@@ -52,12 +54,14 @@ struct IntrospectContext {
 //      `JwksFetchFailed` path is only taken when the cache says Miss and the
 //      HTTP call cannot be completed or returns non-200.
 //
-// Side effects: on success, `ctx.jwks_cache` is updated with every key from
-// the fetched JWKS. On a fetch that does not contain the target `kid`, the
-// cache records a miss so subsequent calls within the rate-limit window
-// short-circuit. Refresh failure on an existing hit preserves its last-good
-// cached key and returns the original InvalidSignature result without
-// mutating the cache.
+// Side effects: on initial cache miss, `ctx.jwks_cache` ingests keys from the
+// fetched JWKS. On hit-refresh for a rotated key, only the verified candidate
+// for the target `kid` is committed via its active reservation ID; unverified
+// sibling keys are not ingested. On a fetch that does not contain the target
+// `kid`, the cache records a miss so subsequent calls within the rate-limit
+// window short-circuit. Refresh failure on an existing hit preserves its
+// last-good cached key and returns the original InvalidSignature result
+// without mutating the cache.
 VerifyResult ValidateToken(std::string_view token, const VerifyOptions &opts, ValidateContext &ctx);
 
 // Dependencies for the Google-style tokeninfo path. Parallel to

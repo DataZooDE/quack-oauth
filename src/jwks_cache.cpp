@@ -3,8 +3,11 @@
 namespace quack_oauth {
 
 JwksCache::JwksCache(std::int64_t min_refresh_s, std::size_t max_entries)
-    : min_refresh_s_(min_refresh_s < 1 ? 1 : min_refresh_s),
-      max_entries_(max_entries == 0 ? 1 : max_entries) {
+    : min_refresh_s_(min_refresh_s < 1 ? 1 : min_refresh_s), max_entries_(max_entries == 0 ? 1 : max_entries) {
+}
+
+void JwksCache::SetMinRefreshSeconds(std::int64_t min_refresh_s) {
+	min_refresh_s_ = min_refresh_s < 1 ? 1 : min_refresh_s;
 }
 
 JwksLookup JwksCache::Lookup(const std::string &kid, std::int64_t now_s) const {
@@ -46,6 +49,7 @@ void JwksCache::OnFetchSuccess(const Jwk &jwk, std::int64_t now_s) {
 	entry.jwk = jwk;
 	entry.fetched_at_s = now_s;
 	entry.last_refresh_attempt_s = last_refresh;
+	entry.current_reservation_id = next_reservation_id_++;
 	entry.lru_it = hit_lru_.begin();
 	hits_[jwk.kid] = std::move(entry);
 	while (hits_.size() > max_entries_) {
@@ -55,24 +59,53 @@ void JwksCache::OnFetchSuccess(const Jwk &jwk, std::int64_t now_s) {
 	}
 }
 
-bool JwksCache::TryBeginHitRefresh(const std::string &kid, std::int64_t now_s) {
+std::uint64_t JwksCache::TryReserveRefresh(const std::string &kid, std::int64_t now_s) {
 	if (min_refresh_s_ <= 0) {
+		return 0;
+	}
+	const auto hit = hits_.find(kid);
+	if (hit == hits_.end()) {
+		return 0;
+	}
+	if (now_s < hit->second.last_refresh_attempt_s) {
+		// Clock rewind or concurrent chunk with earlier now_s:
+		// Fail closed to prevent rate-limit bypass, and update the stamp to now_s.
+		hit->second.last_refresh_attempt_s = now_s;
+		return 0;
+	}
+	const auto elapsed = now_s - hit->second.last_refresh_attempt_s;
+	if (elapsed < min_refresh_s_) {
+		return 0;
+	}
+	hit->second.last_refresh_attempt_s = now_s;
+	const auto res_id = next_reservation_id_++;
+	hit->second.current_reservation_id = res_id;
+	return res_id;
+}
+
+bool JwksCache::TryBeginHitRefresh(const std::string &kid, std::int64_t now_s) {
+	return TryReserveRefresh(kid, now_s) != 0;
+}
+
+bool JwksCache::CommitRefresh(const std::string &kid, std::uint64_t reservation_id, const Jwk &jwk,
+                              std::int64_t now_s) {
+	if (reservation_id == 0) {
 		return false;
 	}
 	const auto hit = hits_.find(kid);
 	if (hit == hits_.end()) {
 		return false;
 	}
-	if (now_s < hit->second.last_refresh_attempt_s) {
-		// Clock skew / NTP rewind: reset stamp and allow retry.
-		hit->second.last_refresh_attempt_s = now_s;
-		return true;
-	}
-	const auto elapsed = now_s - hit->second.last_refresh_attempt_s;
-	if (elapsed < min_refresh_s_) {
+	if (hit->second.current_reservation_id != reservation_id) {
+		// A newer reservation has occurred or a newer key was already committed.
+		// Drop this stale completion to avoid overwriting a newer key.
 		return false;
 	}
-	hit->second.last_refresh_attempt_s = now_s;
+	hit->second.jwk = jwk;
+	hit->second.fetched_at_s = now_s;
+	hit_lru_.erase(hit->second.lru_it);
+	hit_lru_.push_front(kid);
+	hit->second.lru_it = hit_lru_.begin();
 	return true;
 }
 

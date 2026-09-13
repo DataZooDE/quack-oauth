@@ -325,8 +325,7 @@ static void StoreSessionPrincipal(QuackOauthState &shared_state, const string &s
 		for (auto it = shared_state.session_principals.begin(); it != shared_state.session_principals.end(); ++it) {
 			const auto victim_exp = victim->second.principal.exp;
 			const auto it_exp = it->second.principal.exp;
-			if ((it_exp > 0 && victim_exp <= 0) ||
-			    (it_exp > 0 && victim_exp > 0 && it_exp < victim_exp) ||
+			if ((it_exp > 0 && victim_exp <= 0) || (it_exp > 0 && victim_exp > 0 && it_exp < victim_exp) ||
 			    (it_exp == victim_exp && it->second.updated_at_s < victim->second.updated_at_s)) {
 				victim = it;
 			}
@@ -411,13 +410,15 @@ static void ValidateChunk(Vector &tokens, idx_t count, Vector &result, ClientCon
 	DuckdbHttpClient base_http;
 
 	std::unique_lock<std::mutex> guard(shared_state.mu);
+	const auto min_refresh_s = ReadIntSetting(context, "quack_oauth_jwks_min_refresh_s", 30);
+	shared_state.jwks_cache.SetMinRefreshSeconds(min_refresh_s);
 	UnlockingHttpClient unlocking_http(base_http, guard);
 	quack_oauth::RetryingHttpClient http(unlocking_http, /*max_retries=*/1, std::chrono::milliseconds(1000),
-	                                      [&](std::chrono::milliseconds delay) {
-		                                      guard.unlock();
-		                                      std::this_thread::sleep_for(delay);
-		                                      guard.lock();
-	                                      });
+	                                     [&](std::chrono::milliseconds delay) {
+		                                     guard.unlock();
+		                                     std::this_thread::sleep_for(delay);
+		                                     guard.lock();
+	                                     });
 
 	if (cfg.mode == "introspect") {
 		quack_oauth::IntrospectContext ictx {
@@ -462,13 +463,19 @@ static void ValidateChunk(Vector &tokens, idx_t count, Vector &result, ClientCon
 		RunValidationLoop(tokens, count, result, context, session_ids, opts.now_s, shared_state, guard,
 		                  [&](string &token_str) -> RowValidation {
 			                  RowValidation r;
-			                  r.outcome =
-			                      quack_oauth::ValidateTokenViaGithubCheck(token_str, opts, gctx, &r.principal);
+			                  r.outcome = quack_oauth::ValidateTokenViaGithubCheck(token_str, opts, gctx, &r.principal);
 			                  r.have_principal = r.outcome == quack_oauth::VerifyResult::Ok;
 			                  return r;
 		                  });
 	} else { // jwks
-		quack_oauth::ValidateContext vctx {http, shared_state.jwks_cache, cfg.jwks_uri};
+		quack_oauth::ValidateContext vctx {http, shared_state.jwks_cache, cfg.jwks_uri, [&](const std::string &kid) {
+			                                   quack_oauth::AuditEvent e;
+			                                   e.timestamp_unix_s = opts.now_s;
+			                                   e.event_type = quack_oauth::AuditEventType::JwksRefresh;
+			                                   e.kid = kid;
+			                                   e.reason = "rotated_key_refreshed";
+			                                   EmitAuditEvent(context, e);
+		                                   }};
 		RunValidationLoop(tokens, count, result, context, session_ids, opts.now_s, shared_state, guard,
 		                  [&](string &token_str) -> RowValidation {
 			                  RowValidation r;

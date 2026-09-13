@@ -393,7 +393,7 @@ All settings are session-scoped (`SET` / `RESET`).
 | `quack_oauth_validation_mode`        | VARCHAR | `'jwks'`    | `jwks` \| `introspect` \| `tokeninfo` (R-S-2). |
 | `quack_oauth_provider`               | VARCHAR | `'generic'` | First-class preset: `entra` \| `google` \| `keycloak` \| `okta` \| `github` \| `generic` (R-S-12). |
 | `quack_oauth_clock_skew_s`           | INTEGER | `60`        | Allowable clock skew (seconds) for JWT `exp`/`nbf`/`iat` (R-S-3). |
-| `quack_oauth_jwks_min_refresh_s`     | INTEGER | `30`        | Min seconds between per-`kid` JWKS refreshes (R-S-4). |
+| `quack_oauth_jwks_min_refresh_s`     | INTEGER | `30`        | Min seconds between per-`kid` JWKS refreshes (R-S-4). Values `< 1` are clamped to `1`. |
 | `quack_oauth_introspect_cache_s`     | INTEGER | `30`        | Cache lifetime for `introspect`-mode decisions, capped at token `exp` (R-S-5). |
 | `quack_oauth_renew_skew_s`           | INTEGER | `60`        | Client refreshes the access token this many seconds before `expires_at` (R-C-2). |
 | `quack_oauth_policy_default`         | VARCHAR | `'deny'`    | Default decision when no `policy_table` rule matches: `allow` or `deny` (R-S-7). |

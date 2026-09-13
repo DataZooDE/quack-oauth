@@ -4,6 +4,7 @@ build
 cmake-build-debug
 duckdb_unittest_tempdir/
 .DS_Store
+.crew/
 testext
 test/python/__pycache__/
 .Rhistory

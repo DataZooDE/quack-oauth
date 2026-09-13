@@ -1,5 +1,7 @@
 #include "quack_oauth_state.hpp"
 
+#include "env_overrides.hpp"
+
 namespace duckdb {
 
 // R-S-4 default for JWKS rate-limit window.
@@ -13,8 +15,8 @@ static constexpr int64_t kDecisionCacheDefaultTtlSeconds = 30;
 static constexpr std::size_t kAuditRingCapacity = 64;
 
 QuackOauthState::QuackOauthState()
-    : jwks_cache(kDefaultMinRefreshSeconds), decision_cache(kDecisionCacheCapacity, kDecisionCacheDefaultTtlSeconds),
-      audit_ring(kAuditRingCapacity) {
+    : jwks_cache(quack_oauth::EnvIntOrDefault("QUACK_OAUTH_JWKS_MIN_REFRESH_S", kDefaultMinRefreshSeconds)),
+      decision_cache(kDecisionCacheCapacity, kDecisionCacheDefaultTtlSeconds), audit_ring(kAuditRingCapacity) {
 }
 
 QuackOauthState &GetQuackOauthState() {
