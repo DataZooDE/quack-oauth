@@ -128,3 +128,28 @@ TEST_CASE("ParseJwt returns nullopt when header is not JSON", "[jwt][parse][erro
 	// "notjson" base64url-encoded
 	CHECK_FALSE(ParseJwt("bm90anNvbg.eyJzdWIiOiJhIn0.sig").has_value());
 }
+
+TEST_CASE("StripBearerPrefix normalizes Authorization headers and tokens", "[jwt][bearer]") {
+	CHECK(quack_oauth::StripBearerPrefix("Bearer eyJhbGciOi...") == "eyJhbGciOi...");
+	CHECK(quack_oauth::StripBearerPrefix("bearer eyJhbGciOi...") == "eyJhbGciOi...");
+	CHECK(quack_oauth::StripBearerPrefix("BEARER eyJhbGciOi...") == "eyJhbGciOi...");
+	CHECK(quack_oauth::StripBearerPrefix("Bearer   eyJhbGciOi...") == "eyJhbGciOi...");
+	CHECK(quack_oauth::StripBearerPrefix("Bearer \t eyJhbGciOi...") == "eyJhbGciOi...");
+	CHECK(quack_oauth::StripBearerPrefix("Bearer\r\neyJhbGciOi...") == "eyJhbGciOi...");
+	CHECK(quack_oauth::StripBearerPrefix("Bearer\neyJhbGciOi...") == "eyJhbGciOi...");
+	CHECK(quack_oauth::StripBearerPrefix("Bearer\reyJhbGciOi...") == "eyJhbGciOi...");
+	CHECK(quack_oauth::StripBearerPrefix("  Bearer eyJhbGciOi...") == "eyJhbGciOi...");
+
+	CHECK(quack_oauth::StripBearerPrefix("Bearer") == "");
+	CHECK(quack_oauth::StripBearerPrefix("  Bearer  ") == "");
+	CHECK(quack_oauth::StripBearerPrefix("BearerXYZ") == "BearerXYZ");
+	CHECK(quack_oauth::StripBearerPrefix("eyJhbGciOi...") == "eyJhbGciOi...");
+	CHECK(quack_oauth::StripBearerPrefix("  eyJhbGciOi...") == "eyJhbGciOi...");
+	CHECK(quack_oauth::StripBearerPrefix("Bearer eyJhbGciOi...  ") == "eyJhbGciOi...");
+	CHECK(quack_oauth::StripBearerPrefix("Bearer eyJhbGciOi...\t ") == "eyJhbGciOi...");
+	CHECK(quack_oauth::StripBearerPrefix("bearer eyJhbGciOi...\t") == "eyJhbGciOi...");
+	CHECK(quack_oauth::StripBearerPrefix("Bearer eyJhbGciOi...\f") == "eyJhbGciOi...");
+	CHECK(quack_oauth::StripBearerPrefix("Bearer\veyJhbGciOi...\v") == "eyJhbGciOi...");
+	CHECK(quack_oauth::StripBearerPrefix("   ") == "");
+	CHECK(quack_oauth::StripBearerPrefix("") == "");
+}

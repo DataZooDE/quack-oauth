@@ -1,5 +1,7 @@
 #pragma once
 
+#include <cstdint>
+
 namespace duckdb {
 
 class DBConfig;
@@ -15,5 +17,7 @@ class DBConfig;
 // is not guaranteed -- DBConfig::AddExtensionOption throws on duplicate
 // registration, so do not call this twice.
 void RegisterQuackOauthSettings(DBConfig &config);
+
+int32_t GetJwksMinRefreshFloor();
 
 } // namespace duckdb

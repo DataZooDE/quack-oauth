@@ -62,6 +62,40 @@ false
 false
 false
 
+# 3-arg invocation with Bearer prefix:
+# auth_string (arg 1) strips 'Bearer ' prefix and triggers DisallowedAlgorithm without touching network.
+# Third argument (arg 2) is ignored.
+query I
+SELECT quack_oauth_check_token('sess-1', 'Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiIxMjM0NTY3ODkwIiwibmFtZSI6IkpvaG4gRG9lIiwiaWF0IjoxNTE2MjM5MDIyfQ.SflKxwRJSMeKKF2QT4fwpMeJf36POk6yJV_adQssw5c', 'dummy-psk');
+----
+false
+
+# 3-arg invocation with raw token (no Bearer prefix):
+query I
+SELECT quack_oauth_check_token('sess-1', 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiIxMjM0NTY3ODkwIiwibmFtZSI6IkpvaG4gRG9lIiwiaWF0IjoxNTE2MjM5MDIyfQ.SflKxwRJSMeKKF2QT4fwpMeJf36POk6yJV_adQssw5c', 'dummy-psk');
+----
+false
+
+# Case-insensitive bearer with whitespace:
+query I
+SELECT quack_oauth_check_token('sess-1', 'bearer   eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiIxMjM0NTY3ODkwIiwibmFtZSI6IkpvaG4gRG9lIiwiaWF0IjoxNTE2MjM5MDIyfQ.SflKxwRJSMeKKF2QT4fwpMeJf36POk6yJV_adQssw5c', 'dummy-psk');
+----
+false
+
+# Trailing whitespace and tabs are stripped:
+query I
+SELECT quack_oauth_check_token('sess-1', 'Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiIxMjM0NTY3ODkwIiwibmFtZSI6IkpvaG4gRG9lIiwiaWF0IjoxNTE2MjM5MDIyfQ.SflKxwRJSMeKKF2QT4fwpMeJf36POk6yJV_adQssw5c   \t', 'dummy-psk');
+----
+false
+
+# Bare token with trailing whitespace is also stripped:
+query I
+SELECT quack_oauth_check_token('sess-1', 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiIxMjM0NTY3ODkwIiwibmFtZSI6IkpvaG4gRG9lIiwiaWF0IjoxNTE2MjM5MDIyfQ.SflKxwRJSMeKKF2QT4fwpMeJf36POk6yJV_adQssw5c   ', 'dummy-psk');
+----
+false
+
 # Cleanup.
 statement ok
 DROP SECRET rs;
+
+

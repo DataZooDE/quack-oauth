@@ -1,5 +1,7 @@
 #include "diagnose.hpp"
 
+#include <algorithm>
+#include <chrono>
 #include <mutex>
 #include <sstream>
 #include <string>
@@ -16,6 +18,8 @@
 #include "quack_oauth_state.hpp"
 #include "retry_http_client.hpp"
 #include "secret_accessor.hpp"
+#include "validator.hpp"
+#include "settings.hpp"
 #include "quack_oauth_banner.hpp"
 
 #ifndef EMSCRIPTEN
@@ -53,6 +57,16 @@ static string ReadSetting(ClientContext &context, const string &key) {
 	return v.ToString();
 }
 
+#ifndef EMSCRIPTEN
+struct ProbeCache {
+	std::mutex mu;
+	std::string uri;
+	int64_t probed_at_s = 0;
+	quack_oauth::IdpProbeResult result;
+};
+static ProbeCache g_probe_cache;
+#endif
+
 static unique_ptr<FunctionData> DiagnoseBind(ClientContext &context, TableFunctionBindInput &,
                                              vector<LogicalType> &return_types, vector<string> &names) {
 #ifndef EMSCRIPTEN
@@ -63,7 +77,7 @@ static unique_ptr<FunctionData> DiagnoseBind(ClientContext &context, TableFuncti
 
 	auto data = make_uniq<DiagnoseBindData>();
 	auto &state = GetQuackOauthState();
-	std::lock_guard<std::mutex> guard(state.mu);
+	std::unique_lock<std::mutex> guard(state.mu);
 
 	// 1. extension master switch + active SECRET
 	{
@@ -81,9 +95,26 @@ static unique_ptr<FunctionData> DiagnoseBind(ClientContext &context, TableFuncti
 	// 2. JWKS cache
 	{
 		const auto entries = state.jwks_cache.Size();
+		const auto unknown_kids = state.jwks_cache.MissSize();
 		std::ostringstream detail;
 		Append(detail, "entries", std::to_string(entries));
-		data->rows.push_back({"jwks_cache", entries == 0 ? "empty" : "warm", detail.str()});
+		Append(detail, "unknown_kids", std::to_string(unknown_kids));
+		Append(detail, "min_refresh_s", std::to_string(state.jwks_cache.GetMinRefreshSeconds()));
+		Append(detail, "min_refresh_floor", std::to_string(duckdb::GetJwksMinRefreshFloor()));
+		Append(detail, "throttled", std::to_string(state.jwks_cache.GetThrottledRefreshesCount()));
+		Append(detail, "budget_throttled", std::to_string(state.jwks_cache.GetThrottledBudgetCount()));
+		Append(detail, "kid_throttled", std::to_string(state.jwks_cache.GetThrottledPerKidCount()));
+		const auto last_reason = state.jwks_cache.GetLastRefreshReason();
+		Append(detail, "last_refresh_reason", last_reason.empty() ? "(none)" : last_reason);
+		const auto last_throttled = state.jwks_cache.GetLastThrottledAt();
+		Append(detail, "last_throttled_at", std::to_string(last_throttled));
+		string status = "empty";
+		if (entries > 0) {
+			status = "warm";
+		} else if (unknown_kids > 0) {
+			status = "misses_only";
+		}
+		data->rows.push_back({"jwks_cache", status, detail.str()});
 	}
 
 	// 3. Decision cache
@@ -101,6 +132,11 @@ static unique_ptr<FunctionData> DiagnoseBind(ClientContext &context, TableFuncti
 		Append(detail, "sessions", std::to_string(entries));
 		data->rows.push_back({"session_principals", entries == 0 ? "empty" : "active", detail.str()});
 	}
+
+	// Snapshot audit ring before releasing state.mu (F-H)
+	const auto snap = state.audit_ring.Snapshot();
+	const auto ring_cap = state.audit_ring.capacity();
+	guard.unlock();
 
 	// R-N-13 IdP reachability: live GET on jwks_uri (or introspection_endpoint
 	// when there's no JWKS, e.g. GitHub). No-op when there's no configured
@@ -120,9 +156,31 @@ static unique_ptr<FunctionData> DiagnoseBind(ClientContext &context, TableFuncti
 
 		std::ostringstream detail;
 #ifndef EMSCRIPTEN
-		DuckdbHttpClient base_http;
-		quack_oauth::RetryingHttpClient http(base_http, /*max_retries=*/0);
-		const auto probe = quack_oauth::ProbeIdpReachability(http, probe_uri);
+		const auto now_s =
+		    std::chrono::duration_cast<std::chrono::seconds>(std::chrono::system_clock::now().time_since_epoch())
+		        .count();
+		quack_oauth::IdpProbeResult probe;
+		bool run_probe = false;
+		if (probe_uri.empty()) {
+			probe.status = quack_oauth::IdpProbeResult::Status::Unconfigured;
+		} else {
+			std::lock_guard<std::mutex> pguard(g_probe_cache.mu);
+			if (g_probe_cache.uri == probe_uri && g_probe_cache.probed_at_s > 0 && now_s >= g_probe_cache.probed_at_s &&
+			    (now_s - g_probe_cache.probed_at_s) < 2) {
+				probe = g_probe_cache.result;
+			} else {
+				run_probe = true;
+			}
+		}
+		if (run_probe) {
+			DuckdbHttpClient base_http;
+			quack_oauth::RetryingHttpClient http(base_http, /*max_retries=*/0);
+			probe = quack_oauth::ProbeIdpReachability(http, probe_uri);
+			std::lock_guard<std::mutex> pguard(g_probe_cache.mu);
+			g_probe_cache.uri = probe_uri;
+			g_probe_cache.probed_at_s = now_s;
+			g_probe_cache.result = probe;
+		}
 
 		if (probe.probed_uri.empty()) {
 			Append(detail, "uri", "(none)");
@@ -136,22 +194,18 @@ static unique_ptr<FunctionData> DiagnoseBind(ClientContext &context, TableFuncti
 #else
 		// Wasm clients let the host page own the network. Surface the
 		// configured probe URI for visibility but report status as
-		// `skipped_wasm` so operators can tell at a glance why no
-		// http_status is attached.
-		if (probe_uri.empty()) {
-			Append(detail, "uri", "(none)");
-		} else {
-			Append(detail, "uri", probe_uri);
-		}
-		Append(detail, "reason", "network probe excluded from wasm build");
-		data->rows.push_back({"idp_reachability", "skipped_wasm", detail.str()});
+		// unavailable (the host page's fetch environment owns this).
+		Append(detail, "uri", probe_uri.empty() ? "(none)" : probe_uri);
+		Append(detail, "reason", "wasm_host_owns_network");
+		data->rows.push_back({"idp_reachability", "unavailable_on_wasm", detail.str()});
 #endif
 	}
 
-	// 5. Audit ring: count + decision split
+	// 5. In-memory audit ring snapshot: count accepted vs rejected tokens
+	// and allowed vs denied authz decisions.
 	{
-		const auto snap = state.audit_ring.Snapshot();
-		std::size_t accepts = 0, rejects = 0, allows = 0, denies = 0;
+		size_t accepts = 0, rejects = 0, allows = 0, denies = 0;
+		size_t refreshes = 0, refresh_noops = 0, refresh_failures = 0;
 		for (const auto &e : snap) {
 			switch (e.event_type) {
 			case quack_oauth::AuditEventType::TokenAccepted:
@@ -167,17 +221,34 @@ static unique_ptr<FunctionData> DiagnoseBind(ClientContext &context, TableFuncti
 				++denies;
 				break;
 			case quack_oauth::AuditEventType::JwksRefresh:
+				if (e.reason == quack_oauth::kReasonRefreshRotated || e.reason == quack_oauth::kReasonRefreshRevoked ||
+				    e.reason == quack_oauth::kReasonRefreshKidAbsent ||
+				    e.reason == quack_oauth::kReasonRefreshKidEvicted) {
+					++refreshes;
+				} else if (e.reason == quack_oauth::kReasonRefreshNoRotation ||
+				           e.reason == quack_oauth::kReasonRefreshSuperseded) {
+					++refresh_noops;
+				} else if (e.reason != quack_oauth::kReasonRefreshThrottled &&
+				           e.reason != quack_oauth::kReasonRefreshBudgetThrottled) {
+					++refresh_failures;
+				}
 				break;
 			}
 		}
 		std::ostringstream detail;
-		Append(detail, "count", std::to_string(snap.size()) + "/" + std::to_string(state.audit_ring.capacity()));
+		Append(detail, "count", std::to_string(snap.size()) + "/" + std::to_string(ring_cap));
 		Append(detail, "accepted", std::to_string(accepts));
 		Append(detail, "rejected", std::to_string(rejects));
 		Append(detail, "allowed", std::to_string(allows));
 		Append(detail, "denied", std::to_string(denies));
+		Append(detail, "refreshed", std::to_string(refreshes));
+		Append(detail, "refresh_noop", std::to_string(refresh_noops));
+		Append(detail, "refresh_failed", std::to_string(refresh_failures));
 		data->rows.push_back({"recent_decisions", snap.empty() ? "empty" : "active", detail.str()});
 	}
+
+	std::sort(data->rows.begin(), data->rows.end(),
+	          [](const DiagnoseRow &a, const DiagnoseRow &b) { return a.component < b.component; });
 
 	return std::move(data);
 }
@@ -355,8 +426,7 @@ void RegisterQuackOauthDiagnose(ExtensionLoader &loader) {
 	}
 
 	{
-		TableFunction fn("quack_oauth_current_principal", {},
-		                 DATAZOO_GUARD(QUACK_OAUTH_BANNER, CurrentPrincipalScan),
+		TableFunction fn("quack_oauth_current_principal", {}, DATAZOO_GUARD(QUACK_OAUTH_BANNER, CurrentPrincipalScan),
 		                 DATAZOO_GUARD(QUACK_OAUTH_BANNER, CurrentPrincipalBind), CurrentPrincipalInit);
 		CreateTableFunctionInfo info(fn);
 		FunctionDescription desc;

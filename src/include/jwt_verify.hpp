@@ -23,10 +23,13 @@ enum class VerifyResult {
 	WrongIssuer,
 	WrongAudience,
 	UnsupportedKeyType,
+	UnusableKey,
+	NoMatchingKey,
 	// Reported by the validator orchestration (slice S-7b.1); never produced
 	// by the standalone `VerifyJwt` call.
 	UnknownKid,
 	JwksFetchFailed,
+	JwksThrottled,
 };
 
 struct VerifyOptions {
@@ -41,10 +44,17 @@ struct VerifyOptions {
 	// under Catch2).
 	std::int64_t now_s = 0;
 	// Allowed `alg` values. Empty means use the architecture default
-	// {RS256, RS384, RS512}. `none` and HS* are rejected unconditionally per
+	// {RS256, RS384, RS512, ES256, ES384, EdDSA}. `none` and HS* are rejected unconditionally per
 	// R-S-3 regardless of this list.
 	std::vector<std::string> allowed_algorithms;
 };
+
+// Architecture default allowed algorithms {RS256, RS384, RS512, ES256, ES384, EdDSA}.
+const std::vector<std::string> &DefaultAllowedAlgorithms() noexcept;
+
+// Check whether `alg` is allowed under `whitelist`. If `whitelist` is empty,
+// uses DefaultAllowedAlgorithms().
+bool IsAlgorithmAllowed(const std::string &alg, const std::vector<std::string> &whitelist) noexcept;
 
 // Verify a compact-serialized JWT against a JWK, applying R-S-3 algorithm
 // allowlisting, claim checks (`iss`, `aud`), and time checks (`exp`, `nbf`)
@@ -58,9 +68,16 @@ struct VerifyOptions {
 VerifyResult VerifyJwt(std::string_view token, const Jwk &jwk, const VerifyOptions &opts);
 
 // Convert an RSA JWK (`n`, `e` base64url-encoded) to a PEM-encoded
-// SubjectPublicKeyInfo. Returns `std::nullopt` if `n` or `e` is empty or not
-// valid base64url. Exposed publicly to keep it Catch2-testable.
+// SubjectPublicKeyInfo. Returns `std::nullopt` if `n` or `e` is empty,
+// not valid base64url, or modulus < 512 bits. The 2-argument overload sets
+// `out_sub_2048 = true` only when the key parsed successfully but has modulus
+// between 512 and 2047 bits.
 std::optional<std::string> JwkRsaToPem(const Jwk &jwk);
+std::optional<std::string> JwkRsaToPem(const Jwk &jwk, bool &out_sub_2048);
+
+// Determines whether a JWK has valid key material and meets minimum security
+// requirements for signing verification (e.g. RSA >= 2048 bits, valid EC/OKP curve).
+bool IsUsableSigningKey(const Jwk &jwk);
 
 // Convert an EC JWK (`crv` ∈ {P-256, P-384}, `x`, `y` base64url-encoded) to
 // a PEM-encoded SubjectPublicKeyInfo. Returns nullopt for unsupported

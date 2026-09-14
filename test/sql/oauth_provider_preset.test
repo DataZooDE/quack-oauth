@@ -122,8 +122,31 @@ true
 statement ok
 DROP SECRET rs_github;
 
+# Okta preset is reserved: setting provider='okta' without explicit issuer / jwks_uri
+# must fail fast with an actionable error.
+statement ok
+CREATE SECRET rs_okta_unconfigured (
+    TYPE quack_oauth_server,
+    audience 'api://quack'
+);
+
+statement ok
+SET quack_oauth_server_secret_name = 'rs_okta_unconfigured';
+
+statement ok
+SET quack_oauth_provider = 'okta';
+
+statement error
+SELECT quack_oauth_check_token('e.y.J');
+----
+provider preset 'okta' is reserved for future auto-fill
+
+statement ok
+DROP SECRET rs_okta_unconfigured;
+
 statement ok
 SET quack_oauth_provider = 'generic';
 
 statement ok
 SET quack_oauth_server_secret_name = '';
+

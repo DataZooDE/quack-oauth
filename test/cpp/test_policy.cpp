@@ -34,8 +34,7 @@ AuthzRequest ReqAction(Action a) {
 
 // Build an AuthzRequest that touches a single object + (optionally)
 // a list of column names.
-AuthzRequest ReqObj(Action a, const std::string &object,
-                    std::initializer_list<std::string> columns = {}) {
+AuthzRequest ReqObj(Action a, const std::string &object, std::initializer_list<std::string> columns = {}) {
 	AuthzRequest r;
 	r.action = a;
 	r.objects.push_back(object);
@@ -217,8 +216,7 @@ TEST_CASE("EvaluatePolicy: object-targeted deny short-circuits the request", "[p
 	CHECK(EvaluatePolicy(d, p, ReqObj(Action::Scan, "main.audit")).decision == Decision::Deny);
 }
 
-TEST_CASE("EvaluatePolicy: column_pattern requires a specific scope for sensitive cols",
-          "[policy][column]") {
+TEST_CASE("EvaluatePolicy: column_pattern requires a specific scope for sensitive cols", "[policy][column]") {
 	PolicyDocument d;
 	// Baseline allow on the table (any column).
 	{
@@ -255,13 +253,11 @@ TEST_CASE("EvaluatePolicy: column_pattern requires a specific scope for sensitiv
 	const auto pii_reader = MakePrincipal("bob", {"analyst", "pii:read"});
 
 	// Non-sensitive columns: both OK.
-	CHECK(EvaluatePolicy(d, analyst, ReqObj(Action::Scan, "main.users", {"id", "name"})).decision ==
-	      Decision::Allow);
+	CHECK(EvaluatePolicy(d, analyst, ReqObj(Action::Scan, "main.users", {"id", "name"})).decision == Decision::Allow);
 	// Analyst hitting ssn: denied.
 	CHECK(EvaluatePolicy(d, analyst, ReqObj(Action::Scan, "main.users", {"id", "ssn"})).decision == Decision::Deny);
 	// PII reader hitting ssn: allowed (override matches first).
-	CHECK(EvaluatePolicy(d, pii_reader, ReqObj(Action::Scan, "main.users", {"id", "ssn"})).decision ==
-	      Decision::Allow);
+	CHECK(EvaluatePolicy(d, pii_reader, ReqObj(Action::Scan, "main.users", {"id", "ssn"})).decision == Decision::Allow);
 }
 
 TEST_CASE("EvaluatePolicy: multi-object request fails on any denied object", "[policy][object]") {
@@ -298,7 +294,6 @@ TEST_CASE("EvaluatePolicy: backward compat -- rules without object/column match 
 		d.rules.push_back(r);
 	}
 	const auto p = MakePrincipal("alice", {"quack:read"});
-	CHECK(EvaluatePolicy(d, p, ReqObj(Action::Scan, "main.audit", {"subject", "issuer"})).decision ==
-	      Decision::Allow);
+	CHECK(EvaluatePolicy(d, p, ReqObj(Action::Scan, "main.audit", {"subject", "issuer"})).decision == Decision::Allow);
 	CHECK(EvaluatePolicy(d, p, ReqObj(Action::Scan, "main.trips_enriched")).decision == Decision::Allow);
 }

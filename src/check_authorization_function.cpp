@@ -58,7 +58,7 @@ static int64_t LookupClockSkew(ClientContext &context) {
 	if (!context.TryGetCurrentSetting("quack_oauth_clock_skew_s", v) || v.IsNull()) {
 		return 60; // matches R-S-3 default
 	}
-	return static_cast<int64_t>(v.GetValue<int32_t>());
+	return std::clamp<int64_t>(static_cast<int64_t>(v.GetValue<int32_t>()), 0, 3600);
 }
 
 static void CheckAuthorizationScalarFun(DataChunk &args, ExpressionState &state, Vector &result) {
@@ -151,9 +151,8 @@ static void CheckAuthorizationScalarFun(DataChunk &args, ExpressionState &state,
 			    EmitAuditEvent(context, e);
 			    return false;
 		    }
-		    const auto outcome = policy.has_value()
-		                             ? quack_oauth::EvaluatePolicy(*policy, principal, request)
-		                             : quack_oauth::EvaluateDefaultPolicy(principal, request.action);
+		    const auto outcome = policy.has_value() ? quack_oauth::EvaluatePolicy(*policy, principal, request)
+		                                            : quack_oauth::EvaluateDefaultPolicy(principal, request.action);
 		    const bool allow = outcome.decision == quack_oauth::Decision::Allow;
 		    e.event_type = allow ? quack_oauth::AuditEventType::AuthzAllow : quack_oauth::AuditEventType::AuthzDeny;
 		    e.reason = outcome.reason;
@@ -164,25 +163,23 @@ static void CheckAuthorizationScalarFun(DataChunk &args, ExpressionState &state,
 
 void RegisterQuackOauthCheckAuthorization(ExtensionLoader &loader) {
 	ScalarFunction fn("quack_oauth_check_authorization", {LogicalType::VARCHAR, LogicalType::VARCHAR},
-	                  LogicalType::BOOLEAN,
-	                  DATAZOO_GUARD(QUACK_OAUTH_BANNER, CheckAuthorizationScalarFun));
+	                  LogicalType::BOOLEAN, DATAZOO_GUARD(QUACK_OAUTH_BANNER, CheckAuthorizationScalarFun));
 	// Emits an audit event per call AND reads from session-keyed in-memory
 	// state that may change between rows. MUST NOT be constant-folded.
 	fn.stability = FunctionStability::VOLATILE;
 	CreateScalarFunctionInfo info(std::move(fn));
 	FunctionDescription desc;
-	desc.description =
-	    "Authorize a query for a session whose Principal was previously cached by "
-	    "quack_oauth_check_token(). Parses the SQL with DuckDB's parser, classifies the "
-	    "action (Attach / Scan / Insert / Update / Delete / Ddl / Pragma / CopyTo / CopyFrom / "
-	    "ServeAdmin) and enumerates the referenced objects + columns, then evaluates the "
-	    "policy: either the SQL-native rules in the table named by `policy_table` on the "
-	    "active quack_oauth_server SECRET (rules can target subject / scope / action / "
-	    "object_pattern / column_pattern), or the default scope-based policy (quack:read → "
-	    "Attach + Scan; quack:write → also Insert/Update/Delete/CopyTo/CopyFrom; admin "
-	    "actions always denied). Returns false for unknown session_id, policy_table load "
-	    "failure, parser failure, or any policy deny. Wired into quack via "
-	    "`SET quack_authorization_function = 'quack_oauth_check_authorization'`.";
+	desc.description = "Authorize a query for a session whose Principal was previously cached by "
+	                   "quack_oauth_check_token(). Parses the SQL with DuckDB's parser, classifies the "
+	                   "action (Attach / Scan / Insert / Update / Delete / Ddl / Pragma / CopyTo / CopyFrom / "
+	                   "ServeAdmin) and enumerates the referenced objects + columns, then evaluates the "
+	                   "policy: either the SQL-native rules in the table named by `policy_table` on the "
+	                   "active quack_oauth_server SECRET (rules can target subject / scope / action / "
+	                   "object_pattern / column_pattern), or the default scope-based policy (quack:read → "
+	                   "Attach + Scan; quack:write → also Insert/Update/Delete/CopyTo/CopyFrom; admin "
+	                   "actions always denied). Returns false for unknown session_id, policy_table load "
+	                   "failure, parser failure, or any policy deny. Wired into quack via "
+	                   "`SET quack_authorization_function = 'quack_oauth_check_authorization'`.";
 	desc.parameter_names = {"session_id", "query_string"};
 	desc.parameter_types = {LogicalType::VARCHAR, LogicalType::VARCHAR};
 	desc.examples = {"SELECT quack_oauth_check_authorization('sess-1', 'SELECT * FROM t')",

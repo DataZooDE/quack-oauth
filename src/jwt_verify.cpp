@@ -113,13 +113,13 @@ static std::optional<std::string> Base64UrlDecode(const std::string &in) {
 // ---- JWK -> PEM ------------------------------------------------------------
 
 static std::optional<std::string> RsaPublicKeyToPem(const std::vector<unsigned char> &n_bin,
-                                                    const std::vector<unsigned char> &e_bin) {
+                                                    const std::vector<unsigned char> &e_bin, bool &out_sub_2048) {
+	out_sub_2048 = false;
 	BnPtr n_bn(BN_bin2bn(n_bin.data(), static_cast<int>(n_bin.size()), nullptr));
 	BnPtr e_bn(BN_bin2bn(e_bin.data(), static_cast<int>(e_bin.size()), nullptr));
 	if (!n_bn || !e_bn) {
 		return std::nullopt;
 	}
-
 	ParamBldPtr bld(OSSL_PARAM_BLD_new());
 	if (!bld || !OSSL_PARAM_BLD_push_BN(bld.get(), "n", n_bn.get()) ||
 	    !OSSL_PARAM_BLD_push_BN(bld.get(), "e", e_bn.get())) {
@@ -139,6 +139,18 @@ static std::optional<std::string> RsaPublicKeyToPem(const std::vector<unsigned c
 		return std::nullopt;
 	}
 	EvpPkeyPtr pkey(raw);
+
+	const auto bits = EVP_PKEY_get_bits(pkey.get());
+	// Per RFC 7518 Section 3.3, RSA keys must be at least 2048 bits.
+	// Genuine sub-2048 RSA keys (e.g. 512 or 1024-bit) return UnsupportedKeyType.
+	// Key material with fewer than 512 bits is malformed garbage.
+	if (bits >= 512 && bits < 2048) {
+		out_sub_2048 = true;
+		return std::nullopt;
+	}
+	if (bits < 512) {
+		return std::nullopt;
+	}
 
 	BioPtr bio(BIO_new(BIO_s_mem()));
 	if (!bio || PEM_write_bio_PUBKEY(bio.get(), pkey.get()) == 0) {
@@ -232,13 +244,13 @@ static bool IsForbiddenAlgorithm(const std::string &alg) {
 	return alg.empty() || alg == "none" || StartsWith(alg, "HS");
 }
 
-static const std::vector<std::string> &DefaultAllowedAlgorithms() {
+const std::vector<std::string> &DefaultAllowedAlgorithms() noexcept {
 	// R-S-3: RSA + ECDSA + EdDSA. HS* and `none` rejected unconditionally.
 	static const std::vector<std::string> kDefault = {"RS256", "RS384", "RS512", "ES256", "ES384", "EdDSA"};
 	return kDefault;
 }
 
-static bool IsAllowed(const std::string &alg, const std::vector<std::string> &whitelist) {
+bool IsAlgorithmAllowed(const std::string &alg, const std::vector<std::string> &whitelist) noexcept {
 	const auto &use = whitelist.empty() ? DefaultAllowedAlgorithms() : whitelist;
 	return std::find(use.begin(), use.end(), alg) != use.end();
 }
@@ -314,7 +326,8 @@ static VerifyResult VerifyWithVerifier(const jwt::decoded_jwt<TraitsT> &decoded,
 	if (!opts.expected_audience.empty()) {
 		verifier.with_audience(opts.expected_audience);
 	}
-	verifier.leeway(static_cast<std::size_t>(opts.clock_skew_s));
+	const auto clamped_skew = std::clamp<std::int64_t>(opts.clock_skew_s, 0, 3600);
+	verifier.leeway(static_cast<std::size_t>(clamped_skew));
 
 	std::error_code ec;
 	verifier.verify(decoded, ec);
@@ -338,7 +351,7 @@ static VerifyResult VerifyWithVerifier(const jwt::decoded_jwt<TraitsT> &decoded,
 	if (static_cast<E>(ec.value()) == E::token_expired) {
 		if (decoded.has_not_before()) {
 			const auto nbf = ToUnixSeconds(decoded.get_not_before());
-			if (opts.now_s + opts.clock_skew_s < nbf) {
+			if (opts.now_s + clamped_skew < nbf) {
 				return VerifyResult::NotYetValid;
 			}
 		}
@@ -347,7 +360,8 @@ static VerifyResult VerifyWithVerifier(const jwt::decoded_jwt<TraitsT> &decoded,
 	return MapVerificationError(ec);
 }
 
-std::optional<std::string> JwkRsaToPem(const Jwk &jwk) {
+std::optional<std::string> JwkRsaToPem(const Jwk &jwk, bool &out_sub_2048) {
+	out_sub_2048 = false;
 	if (jwk.n.empty() || jwk.e.empty()) {
 		return std::nullopt;
 	}
@@ -358,7 +372,12 @@ std::optional<std::string> JwkRsaToPem(const Jwk &jwk) {
 	}
 	const std::vector<unsigned char> n_bin(n_decoded->begin(), n_decoded->end());
 	const std::vector<unsigned char> e_bin(e_decoded->begin(), e_decoded->end());
-	return RsaPublicKeyToPem(n_bin, e_bin);
+	return RsaPublicKeyToPem(n_bin, e_bin, out_sub_2048);
+}
+
+std::optional<std::string> JwkRsaToPem(const Jwk &jwk) {
+	bool sub = false;
+	return JwkRsaToPem(jwk, sub);
 }
 
 std::optional<std::string> JwkEcToPem(const Jwk &jwk) {
@@ -405,13 +424,17 @@ VerifyResult VerifyJwt(std::string_view token, const Jwk &jwk, const VerifyOptio
 	}
 
 	const std::string alg = decoded->has_algorithm() ? decoded->get_algorithm() : "";
-	if (IsForbiddenAlgorithm(alg) || !IsAllowed(alg, opts.allowed_algorithms)) {
+	if (IsForbiddenAlgorithm(alg) || !IsAlgorithmAllowed(alg, opts.allowed_algorithms)) {
 		return VerifyResult::DisallowedAlgorithm;
 	}
 
 	std::optional<std::string> pem;
 	if (jwk.kty == "RSA") {
-		pem = JwkRsaToPem(jwk);
+		bool sub_2048 = false;
+		pem = JwkRsaToPem(jwk, sub_2048);
+		if (sub_2048) {
+			return VerifyResult::UnsupportedKeyType;
+		}
 	} else if (jwk.kty == "EC") {
 		pem = JwkEcToPem(jwk);
 	} else if (jwk.kty == "OKP") {
@@ -420,11 +443,26 @@ VerifyResult VerifyJwt(std::string_view token, const Jwk &jwk, const VerifyOptio
 		return VerifyResult::UnsupportedKeyType;
 	}
 	if (!pem) {
-		// Malformed JWK contents (missing fields, bad base64url, unknown curve).
-		return VerifyResult::Malformed;
+		// Unusable JWK contents (missing fields, bad base64url, unknown curve).
+		return VerifyResult::UnusableKey;
 	}
 
 	return VerifyWithVerifier(*decoded, *pem, alg, opts);
+}
+
+bool IsUsableSigningKey(const Jwk &jwk) {
+	if (jwk.kty == "RSA") {
+		bool sub_2048 = false;
+		auto pem = JwkRsaToPem(jwk, sub_2048);
+		return pem.has_value() && !sub_2048;
+	}
+	if (jwk.kty == "EC") {
+		return JwkEcToPem(jwk).has_value();
+	}
+	if (jwk.kty == "OKP") {
+		return JwkOkpToPem(jwk).has_value();
+	}
+	return false;
 }
 
 } // namespace quack_oauth

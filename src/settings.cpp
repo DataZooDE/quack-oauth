@@ -1,5 +1,9 @@
 #include "settings.hpp"
 
+#include <algorithm>
+#include <atomic>
+#include <mutex>
+
 #include "duckdb/main/config.hpp"
 
 #include "env_overrides.hpp"
@@ -7,6 +11,8 @@
 #ifndef EMSCRIPTEN
 #include "telemetry.hpp"
 #endif
+
+#include "quack_oauth_state.hpp"
 
 namespace duckdb {
 
@@ -24,7 +30,59 @@ static void OnTelemetryKey(ClientContext &, SetScope, Value &parameter) {
 }
 #endif
 
+static std::atomic<int32_t> g_startup_min_refresh_s {30};
+static std::once_flag g_startup_floor_once;
+
+int32_t GetJwksMinRefreshFloor() {
+	return g_startup_min_refresh_s.load(std::memory_order_relaxed);
+}
+
+static void OnJwksMinRefreshSeconds(ClientContext &, SetScope scope, Value &parameter) {
+	if (scope == SetScope::SESSION) {
+		throw InvalidInputException("quack_oauth_jwks_min_refresh_s is a global setting; use GLOBAL scope (e.g. SET "
+		                            "GLOBAL ... / RESET GLOBAL ...)");
+	}
+	if (parameter.IsNull()) {
+		throw InvalidInputException("quack_oauth_jwks_min_refresh_s cannot be NULL");
+	}
+	const auto val = parameter.GetValue<int32_t>();
+	if (val < 1) {
+		throw InvalidInputException("quack_oauth_jwks_min_refresh_s must be at least 1 (got %d)", val);
+	}
+	if (val > 3600) {
+		throw InvalidInputException("quack_oauth_jwks_min_refresh_s must be at most 3600 (got %d)", val);
+	}
+	const auto floor = g_startup_min_refresh_s.load(std::memory_order_relaxed);
+	if (val < floor) {
+		throw InvalidInputException(
+		    "quack_oauth_jwks_min_refresh_s cannot be lowered below %d (got %d); the floor is set at startup via "
+		    "QUACK_OAUTH_JWKS_MIN_REFRESH_S (restart with QUACK_OAUTH_JWKS_MIN_REFRESH_S=%d to lower it)",
+		    floor, val, val);
+	}
+	auto &state = GetQuackOauthState();
+	std::lock_guard<std::mutex> guard(state.mu);
+	state.jwks_cache.SetMinRefreshSeconds(val);
+}
+
+static void OnClockSkewSeconds(ClientContext &, SetScope scope, Value &parameter) {
+	if (scope == SetScope::SESSION) {
+		throw InvalidInputException("quack_oauth_clock_skew_s is a global setting; use GLOBAL scope (e.g. SET "
+		                            "GLOBAL ... / RESET GLOBAL ...)");
+	}
+	if (parameter.IsNull()) {
+		throw InvalidInputException("quack_oauth_clock_skew_s cannot be NULL");
+	}
+	const auto val = parameter.GetValue<int32_t>();
+	if (val < 0) {
+		throw InvalidInputException("quack_oauth_clock_skew_s must be non-negative (got %d)", val);
+	}
+	if (val > 3600) {
+		throw InvalidInputException("quack_oauth_clock_skew_s must be at most 3600 (got %d)", val);
+	}
+}
+
 // R-S-11(c) helpers: resolve each setting's default from the matching
+
 // `QUACK_OAUTH_<UPPER>` environment variable when present. SET in SQL
 // still overrides at runtime. SECRET-field overrides happen at SECRET
 // read time, not here. Convention: setting `quack_oauth_validation_mode`
@@ -56,10 +114,11 @@ void RegisterQuackOauthSettings(DBConfig &config) {
 	                          "Swap quack's auth callbacks for the OAuth implementation (R-S-1).", LogicalType::BOOLEAN,
 	                          EnvBoolDefault("QUACK_OAUTH_ENABLED", false), nullptr, SetScope::GLOBAL);
 
-	// R-S-2: jwks (local JWT verification) vs introspect (RFC 7662).
-	config.AddExtensionOption("quack_oauth_validation_mode",
-	                          "Token validation strategy: 'jwks' or 'introspect' (R-S-2).", LogicalType::VARCHAR,
-	                          EnvStringDefault("QUACK_OAUTH_VALIDATION_MODE", "jwks"), nullptr, SetScope::GLOBAL);
+	// R-S-2: jwks (local JWT verification) vs introspect (RFC 7662) vs tokeninfo vs github_check.
+	config.AddExtensionOption(
+	    "quack_oauth_validation_mode",
+	    "Token validation strategy: 'jwks', 'introspect', 'tokeninfo', or 'github_check' (R-S-2).",
+	    LogicalType::VARCHAR, EnvStringDefault("QUACK_OAUTH_VALIDATION_MODE", "jwks"), nullptr, SetScope::GLOBAL);
 
 	// R-S-12: first-class provider selector (entra|google|keycloak|okta|github|generic).
 	config.AddExtensionOption(
@@ -69,12 +128,25 @@ void RegisterQuackOauthSettings(DBConfig &config) {
 	// R-S-3: clock skew for JWT exp/nbf/iat checks.
 	config.AddExtensionOption(
 	    "quack_oauth_clock_skew_s", "Allowable clock skew (seconds) when verifying JWT exp/nbf/iat (R-S-3).",
-	    LogicalType::INTEGER, EnvIntDefault("QUACK_OAUTH_CLOCK_SKEW_S", 60), nullptr, SetScope::GLOBAL);
+	    LogicalType::INTEGER,
+	    Value::INTEGER(std::clamp(quack_oauth::EnvIntOrDefault("QUACK_OAUTH_CLOCK_SKEW_S", 60), 0, 3600)),
+	    OnClockSkewSeconds, SetScope::GLOBAL);
 
 	// R-S-4: rate-limit per-kid JWKS refresh to guard against poll DoS.
+	std::call_once(g_startup_floor_once, []() {
+		const int32_t startup_raw = quack_oauth::EnvIntOrDefault("QUACK_OAUTH_JWKS_MIN_REFRESH_S", 30);
+		const auto clamped_floor = std::clamp(startup_raw, 1, 3600);
+		g_startup_min_refresh_s.store(clamped_floor, std::memory_order_relaxed);
+		auto &state = GetQuackOauthState();
+		std::lock_guard<std::mutex> guard(state.mu);
+		state.jwks_cache.SetMinRefreshSeconds(clamped_floor);
+	});
+	const auto startup_floor = g_startup_min_refresh_s.load(std::memory_order_relaxed);
 	config.AddExtensionOption("quack_oauth_jwks_min_refresh_s",
-	                          "Minimum seconds between JWKS refreshes per kid (R-S-4).", LogicalType::INTEGER,
-	                          EnvIntDefault("QUACK_OAUTH_JWKS_MIN_REFRESH_S", 30), nullptr, SetScope::GLOBAL);
+	                          "Minimum seconds between JWKS refreshes per kid (R-S-4). Must be between the startup "
+	                          "floor and 3600.",
+	                          LogicalType::INTEGER, Value::INTEGER(startup_floor), OnJwksMinRefreshSeconds,
+	                          SetScope::GLOBAL);
 
 	// R-S-5: cache RFC 7662 introspect results.
 	config.AddExtensionOption("quack_oauth_introspect_cache_s",
@@ -113,16 +185,15 @@ void RegisterQuackOauthSettings(DBConfig &config) {
 	// on. Two opt-out paths -- this setting AND the `DATAZOO_DISABLE_TELEMETRY`
 	// env var checked inside posthog-telemetry's PostHogProcess(). See README
 	// "Telemetry" section.
+	config.AddExtensionOption("quack_oauth_telemetry_enabled",
+	                          "Enable anonymous usage telemetry, see https://erpl.io/telemetry for details.",
+	                          LogicalType::BOOLEAN, EnvBoolDefault("QUACK_OAUTH_TELEMETRY_ENABLED", true),
+	                          OnTelemetryEnabled, SetScope::GLOBAL);
 	config.AddExtensionOption(
-	    "quack_oauth_telemetry_enabled",
-	    "Enable anonymous usage telemetry, see https://erpl.io/telemetry for details.", LogicalType::BOOLEAN,
-	    EnvBoolDefault("QUACK_OAUTH_TELEMETRY_ENABLED", true), OnTelemetryEnabled, SetScope::GLOBAL);
-	config.AddExtensionOption("quack_oauth_telemetry_key",
-	                          "PostHog API key for telemetry, see https://erpl.io/telemetry for details.",
-	                          LogicalType::VARCHAR,
-	                          EnvStringDefault("QUACK_OAUTH_TELEMETRY_KEY",
-	                                           "phc_t3wwRLtpyEmLHYaZCSszG0MqVr74J6wnCrj9D41zk2t"),
-	                          OnTelemetryKey, SetScope::GLOBAL);
+	    "quack_oauth_telemetry_key", "PostHog API key for telemetry, see https://erpl.io/telemetry for details.",
+	    LogicalType::VARCHAR,
+	    EnvStringDefault("QUACK_OAUTH_TELEMETRY_KEY", "phc_t3wwRLtpyEmLHYaZCSszG0MqVr74J6wnCrj9D41zk2t"),
+	    OnTelemetryKey, SetScope::GLOBAL);
 #endif
 }
 

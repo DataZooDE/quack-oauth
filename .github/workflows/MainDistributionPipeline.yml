@@ -73,6 +73,7 @@ jobs:
   duckdb-stable-deploy:
     name: Deploy extension binaries (v1.5.5)
     needs: [duckdb-stable-build, duckdb-stable-smoke-test]
+    if: startsWith(github.ref, 'refs/tags/v') || github.ref == 'refs/heads/main'
     uses: ./.github/workflows/_extension_deploy.yml
     secrets: inherit
     with:
@@ -107,6 +108,7 @@ jobs:
   duckdb-lts-deploy:
     name: Deploy extension binaries (v1.4.5 LTS)
     needs: [duckdb-lts-build, duckdb-lts-smoke-test]
+    if: startsWith(github.ref, 'refs/tags/v') || github.ref == 'refs/heads/main'
     uses: ./.github/workflows/_extension_deploy.yml
     secrets: inherit
     with:

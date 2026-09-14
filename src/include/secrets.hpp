@@ -19,4 +19,6 @@ namespace duckdb {
 // (../erpl-web/src/microsoft_entra_secret.cpp:165 -> "microsoft_entra").
 void RegisterQuackOauthSecrets(ExtensionLoader &loader);
 
+void ValidateHttpUrl(const std::string &field_name, const std::string &url);
+
 } // namespace duckdb

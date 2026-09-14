@@ -110,12 +110,10 @@ PolicyOutcome EvaluateCell(const PolicyDocument &doc, const Principal &principal
 		if (!ActionMatches(action, rule.actions)) {
 			continue;
 		}
-		if (rule.object_pattern.has_value() && !object.empty() &&
-		    !GlobMatch(*rule.object_pattern, object)) {
+		if (rule.object_pattern.has_value() && !object.empty() && !GlobMatch(*rule.object_pattern, object)) {
 			continue;
 		}
-		if (rule.column_pattern.has_value() && !column.empty() &&
-		    !GlobMatch(*rule.column_pattern, column)) {
+		if (rule.column_pattern.has_value() && !column.empty() && !GlobMatch(*rule.column_pattern, column)) {
 			continue;
 		}
 		// Skip rules that demand an object/column when the request has
@@ -151,8 +149,7 @@ PolicyOutcome EvaluateCell(const PolicyDocument &doc, const Principal &principal
 
 } // namespace
 
-PolicyOutcome EvaluatePolicy(const PolicyDocument &doc, const Principal &principal,
-                             const AuthzRequest &request) {
+PolicyOutcome EvaluatePolicy(const PolicyDocument &doc, const Principal &principal, const AuthzRequest &request) {
 	// Action-only verbs (ATTACH / PRAGMA / DDL with no objects) check a
 	// single cell. The rule writer gates them via `actions=[…]` rules
 	// without object/column constraints.

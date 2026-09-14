@@ -1,4 +1,5 @@
 #include "secrets.hpp"
+#include "plaintext_guard.hpp"
 
 #include "duckdb/common/exception.hpp"
 #include "duckdb/main/secret/secret.hpp"
@@ -32,6 +33,132 @@ static void Redact(KeyValueSecret &secret, std::initializer_list<const char *> f
 	}
 }
 
+static bool IsLocalhostUrl(const string &url) {
+	static const string kHttpPrefix = "http://";
+	if (url.rfind(kHttpPrefix, 0) != 0) {
+		return false;
+	}
+
+	const size_t auth_start = kHttpPrefix.size();
+	const size_t auth_end = url.find_first_of("/?#", auth_start);
+	const std::string_view authority = (auth_end == string::npos)
+	                                       ? std::string_view(url).substr(auth_start)
+	                                       : std::string_view(url).substr(auth_start, auth_end - auth_start);
+
+	if (authority.empty()) {
+		return false;
+	}
+
+	// Reject userinfo in authority (@)
+	if (authority.find('@') != std::string_view::npos) {
+		return false;
+	}
+
+	std::string_view host;
+	std::string_view port_str;
+
+	if (authority.front() == '[') {
+		const size_t bracket_end = authority.find(']');
+		if (bracket_end == std::string_view::npos) {
+			return false;
+		}
+		host = authority.substr(1, bracket_end - 1);
+		const std::string_view remainder = authority.substr(bracket_end + 1);
+		if (!remainder.empty()) {
+			if (remainder.front() != ':') {
+				return false;
+			}
+			port_str = remainder.substr(1);
+		}
+	} else {
+		const size_t colon = authority.find(':');
+		if (colon != std::string_view::npos) {
+			host = authority.substr(0, colon);
+			port_str = authority.substr(colon + 1);
+		} else {
+			host = authority;
+		}
+	}
+
+	if (!port_str.empty()) {
+		if (port_str.size() > 5) {
+			return false;
+		}
+		int port = 0;
+		for (char c : port_str) {
+			if (c < '0' || c > '9') {
+				return false;
+			}
+			port = port * 10 + (c - '0');
+		}
+		if (port <= 0 || port > 65535) {
+			return false;
+		}
+	}
+
+	if (host.empty()) {
+		return false;
+	}
+
+	return quack_oauth::IsLoopbackHost(host);
+}
+
+void ValidateHttpUrl(const string &field_name, const string &url) {
+	if (url.empty()) {
+		return;
+	}
+	if (url.size() > 2048) {
+		throw InvalidInputException("quack_oauth: " + field_name +
+		                            " exceeds maximum allowed length of 2048 characters");
+	}
+	for (char c : url) {
+		if (static_cast<unsigned char>(c) < 32 || static_cast<unsigned char>(c) == 127 || c == '"' || c == '\'' ||
+		    c == '\\' || c == ' ') {
+			throw InvalidInputException("quack_oauth: " + field_name + " contains invalid or control characters");
+		}
+	}
+	const bool is_https = url.rfind("https://", 0) == 0;
+	const bool is_http = url.rfind("http://", 0) == 0;
+	if (!is_https && !is_http) {
+		throw InvalidInputException("quack_oauth: " + field_name +
+		                            " must begin with 'https://' (or 'http://localhost' for local development)");
+	}
+	const size_t scheme_len = is_https ? 8 : 7;
+	const size_t auth_end = url.find_first_of("/?#", scheme_len);
+	const std::string_view authority = (auth_end == string::npos)
+	                                       ? std::string_view(url).substr(scheme_len)
+	                                       : std::string_view(url).substr(scheme_len, auth_end - scheme_len);
+	if (authority.find('@') != std::string_view::npos) {
+		throw InvalidInputException("quack_oauth: " + field_name + " must not contain userinfo ('@')");
+	}
+	if (is_http && !IsLocalhostUrl(url)) {
+		throw InvalidInputException("quack_oauth: " + field_name +
+		                            " must use 'https://' (plain 'http://' is only allowed for localhost development)");
+	}
+}
+
+static void ValidateTenantOrRealm(const string &val) {
+	if (val.empty()) {
+		return;
+	}
+	if (val.size() > 2048) {
+		throw InvalidInputException("quack_oauth: tenant_or_realm exceeds maximum allowed length of 2048 characters");
+	}
+	for (char c : val) {
+		if (static_cast<unsigned char>(c) < 32 || static_cast<unsigned char>(c) == 127 || c == '"' || c == '\'' ||
+		    c == '\\' || c == ' ') {
+			throw InvalidInputException(
+			    "quack_oauth: tenant_or_realm contains invalid or control characters (must not contain spaces, quotes, "
+			    "backslashes, or control characters)");
+		}
+	}
+	if (val.rfind("http://", 0) == 0 || val.rfind("https://", 0) == 0) {
+		ValidateHttpUrl("tenant_or_realm", val);
+	} else if (val.find('@') != string::npos) {
+		throw InvalidInputException("quack_oauth: tenant_or_realm must not contain userinfo ('@')");
+	}
+}
+
 static unique_ptr<BaseSecret> CreateClientSecret(ClientContext &, CreateSecretInput &input) {
 	auto result = make_uniq<KeyValueSecret>(input.scope, input.type, input.provider, input.name);
 
@@ -58,6 +185,15 @@ static unique_ptr<BaseSecret> CreateClientSecret(ClientContext &, CreateSecretIn
 		result->secret_map["scope"] = Value(joined);
 	}
 
+	const auto dev_it = result->secret_map.find("device_authorization_endpoint");
+	if (dev_it != result->secret_map.end()) {
+		ValidateHttpUrl("device_authorization_endpoint", dev_it->second.ToString());
+	}
+	const auto tok_it = result->secret_map.find("token_endpoint");
+	if (tok_it != result->secret_map.end()) {
+		ValidateHttpUrl("token_endpoint", tok_it->second.ToString());
+	}
+
 	Redact(*result, {kClientSensitiveFields[0], kClientSensitiveFields[1], kClientSensitiveFields[2]});
 	return std::move(result);
 }
@@ -77,6 +213,20 @@ static unique_ptr<BaseSecret> CreateServerSecret(ClientContext &, CreateSecretIn
 	CopyParams(input, *result,
 	           {"issuer", "audience", "jwks_uri", "policy_table", "audit_table", "introspection_endpoint",
 	            "introspect_client_id", "introspect_client_secret", "tenant_or_realm"});
+
+	const auto jwks_it = result->secret_map.find("jwks_uri");
+	if (jwks_it != result->secret_map.end()) {
+		ValidateHttpUrl("jwks_uri", jwks_it->second.ToString());
+	}
+	const auto intro_it = result->secret_map.find("introspection_endpoint");
+	if (intro_it != result->secret_map.end()) {
+		ValidateHttpUrl("introspection_endpoint", intro_it->second.ToString());
+	}
+	const auto tenant_it = result->secret_map.find("tenant_or_realm");
+	if (tenant_it != result->secret_map.end()) {
+		ValidateTenantOrRealm(tenant_it->second.ToString());
+	}
+
 	Redact(*result, {"introspect_client_secret"});
 	return std::move(result);
 }

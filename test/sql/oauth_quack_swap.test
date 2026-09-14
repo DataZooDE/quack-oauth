@@ -49,9 +49,8 @@ SELECT current_setting('quack_authentication_function');
 ----
 quack_oauth_check_token
 
-# The 3-arg overload exists at the function-set level: it short-circuits
-# on a forbidden algorithm and returns false (the session_id and auth_string
-# args are ignored; only the third VARCHAR drives validation).
+# The 3-arg overload validates auth_string (stripping optional 'Bearer ')
+# and ignores the third VARCHAR (quack's internal PSK token).
 statement ok
 CREATE SECRET rs (
     TYPE quack_oauth_server,
@@ -80,6 +79,33 @@ query I
 SELECT quack_oauth_check_token('s', 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiIxMjM0NTY3ODkwIiwibmFtZSI6IkpvaG4gRG9lIiwiaWF0IjoxNTE2MjM5MDIyfQ.SflKxwRJSMeKKF2QT4fwpMeJf36POk6yJV_adQssw5c', 'server-psk');
 ----
 false
+
+# 3-arg overload strips 'Bearer ' prefix automatically:
+# HS256 token prefixed with 'Bearer ' triggers DisallowedAlgorithm and returns false without touching HTTP.
+query I
+SELECT quack_oauth_check_token('s', 'Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiIxMjM0NTY3ODkwIiwibmFtZSI6IkpvaG4gRG9lIiwiaWF0IjoxNTE2MjM5MDIyfQ.SflKxwRJSMeKKF2QT4fwpMeJf36POk6yJV_adQssw5c', 'server-psk');
+----
+false
+
+# Case-insensitive 'bearer' with extra whitespace is also stripped:
+query I
+SELECT quack_oauth_check_token('s', 'bearer   eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiIxMjM0NTY3ODkwIiwibmFtZSI6IkpvaG4gRG9lIiwiaWF0IjoxNTE2MjM5MDIyfQ.SflKxwRJSMeKKF2QT4fwpMeJf36POk6yJV_adQssw5c', 'server-psk');
+----
+false
+
+# Trailing whitespace and tabs are stripped:
+query I
+SELECT quack_oauth_check_token('s', 'Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiIxMjM0NTY3ODkwIiwibmFtZSI6IkpvaG4gRG9lIiwiaWF0IjoxNTE2MjM5MDIyfQ.SflKxwRJSMeKKF2QT4fwpMeJf36POk6yJV_adQssw5c \t ', 'server-psk');
+----
+false
+
+# Bare token with trailing whitespace is also stripped:
+query I
+SELECT quack_oauth_check_token('s', 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiIxMjM0NTY3ODkwIiwibmFtZSI6IkpvaG4gRG9lIiwiaWF0IjoxNTE2MjM5MDIyfQ.SflKxwRJSMeKKF2QT4fwpMeJf36POk6yJV_adQssw5c   ', 'server-psk');
+----
+false
+
+
 
 # Restore the default so this test doesn't leak state to its peers.
 statement ok

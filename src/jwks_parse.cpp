@@ -35,6 +35,21 @@ static std::optional<Jwk> ParseSingleJwk(const picojson::value &v) {
 		return std::nullopt;
 	}
 
+	// Validate kty against supported algorithm families (F11).
+	if (*kty != "RSA" && *kty != "EC" && *kty != "OKP") {
+		return std::nullopt;
+	}
+
+	// Bound kid length and reject control characters (F14).
+	if (kid->empty() || kid->size() > 256) {
+		return std::nullopt;
+	}
+	for (unsigned char c : *kid) {
+		if (c < 32 || c == 127) {
+			return std::nullopt;
+		}
+	}
+
 	Jwk j;
 	j.kid = *kid;
 	j.kty = *kty;

@@ -113,3 +113,24 @@ TEST_CASE("FormatAuditLine: quoted values escape backslash + quote", "[audit]") 
 	const std::string expected = "reason=\"rule says \\\"no\\\" \\\\ end\"";
 	CHECK(line.find(expected) != std::string::npos);
 }
+
+TEST_CASE("FormatAuditLine: escapes carriage return and newline", "[audit][security]") {
+	AuditEvent e = MakeEvent(AuditEventType::AuthzDeny, 1, "attacker\r\nsub");
+	e.reason = "line1\nline2\rline3";
+	const auto line = FormatAuditLine(e);
+	CHECK(line.find('\r') == std::string::npos);
+	CHECK(line.find('\n') == std::string::npos);
+	CHECK(line.find("sub=\"attacker\\r\\nsub\"") != std::string::npos);
+	CHECK(line.find("reason=\"line1\\nline2\\rline3\"") != std::string::npos);
+}
+
+TEST_CASE("FormatAuditLine: escapes tab and control characters", "[audit][security]") {
+	AuditEvent e = MakeEvent(AuditEventType::AuthzDeny, 1, "attacker\tsub\x1b[31m");
+	e.reason = "bell\x07";
+	const auto line = FormatAuditLine(e);
+	CHECK(line.find('\t') == std::string::npos);
+	CHECK(line.find('\x1b') == std::string::npos);
+	CHECK(line.find('\x07') == std::string::npos);
+	CHECK(line.find("sub=\"attacker\\tsub\\x1b[31m\"") != std::string::npos);
+	CHECK(line.find("reason=\"bell\\x07\"") != std::string::npos);
+}

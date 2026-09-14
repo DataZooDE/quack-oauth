@@ -37,6 +37,7 @@ struct QuackOauthState {
 	quack_oauth::DecisionCache decision_cache;
 	std::unordered_map<string, SessionPrincipal> session_principals;
 	quack_oauth::AuditRing audit_ring;
+	std::unordered_map<string, int64_t> last_throttle_logged_s;
 	std::mutex mu;
 
 	QuackOauthState();
