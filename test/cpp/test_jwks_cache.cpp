@@ -562,6 +562,38 @@ TEST_CASE("JwksCache: passive ingestion prioritizes newly fetched keys over stal
 	CHECK(found_k5);
 }
 
+TEST_CASE("JwksCache: passive ingestion of full candidate set {k1..k5} preserves newly rotated k5",
+          "[jwks][cache][passive][cap]") {
+	JwksCache cache(30);
+	Jwk k1 = MakeRsaJwk("shared");
+	k1.n = "n1";
+	Jwk k2 = MakeRsaJwk("shared");
+	k2.n = "n2";
+	Jwk k3 = MakeRsaJwk("shared");
+	k3.n = "n3";
+	Jwk k4 = MakeRsaJwk("shared");
+	k4.n = "n4";
+	cache.OnFetchSuccess("shared", {k1, k2, k3, k4}, 100);
+
+	// In real validator shape, the full document containing k1..k5 is passed to passive fetch
+	Jwk k5 = MakeRsaJwk("shared");
+	k5.n = "n5-fresh";
+	cache.OnPassiveFetchSuccess("shared", {k1, k2, k3, k4, k5}, 105);
+
+	const auto res = cache.Lookup("shared", 110);
+	REQUIRE(res.status == JwksLookupStatus::Hit);
+	REQUIRE(res.keys.size() == 4);
+	// The fresh key k5 must be prioritized and retained in the 4 cached keys!
+	bool found_k5 = false;
+	for (const auto &k : res.keys) {
+		if (k.n == "n5-fresh") {
+			found_k5 = true;
+			break;
+		}
+	}
+	CHECK(found_k5);
+}
+
 TEST_CASE("JwksCache: scoped OnFetchSuccess does not erase unscoped miss entry", "[jwks][cache][isolation][miss]") {
 	JwksCache cache(30);
 	cache.OnFetchMiss("kid-x", 100, ""); // Unscoped miss

@@ -683,7 +683,7 @@ void RegisterQuackOauthCheckToken(ExtensionLoader &loader) {
 	                    "quack via `SET quack_authentication_function = 'quack_oauth_check_token'`.";
 	desc3.parameter_names = {"session_id", "auth_string", "token"};
 	desc3.parameter_types = {LogicalType::VARCHAR, LogicalType::VARCHAR, LogicalType::VARCHAR};
-	desc3.examples = {"SELECT quack_oauth_check_token('sess-1', 'bearer', 'eyJhbGciOi...')"};
+	desc3.examples = {"SELECT quack_oauth_check_token('sess-1', 'Bearer eyJhbGciOi...', '')"};
 	desc3.categories = {"quack_oauth"};
 	info.descriptions.push_back(std::move(desc3));
 

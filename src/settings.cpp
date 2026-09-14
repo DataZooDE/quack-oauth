@@ -92,10 +92,11 @@ void RegisterQuackOauthSettings(DBConfig &config) {
 	                          "Swap quack's auth callbacks for the OAuth implementation (R-S-1).", LogicalType::BOOLEAN,
 	                          EnvBoolDefault("QUACK_OAUTH_ENABLED", false), nullptr, SetScope::GLOBAL);
 
-	// R-S-2: jwks (local JWT verification) vs introspect (RFC 7662).
-	config.AddExtensionOption("quack_oauth_validation_mode",
-	                          "Token validation strategy: 'jwks' or 'introspect' (R-S-2).", LogicalType::VARCHAR,
-	                          EnvStringDefault("QUACK_OAUTH_VALIDATION_MODE", "jwks"), nullptr, SetScope::GLOBAL);
+	// R-S-2: jwks (local JWT verification) vs introspect (RFC 7662) vs tokeninfo vs github_check.
+	config.AddExtensionOption(
+	    "quack_oauth_validation_mode",
+	    "Token validation strategy: 'jwks', 'introspect', 'tokeninfo', or 'github_check' (R-S-2).",
+	    LogicalType::VARCHAR, EnvStringDefault("QUACK_OAUTH_VALIDATION_MODE", "jwks"), nullptr, SetScope::GLOBAL);
 
 	// R-S-12: first-class provider selector (entra|google|keycloak|okta|github|generic).
 	config.AddExtensionOption(

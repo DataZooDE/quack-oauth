@@ -1722,3 +1722,62 @@ TEST_CASE("Validator: forged token refresh on 5-key document preserves newly rot
 	CHECK(ValidateToken(valid_k5_token, BaseOpts(1051), ctx) == VerifyResult::Ok);
 	CHECK(http.call_count == 1); // No new network call!
 }
+
+TEST_CASE("Validator: passive sibling ingestion preserves newly rotated 5th key across JWKS fetch",
+          "[validator][sibling][5-keys]") {
+	JwksCache cache(30);
+	const auto s1 = GenerateValidatorKey("shared-kid");
+	const auto s2 = GenerateValidatorKey("shared-kid");
+	const auto s3 = GenerateValidatorKey("shared-kid");
+	const auto s4 = GenerateValidatorKey("shared-kid");
+	const auto s5 = GenerateValidatorKey("shared-kid"); // 5th newly rotated key for shared-kid
+
+	const auto other = GenerateValidatorKey("other-kid");
+
+	// Initial cache has shared-kid with s1..s4
+	cache.OnFetchSuccess("shared-kid", {s1.jwk, s2.jwk, s3.jwk, s4.jwk}, 1000, kTestJwksUri);
+
+	FakeHttpClient http;
+	// JWKS published on cold-miss of other-kid contains other-kid AND shared-kid with all 5 keys [s1, s2, s3, s4, s5]
+	http.next_response = IHttpClient::Response {
+	    200, std::string(R"({"keys":[)") + R"({"kid":"other-kid","kty":"RSA","use":"sig","alg":"RS256","n":")" +
+	             other.jwk.n + R"(","e":")" + other.jwk.e + R"("},)" +
+	             R"({"kid":"shared-kid","kty":"RSA","use":"sig","alg":"RS256","n":")" + s1.jwk.n + R"(","e":")" +
+	             s1.jwk.e + R"("},)" + R"({"kid":"shared-kid","kty":"RSA","use":"sig","alg":"RS256","n":")" + s2.jwk.n +
+	             R"(","e":")" + s2.jwk.e + R"("},)" +
+	             R"({"kid":"shared-kid","kty":"RSA","use":"sig","alg":"RS256","n":")" + s3.jwk.n + R"(","e":")" +
+	             s3.jwk.e + R"("},)" + R"({"kid":"shared-kid","kty":"RSA","use":"sig","alg":"RS256","n":")" + s4.jwk.n +
+	             R"(","e":")" + s4.jwk.e + R"("},)" +
+	             R"({"kid":"shared-kid","kty":"RSA","use":"sig","alg":"RS256","n":")" + s5.jwk.n + R"(","e":")" +
+	             s5.jwk.e + R"("}]})"};
+
+	ValidateContext ctx {http, cache, kTestJwksUri};
+
+	// Cold miss on other-kid triggers fetch at t=1005 (after 2s fetch budget window) and ingests sibling shared-kid
+	const auto other_token = Sign(other, 2000, 1005);
+	CHECK(ValidateToken(other_token, BaseOpts(1005), ctx) == VerifyResult::Ok);
+	CHECK(http.call_count == 1);
+
+	// Now token signed by s5 arrives for shared-kid at t=1006.
+	// It must verify directly from cache with ZERO new network calls!
+	const auto s5_token = Sign(s5, 2000, 1006);
+	CHECK(ValidateToken(s5_token, BaseOpts(1006), ctx) == VerifyResult::Ok);
+	CHECK(http.call_count == 1);
+
+	// Check cached keys directly: newly rotated s5 is present, and oldest s1 was evicted
+	const auto shared_lookup = cache.Lookup("shared-kid", 1006, kTestJwksUri);
+	REQUIRE(shared_lookup.status == JwksLookupStatus::Hit);
+	REQUIRE(shared_lookup.keys.size() == 4);
+	bool found_s5 = false;
+	bool found_s1 = false;
+	for (const auto &k : shared_lookup.keys) {
+		if (k.n == s5.jwk.n) {
+			found_s5 = true;
+		}
+		if (k.n == s1.jwk.n) {
+			found_s1 = true;
+		}
+	}
+	CHECK(found_s5);
+	CHECK_FALSE(found_s1);
+}

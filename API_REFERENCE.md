@@ -98,8 +98,8 @@ SELECT quack_oauth_check_token('eyJhbGciOiJSUzI1NiIs...');
 | Parameter      | Type    | Description |
 |----------------|---------|-------------|
 | `session_id`   | VARCHAR | quack's per-session id; used as the key for the principal cache. |
-| `auth_string`  | VARCHAR | The raw `Authorization` header value (e.g. `bearer eyJ...`). Currently ignored — present only for callback shape compatibility. |
-| `token`        | VARCHAR | The bearer access token (JWT or opaque). |
+| `auth_string`  | VARCHAR | The raw HTTP `Authorization` header value (e.g. `Bearer eyJ...`) containing the OAuth access token. The optional `Bearer ` prefix is stripped automatically before validation. |
+| `token`        | VARCHAR | quack's pre-shared PSK token from `quack_serve`. Ignored by `quack_oauth` (present for callback signature compatibility with `quack`). |
 
 Matches `quack`'s `quack_check_token(session_id, auth_string, token)`
 callback signature exactly. **Side effect**: on success, the extracted
@@ -115,7 +115,7 @@ SET quack_authorization_function  = 'quack_oauth_check_authorization';
 ```
 
 ```sql
-SELECT quack_oauth_check_token('sess-42', 'bearer eyJ...', 'eyJhbGciOi...');
+SELECT quack_oauth_check_token('sess-42', 'Bearer eyJhbGciOi...', '');
 ```
 
 ---

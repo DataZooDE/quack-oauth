@@ -33,16 +33,79 @@ static void Redact(KeyValueSecret &secret, std::initializer_list<const char *> f
 }
 
 static bool IsLocalhostUrl(const string &url) {
-	static const char *kPrefixes[] = {"http://localhost/", "http://localhost:", "http://localhost",
-	                                  "http://127.0.0.1/", "http://127.0.0.1:", "http://127.0.0.1",
-	                                  "http://[::1]/",     "http://[::1]:",     "http://[::1]"};
-	for (const auto *p : kPrefixes) {
-		const size_t len = strlen(p);
-		if (url.compare(0, len, p) == 0) {
-			return true;
+	static const string kHttpPrefix = "http://";
+	if (url.rfind(kHttpPrefix, 0) != 0) {
+		return false;
+	}
+
+	const size_t auth_start = kHttpPrefix.size();
+	const size_t auth_end = url.find_first_of("/?#", auth_start);
+	const std::string_view authority = (auth_end == string::npos)
+	                                       ? std::string_view(url).substr(auth_start)
+	                                       : std::string_view(url).substr(auth_start, auth_end - auth_start);
+
+	if (authority.empty()) {
+		return false;
+	}
+
+	// Reject userinfo in authority (@)
+	if (authority.find('@') != std::string_view::npos) {
+		return false;
+	}
+
+	std::string_view host;
+	std::string_view port_str;
+
+	if (authority.front() == '[') {
+		const size_t bracket_end = authority.find(']');
+		if (bracket_end == std::string_view::npos) {
+			return false;
+		}
+		host = authority.substr(1, bracket_end - 1);
+		const std::string_view remainder = authority.substr(bracket_end + 1);
+		if (!remainder.empty()) {
+			if (remainder.front() != ':') {
+				return false;
+			}
+			port_str = remainder.substr(1);
+		}
+	} else {
+		const size_t colon = authority.find(':');
+		if (colon != std::string_view::npos) {
+			host = authority.substr(0, colon);
+			port_str = authority.substr(colon + 1);
+		} else {
+			host = authority;
 		}
 	}
-	return false;
+
+	if (!port_str.empty()) {
+		if (port_str.size() > 5) {
+			return false;
+		}
+		int port = 0;
+		for (char c : port_str) {
+			if (c < '0' || c > '9') {
+				return false;
+			}
+			port = port * 10 + (c - '0');
+		}
+		if (port <= 0 || port > 65535) {
+			return false;
+		}
+	}
+
+	if (host.empty()) {
+		return false;
+	}
+
+	string lower_host;
+	lower_host.reserve(host.size());
+	for (char c : host) {
+		lower_host.push_back(static_cast<char>(tolower(static_cast<unsigned char>(c))));
+	}
+
+	return lower_host == "localhost" || lower_host == "127.0.0.1" || lower_host == "::1";
 }
 
 static void ValidateHttpUrl(const string &field_name, const string &url) {

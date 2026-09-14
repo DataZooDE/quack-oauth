@@ -107,3 +107,12 @@ SELECT detail LIKE '%min_refresh_s=30%' FROM quack_oauth_diagnose() WHERE compon
 ----
 true
 
+# Check settings description mentions all validation modes
+query I
+SELECT description LIKE '%tokeninfo%' AND description LIKE '%github_check%'
+FROM duckdb_settings()
+WHERE name = 'quack_oauth_validation_mode';
+----
+true
+
+

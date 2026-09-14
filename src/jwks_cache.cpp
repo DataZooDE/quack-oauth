@@ -125,7 +125,8 @@ void JwksCache::OnPassiveFetchSuccess(const std::string &kid, const std::vector<
 	const auto hit = FindHit(jwks_uri, kid);
 	if (hit != hits_.end()) {
 		// Strictly additive: union new keys into existing entry without clearing reservation or changing fetched_at_s
-		// (F4). When over cap, drop oldest cached keys to ensure freshly observed key material is preserved.
+		// (F4). When over cap, drop oldest cached keys (from the front) so that freshly observed key material
+		// (appended to the back) is preserved under kMaxKeysPerKid.
 		for (const auto &k : keys) {
 			bool exists = false;
 			for (const auto &existing : hit->second.keys) {
