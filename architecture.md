@@ -78,7 +78,7 @@ native, one wasm). The IdP, Caddy, and quack itself are external.
 | **Two-callback design**: `check_token` does signature/claims validation, `check_authorization` does policy evaluation with a cached principal. | Matches quack's existing surface; cleanly separates AuthN from AuthZ. |
 | **Per-process key cache** (`kid → JWK`) and **per-token decision cache** (`hash(token) → {principal, decision_ttl}`). | Sub-100µs hot path while remaining correct on key rotation and `exp`. |
 | **Token transport reuses quack's in-RPC `token` slot**; client reconnects when token nears expiry. | No quack wire changes (C-3). Cost: brief reconnect on rotation. |
-| **Wasm build strips client-side OAuth code via `#ifdef EMSCRIPTEN`**; the host page injects an already-obtained access token via SECRET. | Browser can't keep client secrets and can't run device_code; defers all flow handling to a JS OIDC library that already exists. |
+| **Wasm build strips client-side OAuth code via `#ifdef __EMSCRIPTEN__`**; the host page injects an already-obtained access token via SECRET. | Browser can't keep client secrets and can't run device_code; defers all flow handling to a JS OIDC library that already exists. |
 | **Single header-only JWT library** (`jwt-cpp`) over OpenSSL on native, mbedTLS on wasm. | Cuts JWT code to ~50 LOC of glue. OpenSSL is already in DuckDB's vcpkg orbit. |
 | **Policy as a SQL table inside the server's DuckDB database**, addressed by `policy_table` on the server SECRET. | Operators get SQL-native rule management (INSERT / UPDATE / DELETE, joins to existing principal tables) with the same engine they already trust. No extra parser dependency. |
 | **No HA, no shared cache**. | Single-process scope (C-1, simplicity). Caches are warmed in seconds. |
@@ -137,7 +137,7 @@ flowchart TB
 | **AuthZ engine** | Accepts `(Principal, Action, Object)`, returns allow/deny + reason. Loads the SQL policy table named by the SECRET's `policy_table` field via a short-lived `Connection`; falls back to the default scope policy when unset. | `src/authz.cpp/.hpp`, `src/policy.cpp`, `src/policy_table.cpp` |
 | **JWKS cache** | Thread-safe `kid → JWK` with per-`kid` rate-limited refresh. | `src/jwks_cache.cpp/.hpp` |
 | **Decision cache** | `sha256(token) → {Principal, decision_ttl}`. LRU, 60 s TTL, capped at `min(60s, exp-now)`. | `src/decision_cache.cpp/.hpp` |
-| **Token source (client)** | Native-only. Implements client_credentials, device_code, refresh_token. Updates the SECRET in place. | `src/client/token_source.cpp/.hpp` (`#ifdef EMSCRIPTEN` → stub) |
+| **Token source (client)** | Native-only. Implements client_credentials, device_code, refresh_token. Updates the SECRET in place. | `src/client/token_source.cpp/.hpp` (`#ifdef __EMSCRIPTEN__` → stub) |
 | **Diagnose** | Single table function dumping cache state and last N decisions. | `src/diagnose.cpp` |
 | **Platform** | The only place with `#ifdef`. Wraps HTTP (cpp-httplib vs Emscripten fetch), random (OpenSSL vs Web Crypto via JS bridge). No filesystem dependency for the policy: it lives in the host DuckDB database. | `src/platform/*.cpp` |
 

@@ -28,7 +28,7 @@
 #include "tracing.hpp"
 #include "quack_oauth_banner.hpp"
 
-#ifndef EMSCRIPTEN
+#ifndef __EMSCRIPTEN__
 #include "telemetry.hpp"
 #endif
 
@@ -62,7 +62,7 @@ static int64_t LookupClockSkew(ClientContext &context) {
 }
 
 static void CheckAuthorizationScalarFun(DataChunk &args, ExpressionState &state, Vector &result) {
-#ifndef EMSCRIPTEN
+#ifndef __EMSCRIPTEN__
 	PostHogTelemetry::Instance().RecordFunctionCall("quack_oauth_check_authorization");
 #endif
 	auto &context = state.GetContext();

@@ -273,7 +273,7 @@ defaults for issuer/JWKS/introspection/validation-mode.
   including the legacy shared-secret strings. There is no fallback
   mode.
 - **R-X-3** Native and Wasm builds MUST share one source tree gated
-  by `#ifdef EMSCRIPTEN`. No platform-specific source files outside
+  by `#ifdef __EMSCRIPTEN__`. No platform-specific source files outside
   one isolated `platform/` subtree.
 
 ## 6. Non-functional requirements

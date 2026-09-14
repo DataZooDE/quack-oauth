@@ -8,7 +8,7 @@
 
 #include "env_overrides.hpp"
 
-#ifndef EMSCRIPTEN
+#ifndef __EMSCRIPTEN__
 #include "telemetry.hpp"
 #endif
 
@@ -16,7 +16,7 @@
 
 namespace duckdb {
 
-#ifndef EMSCRIPTEN
+#ifndef __EMSCRIPTEN__
 // Telemetry opt-out + key override callbacks. Forward to the
 // PostHogTelemetry singleton so a runtime `SET quack_oauth_telemetry_enabled
 // = false` (or a redirected key) takes effect immediately. Pattern copied
@@ -180,7 +180,7 @@ void RegisterQuackOauthSettings(DBConfig &config) {
 	                          "Name of the quack_oauth_server SECRET that check_token reads.", LogicalType::VARCHAR,
 	                          EnvStringDefault("QUACK_OAUTH_SERVER_SECRET_NAME", ""), nullptr, SetScope::GLOBAL);
 
-#ifndef EMSCRIPTEN
+#ifndef __EMSCRIPTEN__
 	// Anonymous usage telemetry (shared with ../erpl and ../erpl-web). Default
 	// on. Two opt-out paths -- this setting AND the `DATAZOO_DISABLE_TELEMETRY`
 	// env var checked inside posthog-telemetry's PostHogProcess(). See README

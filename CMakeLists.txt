@@ -25,7 +25,7 @@ include_directories(./duckdb/third_party/httplib)
 # Anonymous usage telemetry (shared library with ../erpl and ../erpl-web).
 # Native only -- the lib uses `duckdb_httplib_openssl::SSLClient` which is
 # not portable to wasm. The matching `PostHogTelemetry::Instance().*` calls
-# in src/ are guarded with `#ifndef EMSCRIPTEN`. Opt-out is documented in
+# in src/ are guarded with `#ifndef __EMSCRIPTEN__`. Opt-out is documented in
 # README.md ("Telemetry") and exposed as the `quack_oauth_telemetry_enabled`
 # setting + the `DATAZOO_DISABLE_TELEMETRY` env var.
 # The submodule's own CMakeLists.txt finds + links OpenSSL itself.
@@ -91,7 +91,7 @@ set(DUCKDB_WASM_SAFE_SOURCES
 # DuckDB-coupled sources that DO touch the network (duckdb_httplib_openssl
 # or rely on it via the validator). Compiled into native builds only; the
 # matching Register* calls in quack_oauth_extension.cpp are guarded with
-# `#ifndef EMSCRIPTEN` so the wasm build links cleanly without them.
+# `#ifndef __EMSCRIPTEN__` so the wasm build links cleanly without them.
 set(DUCKDB_NATIVE_ONLY_SOURCES
     src/acquire_function.cpp
     src/check_token_function.cpp
@@ -103,6 +103,7 @@ set(DUCKDB_NATIVE_ONLY_SOURCES
 )
 
 if(EMSCRIPTEN)
+  add_compile_definitions(EMSCRIPTEN)
   set(DUCKDB_SOURCES ${DUCKDB_WASM_SAFE_SOURCES})
 else()
   set(DUCKDB_SOURCES ${DUCKDB_WASM_SAFE_SOURCES} ${DUCKDB_NATIVE_ONLY_SOURCES})
