@@ -141,5 +141,11 @@ TEST_CASE("StripBearerPrefix normalizes Authorization headers and tokens", "[jwt
 	CHECK(quack_oauth::StripBearerPrefix("BearerXYZ") == "BearerXYZ");
 	CHECK(quack_oauth::StripBearerPrefix("eyJhbGciOi...") == "eyJhbGciOi...");
 	CHECK(quack_oauth::StripBearerPrefix("  eyJhbGciOi...") == "eyJhbGciOi...");
+	CHECK(quack_oauth::StripBearerPrefix("Bearer eyJhbGciOi...  ") == "eyJhbGciOi...");
+	CHECK(quack_oauth::StripBearerPrefix("Bearer eyJhbGciOi...\t ") == "eyJhbGciOi...");
+	CHECK(quack_oauth::StripBearerPrefix("bearer eyJhbGciOi...\t") == "eyJhbGciOi...");
+	CHECK(quack_oauth::StripBearerPrefix("eyJhbGciOi...  ") == "eyJhbGciOi...");
+	CHECK(quack_oauth::StripBearerPrefix("\t eyJhbGciOi... \r\n") == "eyJhbGciOi...");
+	CHECK(quack_oauth::StripBearerPrefix("   ") == "");
 	CHECK(quack_oauth::StripBearerPrefix("") == "");
 }

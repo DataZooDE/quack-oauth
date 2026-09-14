@@ -136,6 +136,97 @@ std::string SignWithCustomKid(const TestKey &k, const std::string &kid, std::int
 	    .sign(jwt::algorithm::rs256("", k.priv_pem, "", ""));
 }
 
+TestKey GenerateEcValidatorKey(const std::string &kid) {
+	EVP_PKEY *pkey = EVP_EC_gen(OBJ_nid2sn(NID_X9_62_prime256v1));
+	REQUIRE(pkey != nullptr);
+
+	BIO *priv_bio = BIO_new(BIO_s_mem());
+	PEM_write_bio_PrivateKey(priv_bio, pkey, nullptr, nullptr, 0, nullptr, nullptr);
+	char *priv_data = nullptr;
+	const long priv_len = BIO_get_mem_data(priv_bio, &priv_data);
+	std::string priv_pem(priv_data, static_cast<std::size_t>(priv_len));
+	BIO_free(priv_bio);
+
+	BIGNUM *x_bn = nullptr;
+	BIGNUM *y_bn = nullptr;
+	EVP_PKEY_get_bn_param(pkey, OSSL_PKEY_PARAM_EC_PUB_X, &x_bn);
+	EVP_PKEY_get_bn_param(pkey, OSSL_PKEY_PARAM_EC_PUB_Y, &y_bn);
+
+	const std::size_t coord_bytes = 32;
+	auto bn_to_b64url_padded = [&](const BIGNUM *bn) {
+		std::vector<unsigned char> buf(coord_bytes, 0);
+		BN_bn2binpad(bn, buf.data(), static_cast<int>(coord_bytes));
+		return B64UrlNoPad(std::string(buf.begin(), buf.end()));
+	};
+
+	Jwk jwk;
+	jwk.kid = kid;
+	jwk.kty = "EC";
+	jwk.alg = "ES256";
+	jwk.use = "sig";
+	jwk.crv = "P-256";
+	jwk.x = bn_to_b64url_padded(x_bn);
+	jwk.y = bn_to_b64url_padded(y_bn);
+
+	BN_free(x_bn);
+	BN_free(y_bn);
+	EVP_PKEY_free(pkey);
+
+	return TestKey {std::move(priv_pem), std::move(jwk)};
+}
+
+std::string SignEc(const TestKey &k, std::int64_t exp_s, std::int64_t iat_s) {
+	return jwt::create<TraitsT>()
+	    .set_type("JWT")
+	    .set_key_id(k.jwk.kid)
+	    .set_issuer("https://idp.test")
+	    .set_subject("alice")
+	    .set_audience("api://quack")
+	    .set_issued_at(std::chrono::system_clock::time_point(std::chrono::seconds(iat_s)))
+	    .set_expires_at(std::chrono::system_clock::time_point(std::chrono::seconds(exp_s)))
+	    .sign(jwt::algorithm::es256("", k.priv_pem, "", ""));
+}
+
+TestKey GenerateEd25519ValidatorKey(const std::string &kid) {
+	EVP_PKEY *pkey = EVP_PKEY_Q_keygen(nullptr, nullptr, "ED25519");
+	REQUIRE(pkey != nullptr);
+
+	BIO *priv_bio = BIO_new(BIO_s_mem());
+	PEM_write_bio_PrivateKey(priv_bio, pkey, nullptr, nullptr, 0, nullptr, nullptr);
+	char *priv_data = nullptr;
+	const long priv_len = BIO_get_mem_data(priv_bio, &priv_data);
+	std::string priv_pem(priv_data, static_cast<std::size_t>(priv_len));
+	BIO_free(priv_bio);
+
+	std::size_t raw_len = 0;
+	EVP_PKEY_get_raw_public_key(pkey, nullptr, &raw_len);
+	std::vector<unsigned char> raw(raw_len);
+	EVP_PKEY_get_raw_public_key(pkey, raw.data(), &raw_len);
+
+	Jwk jwk;
+	jwk.kid = kid;
+	jwk.kty = "OKP";
+	jwk.alg = "EdDSA";
+	jwk.use = "sig";
+	jwk.crv = "Ed25519";
+	jwk.x = B64UrlNoPad(std::string(raw.begin(), raw.end()));
+
+	EVP_PKEY_free(pkey);
+	return TestKey {std::move(priv_pem), std::move(jwk)};
+}
+
+std::string SignEd25519(const TestKey &k, std::int64_t exp_s, std::int64_t iat_s) {
+	return jwt::create<TraitsT>()
+	    .set_type("JWT")
+	    .set_key_id(k.jwk.kid)
+	    .set_issuer("https://idp.test")
+	    .set_subject("alice")
+	    .set_audience("api://quack")
+	    .set_issued_at(std::chrono::system_clock::time_point(std::chrono::seconds(iat_s)))
+	    .set_expires_at(std::chrono::system_clock::time_point(std::chrono::seconds(exp_s)))
+	    .sign(jwt::algorithm::ed25519("", k.priv_pem, "", ""));
+}
+
 std::string JwksWith(const Jwk &j) {
 	// Hand-rolled JSON to avoid pulling picojson into the test.
 	auto quote = [](const std::string &s) {
@@ -158,7 +249,7 @@ VerifyOptions BaseOpts(std::int64_t now_s = 1700000000) {
 	opts.expected_audience = "api://quack";
 	opts.clock_skew_s = 60;
 	opts.now_s = now_s;
-	opts.allowed_algorithms = {"RS256", "RS384", "RS512"};
+	// allowed_algorithms empty defaults to architecture default {RS256, RS384, RS512, ES256, ES384, EdDSA}
 	return opts;
 }
 
@@ -1780,4 +1871,76 @@ TEST_CASE("Validator: passive sibling ingestion preserves newly rotated 5th key 
 	}
 	CHECK(found_s5);
 	CHECK_FALSE(found_s1);
+}
+
+TEST_CASE("Validator: ES256 JWKS token validates with default VerifyOptions (empty allowed_algorithms)",
+          "[validator][es256][default_alg]") {
+	const auto ec_key = GenerateEcValidatorKey("ec-kid-1");
+	JwksCache cache(30);
+	FakeHttpClient http;
+	http.next_response = IHttpClient::Response {
+	    200, R"({"keys":[{"kty":"EC","kid":"ec-kid-1","use":"sig","alg":"ES256","crv":"P-256","x":")" + ec_key.jwk.x +
+	             R"(","y":")" + ec_key.jwk.y + R"("}]})"};
+
+	ValidateContext ctx {http, cache, kTestJwksUri};
+	const auto token = SignEc(ec_key, 1700003600, 1700000000);
+
+	// BaseOpts() has empty allowed_algorithms, representing default server configuration.
+	CHECK(ValidateToken(token, BaseOpts(), ctx) == VerifyResult::Ok);
+	CHECK(http.call_count == 1);
+}
+
+TEST_CASE("Validator: EdDSA JWKS token validates with default VerifyOptions (empty allowed_algorithms)",
+          "[validator][eddsa][default_alg]") {
+	const auto ed_key = GenerateEd25519ValidatorKey("eddsa-kid-1");
+	JwksCache cache(30);
+	FakeHttpClient http;
+	http.next_response = IHttpClient::Response {
+	    200, R"({"keys":[{"kty":"OKP","kid":"eddsa-kid-1","use":"sig","alg":"EdDSA","crv":"Ed25519","x":")" +
+	             ed_key.jwk.x + R"("}]})"};
+
+	ValidateContext ctx {http, cache, kTestJwksUri};
+	const auto token = SignEd25519(ed_key, 1700003600, 1700000000);
+
+	CHECK(ValidateToken(token, BaseOpts(), ctx) == VerifyResult::Ok);
+	CHECK(http.call_count == 1);
+}
+
+TEST_CASE("Validator: cold unknown-kid fetch does not increment absence or evict unrelated cached keys",
+          "[validator][cold_miss][absence_dos]") {
+	const auto &legit_key = GetValidatorKey();
+	JwksCache cache(30);
+	// Legit key is cached and valid at t=1000
+	cache.OnFetchSuccess(legit_key.jwk.kid, {legit_key.jwk}, 1000, kTestJwksUri);
+
+	FakeHttpClient http;
+	ValidateContext ctx {http, cache, kTestJwksUri};
+
+	// Attacker token 1 with unknown kid "attacker-kid-1" arrives at t=1005 (after 2s budget window).
+	// HTTP response is a partial JWKS that contains only "other-kid" (omits legit_key.jwk.kid).
+	const auto other_key = GenerateValidatorKey("other-kid");
+	http.next_response =
+	    IHttpClient::Response {200, R"({"keys":[{"kty":"RSA","kid":"other-kid","use":"sig","alg":"RS256","n":")" +
+	                                    other_key.jwk.n + R"(","e":")" + other_key.jwk.e + R"("}]})"};
+
+	const auto attacker_key1 = GenerateValidatorKey("attacker-kid-1");
+	const auto attacker_token1 = SignWithCustomKid(attacker_key1, "attacker-kid-1", 2000, 1005);
+	CHECK(ValidateToken(attacker_token1, BaseOpts(1005), ctx) == VerifyResult::UnknownKid);
+	CHECK(http.call_count == 1);
+
+	// Attacker token 2 with another unknown kid "attacker-kid-2" arrives at t=1010 (after 2s budget window).
+	// HTTP response still omits legit_key.jwk.kid.
+	http.next_response =
+	    IHttpClient::Response {200, R"({"keys":[{"kty":"RSA","kid":"other-kid","use":"sig","alg":"RS256","n":")" +
+	                                    other_key.jwk.n + R"(","e":")" + other_key.jwk.e + R"("}]})"};
+	const auto attacker_key2 = GenerateValidatorKey("attacker-kid-2");
+	const auto attacker_token2 = SignWithCustomKid(attacker_key2, "attacker-kid-2", 2000, 1010);
+	CHECK(ValidateToken(attacker_token2, BaseOpts(1010), ctx) == VerifyResult::UnknownKid);
+	CHECK(http.call_count == 2);
+
+	// Assert that legit_key was NOT evicted!
+	// A legitimate token for legit_key must still verify directly from cache!
+	const auto legit_token = Sign(legit_key, 2000, 1015);
+	CHECK(ValidateToken(legit_token, BaseOpts(1015), ctx) == VerifyResult::Ok);
+	CHECK(http.call_count == 2); // No new HTTP calls!
 }

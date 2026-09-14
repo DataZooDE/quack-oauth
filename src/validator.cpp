@@ -27,12 +27,6 @@ static bool IsForbiddenAlgorithm(const std::string &alg) {
 	return alg.empty() || alg == "none" || StartsWith(alg, "HS");
 }
 
-static bool IsAllowed(const std::string &alg, const std::vector<std::string> &whitelist) {
-	static const std::vector<std::string> kDefault = {"RS256", "RS384", "RS512"};
-	const auto &use = whitelist.empty() ? kDefault : whitelist;
-	return std::find(use.begin(), use.end(), alg) != use.end();
-}
-
 static bool AudienceMatches(const std::vector<std::string> &actual, const std::string &expected) {
 	if (expected.empty()) {
 		return true;
@@ -402,7 +396,7 @@ VerifyResult ValidateToken(std::string_view token, const VerifyOptions &opts, Va
 		return VerifyResult::Malformed;
 	}
 
-	if (IsForbiddenAlgorithm(parsed->alg) || !IsAllowed(parsed->alg, opts.allowed_algorithms)) {
+	if (IsForbiddenAlgorithm(parsed->alg) || !IsAlgorithmAllowed(parsed->alg, opts.allowed_algorithms)) {
 		return VerifyResult::DisallowedAlgorithm;
 	}
 
@@ -465,12 +459,6 @@ VerifyResult ValidateToken(std::string_view token, const VerifyOptions &opts, Va
 	ctx.jwks_cache.RecordJwksFetchSuccess(opts.now_s, ctx.jwks_uri);
 
 	const auto keys_by_kid = GroupSigningKeysByKid(keys);
-
-	std::unordered_set<std::string> present_kids;
-	for (const auto &[k_kid, _] : keys_by_kid) {
-		present_kids.insert(k_kid);
-	}
-	ctx.jwks_cache.ReconcileAbsentKids(present_kids, opts.now_s, ctx.jwks_uri);
 
 	for (const auto &[k_kid, k_keys] : keys_by_kid) {
 		auto usable = ScreenUsableKeys(k_keys);

@@ -44,10 +44,17 @@ struct VerifyOptions {
 	// under Catch2).
 	std::int64_t now_s = 0;
 	// Allowed `alg` values. Empty means use the architecture default
-	// {RS256, RS384, RS512}. `none` and HS* are rejected unconditionally per
+	// {RS256, RS384, RS512, ES256, ES384, EdDSA}. `none` and HS* are rejected unconditionally per
 	// R-S-3 regardless of this list.
 	std::vector<std::string> allowed_algorithms;
 };
+
+// Architecture default allowed algorithms {RS256, RS384, RS512, ES256, ES384, EdDSA}.
+const std::vector<std::string> &DefaultAllowedAlgorithms() noexcept;
+
+// Check whether `alg` is allowed under `whitelist`. If `whitelist` is empty,
+// uses DefaultAllowedAlgorithms().
+bool IsAlgorithmAllowed(const std::string &alg, const std::vector<std::string> &whitelist) noexcept;
 
 // Verify a compact-serialized JWT against a JWK, applying R-S-3 algorithm
 // allowlisting, claim checks (`iss`, `aud`), and time checks (`exp`, `nbf`)

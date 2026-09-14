@@ -116,7 +116,8 @@ std::optional<JwtParsed> ParseJwt(std::string_view token) {
 }
 
 std::string_view StripBearerPrefix(std::string_view auth) noexcept {
-	while (!auth.empty() && (auth.front() == ' ' || auth.front() == '\t')) {
+	while (!auth.empty() &&
+	       (auth.front() == ' ' || auth.front() == '\t' || auth.front() == '\r' || auth.front() == '\n')) {
 		auth.remove_prefix(1);
 	}
 	if (auth.size() >= 6) {
@@ -130,10 +131,14 @@ std::string_view StripBearerPrefix(std::string_view auth) noexcept {
 		}
 		if (matches && (auth.size() == 6 || auth[6] == ' ' || auth[6] == '\t')) {
 			auth.remove_prefix(6);
-			while (!auth.empty() && (auth.front() == ' ' || auth.front() == '\t')) {
+			while (!auth.empty() &&
+			       (auth.front() == ' ' || auth.front() == '\t' || auth.front() == '\r' || auth.front() == '\n')) {
 				auth.remove_prefix(1);
 			}
 		}
+	}
+	while (!auth.empty() && (auth.back() == ' ' || auth.back() == '\t' || auth.back() == '\r' || auth.back() == '\n')) {
+		auth.remove_suffix(1);
 	}
 	return auth;
 }

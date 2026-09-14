@@ -244,13 +244,13 @@ static bool IsForbiddenAlgorithm(const std::string &alg) {
 	return alg.empty() || alg == "none" || StartsWith(alg, "HS");
 }
 
-static const std::vector<std::string> &DefaultAllowedAlgorithms() {
+const std::vector<std::string> &DefaultAllowedAlgorithms() noexcept {
 	// R-S-3: RSA + ECDSA + EdDSA. HS* and `none` rejected unconditionally.
 	static const std::vector<std::string> kDefault = {"RS256", "RS384", "RS512", "ES256", "ES384", "EdDSA"};
 	return kDefault;
 }
 
-static bool IsAllowed(const std::string &alg, const std::vector<std::string> &whitelist) {
+bool IsAlgorithmAllowed(const std::string &alg, const std::vector<std::string> &whitelist) noexcept {
 	const auto &use = whitelist.empty() ? DefaultAllowedAlgorithms() : whitelist;
 	return std::find(use.begin(), use.end(), alg) != use.end();
 }
@@ -423,7 +423,7 @@ VerifyResult VerifyJwt(std::string_view token, const Jwk &jwk, const VerifyOptio
 	}
 
 	const std::string alg = decoded->has_algorithm() ? decoded->get_algorithm() : "";
-	if (IsForbiddenAlgorithm(alg) || !IsAllowed(alg, opts.allowed_algorithms)) {
+	if (IsForbiddenAlgorithm(alg) || !IsAlgorithmAllowed(alg, opts.allowed_algorithms)) {
 		return VerifyResult::DisallowedAlgorithm;
 	}
 

@@ -93,6 +93,19 @@ SELECT quack_oauth_check_token('s', 'bearer   eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVC
 ----
 false
 
+# Trailing whitespace and tabs are stripped:
+query I
+SELECT quack_oauth_check_token('s', 'Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiIxMjM0NTY3ODkwIiwibmFtZSI6IkpvaG4gRG9lIiwiaWF0IjoxNTE2MjM5MDIyfQ.SflKxwRJSMeKKF2QT4fwpMeJf36POk6yJV_adQssw5c \t ', 'server-psk');
+----
+false
+
+# Bare token with trailing whitespace is also stripped:
+query I
+SELECT quack_oauth_check_token('s', 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiIxMjM0NTY3ODkwIiwibmFtZSI6IkpvaG4gRG9lIiwiaWF0IjoxNTE2MjM5MDIyfQ.SflKxwRJSMeKKF2QT4fwpMeJf36POk6yJV_adQssw5c   ', 'server-psk');
+----
+false
+
+
 
 # Restore the default so this test doesn't leak state to its peers.
 statement ok

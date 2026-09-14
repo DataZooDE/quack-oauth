@@ -675,10 +675,12 @@ void RegisterQuackOauthCheckToken(ExtensionLoader &loader) {
 	info.descriptions.push_back(std::move(desc1));
 
 	FunctionDescription desc3;
-	desc3.description = "3-argument form that matches quack's quack_check_token callback signature exactly. "
-	                    "Validates the token AND caches the extracted Principal keyed by session_id so a "
-	                    "subsequent quack_oauth_check_authorization() call can apply the policy. Wired into "
-	                    "quack via `SET quack_authentication_function = 'quack_oauth_check_token'`.";
+	desc3.description =
+	    "3-argument form that matches quack's quack_check_token callback signature exactly. "
+	    "Validates auth_string after stripping an optional Bearer prefix (ignoring quack's PSK token argument) "
+	    "AND caches the extracted Principal keyed by session_id so a subsequent quack_oauth_check_authorization() "
+	    "call can apply the policy. Wired into quack via `SET quack_authentication_function = "
+	    "'quack_oauth_check_token'`.";
 	desc3.parameter_names = {"session_id", "auth_string", "token"};
 	desc3.parameter_types = {LogicalType::VARCHAR, LogicalType::VARCHAR, LogicalType::VARCHAR};
 	desc3.examples = {"SELECT quack_oauth_check_token('sess-1', 'Bearer eyJhbGciOi...', '')"};
