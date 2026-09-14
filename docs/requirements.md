@@ -210,7 +210,7 @@ Requirements use the convention **MUST / SHOULD / MAY** (RFC 2119).
 - **R-C-5** Refresh tokens, when issued, MUST be persisted by
   updating the secret in DuckDB's secret manager. They MUST never be
   written to a separate file by the extension.
-- **R-C-6** In a DuckDB-Wasm build (`-DEMSCRIPTEN`), the extension
+- **R-C-6** In a DuckDB-Wasm build (`__EMSCRIPTEN__`, compiler-provided), the extension
   MUST NOT compile any OAuth-flow code. It MUST consume only the
   `access_token` and `expires_at` fields of the secret. Acquiring
   tokens is the host page's responsibility.
