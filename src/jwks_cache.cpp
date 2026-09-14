@@ -85,12 +85,6 @@ void JwksCache::OnFetchSuccess(const std::string &kid, const std::vector<Jwk> &k
 		miss_lru_.erase(miss->second.lru_it);
 		misses_.erase(miss);
 	}
-	if (!jwks_uri.empty()) {
-		if (const auto miss = misses_.find(kid); miss != misses_.end()) {
-			miss_lru_.erase(miss->second.lru_it);
-			misses_.erase(miss);
-		}
-	}
 
 	if (const auto hit = FindHit(jwks_uri, kid); hit != hits_.end()) {
 		if (!SameKeyMaterial(hit->second.keys, keys)) {
@@ -131,7 +125,7 @@ void JwksCache::OnPassiveFetchSuccess(const std::string &kid, const std::vector<
 	const auto hit = FindHit(jwks_uri, kid);
 	if (hit != hits_.end()) {
 		// Strictly additive: union new keys into existing entry without clearing reservation or changing fetched_at_s
-		// (F4)
+		// (F4). When over cap, drop oldest cached keys to ensure freshly observed key material is preserved.
 		for (const auto &k : keys) {
 			bool exists = false;
 			for (const auto &existing : hit->second.keys) {
@@ -144,11 +138,56 @@ void JwksCache::OnPassiveFetchSuccess(const std::string &kid, const std::vector<
 				hit->second.keys.push_back(k);
 			}
 		}
-		TrimToCap(hit->second);
+		while (hit->second.keys.size() > kMaxKeysPerKid) {
+			hit->second.keys.erase(hit->second.keys.begin());
+		}
 		hit->second.consecutive_absent_count = 0;
 		return;
 	}
 	OnFetchSuccess(kid, keys, now_s, jwks_uri);
+}
+
+void JwksCache::ReconcileAbsentKids(const std::unordered_set<std::string> &present_kids, std::int64_t now_s,
+                                    const std::string &jwks_uri, const std::string &exclude_kid) {
+	const std::string prefix = jwks_uri.empty() ? "" : (jwks_uri + "\n");
+	std::vector<std::string> to_evict;
+
+	for (auto &[cache_key, entry] : hits_) {
+		std::string kid;
+		if (jwks_uri.empty()) {
+			if (cache_key.find('\n') != std::string::npos) {
+				continue;
+			}
+			kid = cache_key;
+		} else {
+			if (cache_key.rfind(prefix, 0) != 0) {
+				continue;
+			}
+			kid = cache_key.substr(prefix.size());
+		}
+
+		if (!exclude_kid.empty() && kid == exclude_kid) {
+			continue;
+		}
+
+		if (present_kids.find(kid) != present_kids.end()) {
+			entry.consecutive_absent_count = 0;
+		} else {
+			entry.current_reservation_id = 0;
+			entry.last_refresh_attempt_s = now_s;
+			entry.consecutive_absent_count++;
+			if (entry.consecutive_absent_count >= 2) {
+				to_evict.push_back(cache_key);
+			}
+		}
+	}
+
+	for (const auto &k : to_evict) {
+		if (const auto hit = hits_.find(k); hit != hits_.end()) {
+			hit_lru_.erase(hit->second.lru_it);
+			hits_.erase(hit);
+		}
+	}
 }
 
 bool JwksCache::RecordKidAbsent(const std::string &kid, std::uint64_t reservation_id, std::int64_t now_s,
@@ -192,8 +231,7 @@ bool JwksCache::HasFreshJwksDocument(std::int64_t now_s, std::int64_t window_s, 
 		if (it != last_successful_fetch_by_uri_.end()) {
 			last_s = it->second;
 		}
-	}
-	if (last_s <= 0) {
+	} else {
 		last_s = last_successful_fetch_s_;
 	}
 	if (last_s <= 0) {

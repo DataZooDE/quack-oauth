@@ -529,3 +529,58 @@ TEST_CASE("JwksCache: passive re-ingest resets consecutive_absent_count preventi
 	CHECK_FALSE(cache.RecordKidAbsent("k1", res2, 200));
 	CHECK(cache.Lookup("k1", 205).status == JwksLookupStatus::Hit);
 }
+
+TEST_CASE("JwksCache: passive ingestion prioritizes newly fetched keys over stale keys under cap",
+          "[jwks][cache][passive][cap]") {
+	JwksCache cache(30);
+	Jwk k1 = MakeRsaJwk("shared");
+	k1.n = "n1";
+	Jwk k2 = MakeRsaJwk("shared");
+	k2.n = "n2";
+	Jwk k3 = MakeRsaJwk("shared");
+	k3.n = "n3";
+	Jwk k4 = MakeRsaJwk("shared");
+	k4.n = "n4";
+	cache.OnFetchSuccess("shared", {k1, k2, k3, k4}, 100);
+
+	// A passive fetch arrives with a 5th key for "shared"
+	Jwk k5 = MakeRsaJwk("shared");
+	k5.n = "n5-fresh";
+	cache.OnPassiveFetchSuccess("shared", {k5}, 105);
+
+	const auto res = cache.Lookup("shared", 110);
+	REQUIRE(res.status == JwksLookupStatus::Hit);
+	REQUIRE(res.keys.size() == 4);
+	// The fresh key k5 must be retained in the 4 cached keys!
+	bool found_k5 = false;
+	for (const auto &k : res.keys) {
+		if (k.n == "n5-fresh") {
+			found_k5 = true;
+			break;
+		}
+	}
+	CHECK(found_k5);
+}
+
+TEST_CASE("JwksCache: scoped OnFetchSuccess does not erase unscoped miss entry", "[jwks][cache][isolation][miss]") {
+	JwksCache cache(30);
+	cache.OnFetchMiss("kid-x", 100, ""); // Unscoped miss
+
+	// Scoped fetch success on tenant A for same kid
+	const auto kA = MakeRsaJwk("kid-x");
+	cache.OnFetchSuccess("kid-x", {kA}, 105, "https://tenant-a.test/jwks");
+
+	// Unscoped lookup at t=106 must STILL be rate-limited, not Miss!
+	const auto r = cache.Lookup("kid-x", 106, "");
+	CHECK(r.status == JwksLookupStatus::RateLimited);
+}
+
+TEST_CASE("JwksCache: HasFreshJwksDocument with scoped URI does not fall back to unscoped fetch",
+          "[jwks][cache][isolation][fresh]") {
+	JwksCache cache(30);
+	cache.RecordJwksFetchSuccess(100, ""); // unscoped fetch
+
+	// Scoped tenant B check at t=101 with 2s window
+	// Tenant B never fetched, so it must NOT be considered fresh!
+	CHECK_FALSE(cache.HasFreshJwksDocument(101, 2, "https://tenant-b.test/jwks"));
+}

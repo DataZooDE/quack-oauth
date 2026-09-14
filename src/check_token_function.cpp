@@ -386,6 +386,20 @@ static void EmitAuditsAndScrub(ClientContext &context, string &token_str, const 
 	quack_oauth::SecureScrub(token_str); // R-N-3
 }
 
+static string SanitizeLogField(const string &str, size_t max_len = 256) {
+	string safe;
+	for (char c : str) {
+		if (static_cast<unsigned char>(c) >= 32 && static_cast<unsigned char>(c) < 127 && c != '"' && c != '\'' &&
+		    c != '\\') {
+			safe.push_back(c);
+		}
+	}
+	if (safe.size() > max_len) {
+		safe.resize(max_len);
+	}
+	return safe;
+}
+
 // Drive a chunk through a per-row validator. Centralises the boilerplate
 // (UnifiedVectorFormat parallel iteration, principal caching, audit
 // emission, R-N-3 secure scrub) that was previously copy-pasted across
@@ -435,24 +449,16 @@ static void RunValidationLoop(Vector &tokens, idx_t count, Vector &result, Clien
 		std::sort(throttled_events.begin(), throttled_events.end());
 		throttled_events.erase(std::unique(throttled_events.begin(), throttled_events.end()), throttled_events.end());
 		for (const auto &item : throttled_events) {
-			const string dedup_key = item.kid + ":" + item.reason + ":" + item.jwks_uri;
+			const string safe_kid = SanitizeLogField(item.kid, 256);
+			const string safe_uri = SanitizeLogField(item.jwks_uri, 512);
+			const string dedup_key = safe_kid + ":" + item.reason + ":" + safe_uri;
 			auto it = shared_state.last_throttle_logged_s.find(dedup_key);
 			if (it != shared_state.last_throttle_logged_s.end() && (now_s - it->second < 30)) {
 				continue;
 			}
 			shared_state.last_throttle_logged_s[dedup_key] = now_s;
 
-			std::string safe_kid;
-			for (char c : item.kid) {
-				if (static_cast<unsigned char>(c) >= 32 && static_cast<unsigned char>(c) < 127 && c != '"' &&
-				    c != '\\') {
-					safe_kid.push_back(c);
-				}
-			}
-			if (safe_kid.size() > 256) {
-				safe_kid.resize(256);
-			}
-			const std::string uri_suffix = item.jwks_uri.empty() ? "" : (" jwks_uri='" + item.jwks_uri + "'");
+			const std::string uri_suffix = safe_uri.empty() ? "" : (" jwks_uri='" + safe_uri + "'");
 			if (item.reason == quack_oauth::kReasonRefreshThrottled) {
 				DUCKDB_LOG_WARNING(context, "quack_oauth: JWKS refresh rate-limited by min_refresh_s for kid='" +
 				                                safe_kid + "'" + uri_suffix);

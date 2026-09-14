@@ -8,6 +8,7 @@
 #include <optional>
 #include <string>
 #include <unordered_map>
+#include <unordered_set>
 #include <vector>
 
 namespace quack_oauth {
@@ -125,6 +126,13 @@ public:
 	// before evicting. Returns true if evicted, false if preserved.
 	bool RecordKidAbsent(const std::string &kid, std::uint64_t reservation_id, std::int64_t now_s,
 	                     const std::string &jwks_uri = "");
+
+	// Reconciles cached kids for jwks_uri against the set of kids present in an authoritative 200 OK JWKS document.
+	// Kids present in `present_kids` have consecutive_absent_count reset to 0.
+	// Cached kids for `jwks_uri` (excluding `target_kid` if specified) that are absent have consecutive_absent_count
+	// incremented. If consecutive_absent_count reaches 2, the cached kid is authoritatively evicted.
+	void ReconcileAbsentKids(const std::unordered_set<std::string> &present_kids, std::int64_t now_s,
+	                         const std::string &jwks_uri = "", const std::string &exclude_kid = "");
 
 	// Caller fetched JWKS but the kid was absent. Starts the rate-limit
 	// timer for this kid.

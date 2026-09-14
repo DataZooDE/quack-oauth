@@ -1342,7 +1342,7 @@ TEST_CASE("Validator: cold miss during fresh document window does not starve bud
 	const auto &known_key = GetValidatorKey();
 	// IdP fetch succeeds at t=1000
 	cache.RecordJwksFetch(1000);
-	cache.OnPassiveFetchSuccess(known_key.jwk.kid, {known_key.jwk}, 1000);
+	cache.OnPassiveFetchSuccess(known_key.jwk.kid, {known_key.jwk}, 1000, "https://idp.test/jwks");
 
 	FakeHttpClient http;
 	ValidateContext ctx {http, cache, "https://idp.test/jwks"};
@@ -1603,4 +1603,43 @@ TEST_CASE("Validator: 5 candidate keys preserves signature-matching key for expi
 	const auto valid_token = Sign(k5, 2000, 1051);
 	CHECK(ValidateToken(valid_token, BaseOpts(1051), ctx) == VerifyResult::Ok);
 	CHECK(http.call_count == 1);
+}
+
+TEST_CASE("Validator: 200 OK JWKS refresh corroborates and evicts absent sibling keys",
+          "[validator][sibling][corroborated-eviction]") {
+	JwksCache cache(30);
+	const auto ka1 = GenerateValidatorKey("kid-a");
+	const auto ka2 = GenerateValidatorKey("kid-a");
+	const auto ka3 = GenerateValidatorKey("kid-a");
+	const auto kb = GenerateValidatorKey("kid-b");
+
+	// Cache initially has both kid-a (ka1) and kid-b (kb)
+	cache.OnFetchSuccess("kid-a", {ka1.jwk}, 1000, kTestJwksUri);
+	cache.OnFetchSuccess("kid-b", {kb.jwk}, 1000, kTestJwksUri);
+
+	FakeHttpClient http;
+	// 1st JWKS response: kid-a has ka2, but kid-b is absent
+	http.next_response = IHttpClient::Response {
+	    200, std::string(R"({"keys":[)") + R"({"kid":"kid-a","kty":"RSA","use":"sig","alg":"RS256","n":")" + ka2.jwk.n +
+	             R"(","e":")" + ka2.jwk.e + R"("}]})"};
+
+	ValidateContext ctx {http, cache, kTestJwksUri};
+
+	// Token signed by ka2 triggers refresh of kid-a at t=1050
+	const auto token_a2 = Sign(ka2, 2000, 1050);
+	CHECK(ValidateToken(token_a2, BaseOpts(1050), ctx) == VerifyResult::Ok);
+
+	// After 1st refresh: kid-b was absent once, but NOT yet evicted (corroboration requirement)
+	CHECK(cache.Lookup("kid-b", 1051, kTestJwksUri).status == JwksLookupStatus::Hit);
+
+	// 2nd JWKS response at t=1100: kid-a rotates to ka3, kid-b is STILL absent
+	http.next_response = IHttpClient::Response {
+	    200, std::string(R"({"keys":[)") + R"({"kid":"kid-a","kty":"RSA","use":"sig","alg":"RS256","n":")" + ka3.jwk.n +
+	             R"(","e":")" + ka3.jwk.e + R"("}]})"};
+
+	const auto token_a3 = Sign(ka3, 2000, 1100);
+	CHECK(ValidateToken(token_a3, BaseOpts(1100), ctx) == VerifyResult::Ok);
+
+	// After 2nd refresh: kid-b absence is corroborated across 2 consecutive distinct 200 OK refreshes -> EVICTED!
+	CHECK(cache.Lookup("kid-b", 1101, kTestJwksUri).status == JwksLookupStatus::Miss);
 }

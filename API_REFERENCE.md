@@ -300,7 +300,7 @@ the first 8 hex characters of its SHA-256.
 | `token_rejected` | `unknown_kid` | Token `kid` was not found in the IdP's JWKS document. |
 | `token_rejected` | `no_matching_key` | Token algorithm or use did not match any active key for the `kid` in the JWKS document. |
 | `token_rejected` | `jwks_fetch_failed` | Outbound HTTP request to JWKS or introspection endpoint failed. |
-| `token_rejected` | `jwks_throttled` | Transient rejection: outbound JWKS fetch rate-limited by global budget window (2s) on cold miss. Callers should retry after the 2-second window. |
+| `token_rejected` | `jwks_throttled` | Transient rejection: outbound JWKS fetch throttled by either global budget window (2s) on cold miss or per-kid negative-cache cooldown (`quack_oauth_jwks_min_refresh_s`, default 30s). Inspect `quack_oauth_diagnose().jwks_cache` detail counters (`budget_throttled` vs `kid_throttled`) to determine whether retry applies after the 2-second global window or after `min_refresh_s`. |
 | `jwks_refresh` | `refresh_rotated` | IdP rotated key material under the same `kid`; fresh keys successfully ingested. |
 | `jwks_refresh` | `refresh_revoked` | Previously cached key for kid was removed from authoritative 200 JWKS response. |
 | `jwks_refresh` | `refresh_no_rotation` | JWKS re-fetched following verification failure, but contains no new key material. |
@@ -314,7 +314,7 @@ the first 8 hex characters of its SHA-256.
 | `authz_deny` | `rule deny` | Explicit deny rule matched in `policy_table`. |
 | `authz_deny` | `default deny` | No rule matched; fallback to `quack_oauth_policy_default='deny'`. |
 
-> **Note on throttled refresh logging**: When a refresh attempt is suppressed by `min_refresh_s` or the 2-second global fetch budget window, internal reason codes `refresh_throttled` and `refresh_budget_throttled` are emitted directly to the DuckDB warning logger (`DUCKDB_LOG_WARNING`, deduplicated per vector chunk) rather than polluting the audit ring. The resulting token evaluation failure appears in the audit ring as `invalid_signature` (for existing cached keys) or `jwks_throttled` (for cold misses).
+> **Note on throttled refresh logging**: When a refresh attempt is suppressed by `min_refresh_s` or the 2-second global fetch budget window, internal reason codes `refresh_throttled` and `refresh_budget_throttled` are emitted directly to the DuckDB warning logger (`DUCKDB_LOG_WARNING`, deduplicated per vector chunk) rather than polluting the audit ring. The resulting token evaluation failure appears in the audit ring as `invalid_signature` (for existing cached keys) or `jwks_throttled` (for cold misses and negative-cached unknown kids). Detailed throttle breakdown is observable via `quack_oauth_diagnose().jwks_cache` (`budget_throttled` and `kid_throttled`).
 
 For persistent audit, set `audit_table` on the server SECRET to a SQL
 table with the same column shape (BIGINT + 7 × VARCHAR); the extension

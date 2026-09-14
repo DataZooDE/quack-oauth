@@ -9,6 +9,7 @@
 #include <algorithm>
 #include <string>
 #include <unordered_map>
+#include <unordered_set>
 
 #include "decision_cache.hpp"
 #include "introspect.hpp"
@@ -200,6 +201,12 @@ static bool CommitAndAudit(const std::string &kid, uint64_t reservation_id, cons
 
 static void IngestSiblingKeys(const std::unordered_map<std::string, std::vector<Jwk>> &keys_by_kid,
                               const std::string &target_kid, int64_t now_s, ValidateContext &ctx) {
+	std::unordered_set<std::string> present_kids;
+	for (const auto &[s_kid, _] : keys_by_kid) {
+		present_kids.insert(s_kid);
+	}
+	ctx.jwks_cache.ReconcileAbsentKids(present_kids, now_s, ctx.jwks_uri, target_kid);
+
 	for (const auto &[s_kid, s_keys] : keys_by_kid) {
 		if (s_kid != target_kid) {
 			const auto usable = ScreenUsableKeys(s_keys);
@@ -411,6 +418,12 @@ VerifyResult ValidateToken(std::string_view token, const VerifyOptions &opts, Va
 	ctx.jwks_cache.RecordJwksFetchSuccess(opts.now_s, ctx.jwks_uri);
 
 	const auto keys_by_kid = GroupSigningKeysByKid(keys);
+
+	std::unordered_set<std::string> present_kids;
+	for (const auto &[k_kid, _] : keys_by_kid) {
+		present_kids.insert(k_kid);
+	}
+	ctx.jwks_cache.ReconcileAbsentKids(present_kids, opts.now_s, ctx.jwks_uri);
 
 	for (const auto &[k_kid, k_keys] : keys_by_kid) {
 		const auto usable = ScreenUsableKeys(k_keys);

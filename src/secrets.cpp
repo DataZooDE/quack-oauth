@@ -32,6 +32,27 @@ static void Redact(KeyValueSecret &secret, std::initializer_list<const char *> f
 	}
 }
 
+static void ValidateHttpUrl(const string &field_name, const string &url) {
+	if (url.empty()) {
+		return;
+	}
+	if (url.size() > 2048) {
+		throw InvalidInputException("quack_oauth: " + field_name +
+		                            " exceeds maximum allowed length of 2048 characters");
+	}
+	for (char c : url) {
+		if (static_cast<unsigned char>(c) < 32 || static_cast<unsigned char>(c) == 127 || c == '"' || c == '\'' ||
+		    c == '\\' || c == ' ') {
+			throw InvalidInputException("quack_oauth: " + field_name + " contains invalid or control characters");
+		}
+	}
+	const bool is_https = url.rfind("https://", 0) == 0;
+	const bool is_http = url.rfind("http://", 0) == 0;
+	if (!is_https && !is_http) {
+		throw InvalidInputException("quack_oauth: " + field_name + " must begin with 'https://' or 'http://'");
+	}
+}
+
 static unique_ptr<BaseSecret> CreateClientSecret(ClientContext &, CreateSecretInput &input) {
 	auto result = make_uniq<KeyValueSecret>(input.scope, input.type, input.provider, input.name);
 
@@ -58,6 +79,15 @@ static unique_ptr<BaseSecret> CreateClientSecret(ClientContext &, CreateSecretIn
 		result->secret_map["scope"] = Value(joined);
 	}
 
+	const auto dev_it = result->secret_map.find("device_authorization_endpoint");
+	if (dev_it != result->secret_map.end()) {
+		ValidateHttpUrl("device_authorization_endpoint", dev_it->second.ToString());
+	}
+	const auto tok_it = result->secret_map.find("token_endpoint");
+	if (tok_it != result->secret_map.end()) {
+		ValidateHttpUrl("token_endpoint", tok_it->second.ToString());
+	}
+
 	Redact(*result, {kClientSensitiveFields[0], kClientSensitiveFields[1], kClientSensitiveFields[2]});
 	return std::move(result);
 }
@@ -77,6 +107,16 @@ static unique_ptr<BaseSecret> CreateServerSecret(ClientContext &, CreateSecretIn
 	CopyParams(input, *result,
 	           {"issuer", "audience", "jwks_uri", "policy_table", "audit_table", "introspection_endpoint",
 	            "introspect_client_id", "introspect_client_secret", "tenant_or_realm"});
+
+	const auto jwks_it = result->secret_map.find("jwks_uri");
+	if (jwks_it != result->secret_map.end()) {
+		ValidateHttpUrl("jwks_uri", jwks_it->second.ToString());
+	}
+	const auto intro_it = result->secret_map.find("introspection_endpoint");
+	if (intro_it != result->secret_map.end()) {
+		ValidateHttpUrl("introspection_endpoint", intro_it->second.ToString());
+	}
+
 	Redact(*result, {"introspect_client_secret"});
 	return std::move(result);
 }
