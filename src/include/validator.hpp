@@ -130,8 +130,8 @@ struct IntrospectContext {
 //        refresh commits.
 //      - Miss: fetch the JWKS via `ctx.http.Get(ctx.jwks_uri)`, parse it into
 //        the cache, then verify against the newly-cached JWK.
-//      - RateLimited: do not fetch; return `UnknownKid` so the caller's
-//        rate-limit window (R-S-4) is honoured.
+//      - RateLimited: do not fetch; return `JwksThrottled` so callers can
+//        retry after the rate-limit window.
 //   3. The token's `alg` is rejected early per R-S-3 (`none` / HS*); the
 //      `JwksFetchFailed` path is only taken when the cache says Miss and the
 //      HTTP call cannot be completed or returns non-200.

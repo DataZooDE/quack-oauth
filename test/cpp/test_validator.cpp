@@ -1643,3 +1643,82 @@ TEST_CASE("Validator: 200 OK JWKS refresh corroborates and evicts absent sibling
 	// After 2nd refresh: kid-b absence is corroborated across 2 consecutive distinct 200 OK refreshes -> EVICTED!
 	CHECK(cache.Lookup("kid-b", 1101, kTestJwksUri).status == JwksLookupStatus::Miss);
 }
+
+TEST_CASE("Validator: cold miss with 5 same-kid keys preserves token-matching key even if 5th in document",
+          "[validator][cold-miss][5-keys]") {
+	JwksCache cache(30);
+	const auto k1 = GenerateValidatorKey("5key-kid");
+	const auto k2 = GenerateValidatorKey("5key-kid");
+	const auto k3 = GenerateValidatorKey("5key-kid");
+	const auto k4 = GenerateValidatorKey("5key-kid");
+	const auto k5 = GenerateValidatorKey("5key-kid");
+
+	FakeHttpClient http;
+	http.next_response = IHttpClient::Response {
+	    200, std::string(R"({"keys":[)") + R"({"kid":"5key-kid","kty":"RSA","use":"sig","alg":"RS256","n":")" +
+	             k1.jwk.n + R"(","e":")" + k1.jwk.e + R"("},)" +
+	             R"({"kid":"5key-kid","kty":"RSA","use":"sig","alg":"RS256","n":")" + k2.jwk.n + R"(","e":")" +
+	             k2.jwk.e + R"("},)" + R"({"kid":"5key-kid","kty":"RSA","use":"sig","alg":"RS256","n":")" + k3.jwk.n +
+	             R"(","e":")" + k3.jwk.e + R"("},)" +
+	             R"({"kid":"5key-kid","kty":"RSA","use":"sig","alg":"RS256","n":")" + k4.jwk.n + R"(","e":")" +
+	             k4.jwk.e + R"("},)" + R"({"kid":"5key-kid","kty":"RSA","use":"sig","alg":"RS256","n":")" + k5.jwk.n +
+	             R"(","e":")" + k5.jwk.e + R"("}]})"};
+
+	ValidateContext ctx {http, cache, kTestJwksUri};
+
+	// Token is signed by k5 (the 5th candidate key in the JWKS document)
+	const auto token = Sign(k5, 2000, 1000);
+	CHECK(ValidateToken(token, BaseOpts(1000), ctx) == VerifyResult::Ok);
+	CHECK(http.call_count == 1);
+
+	// Cached entry must retain k5
+	const auto lookup = cache.Lookup("5key-kid", 1001, kTestJwksUri);
+	REQUIRE(lookup.status == JwksLookupStatus::Hit);
+	bool has_k5 = false;
+	for (const auto &k : lookup.keys) {
+		if (k.n == k5.jwk.n) {
+			has_k5 = true;
+			break;
+		}
+	}
+	CHECK(has_k5);
+}
+
+TEST_CASE("Validator: forged token refresh on 5-key document preserves newly rotated 5th key for subsequent token",
+          "[validator][refresh][5-keys-unverified]") {
+	JwksCache cache(30);
+	const auto k1 = GenerateValidatorKey("rotate-5k");
+	const auto k2 = GenerateValidatorKey("rotate-5k");
+	const auto k3 = GenerateValidatorKey("rotate-5k");
+	const auto k4 = GenerateValidatorKey("rotate-5k");
+	const auto k5 = GenerateValidatorKey("rotate-5k"); // Newly rotated 5th key
+
+	// Initial cache has k1, k2, k3, k4
+	cache.OnFetchSuccess("rotate-5k", {k1.jwk, k2.jwk, k3.jwk, k4.jwk}, 1000, kTestJwksUri);
+
+	FakeHttpClient http;
+	// IdP publishes k1..k5
+	http.next_response = IHttpClient::Response {
+	    200, std::string(R"({"keys":[)") + R"({"kid":"rotate-5k","kty":"RSA","use":"sig","alg":"RS256","n":")" +
+	             k1.jwk.n + R"(","e":")" + k1.jwk.e + R"("},)" +
+	             R"({"kid":"rotate-5k","kty":"RSA","use":"sig","alg":"RS256","n":")" + k2.jwk.n + R"(","e":")" +
+	             k2.jwk.e + R"("},)" + R"({"kid":"rotate-5k","kty":"RSA","use":"sig","alg":"RS256","n":")" + k3.jwk.n +
+	             R"(","e":")" + k3.jwk.e + R"("},)" +
+	             R"({"kid":"rotate-5k","kty":"RSA","use":"sig","alg":"RS256","n":")" + k4.jwk.n + R"(","e":")" +
+	             k4.jwk.e + R"("},)" + R"({"kid":"rotate-5k","kty":"RSA","use":"sig","alg":"RS256","n":")" + k5.jwk.n +
+	             R"(","e":")" + k5.jwk.e + R"("}]})"};
+
+	ValidateContext ctx {http, cache, kTestJwksUri};
+
+	// A forged/garbage token for rotate-5k arrives at t=1050 (cooldown expired)
+	const auto forged_token = "eyJhbGciOiJSUzI1NiIsImtpZCI6InJvdGF0ZS01ayJ9.eyJzdWIiOiJ4IiwiZXhwIjoyMDAwfQ.Zm9yZ2Vk";
+	CHECK(ValidateToken(forged_token, BaseOpts(1050), ctx) == VerifyResult::InvalidSignature);
+	CHECK(http.call_count == 1);
+
+	// Immediately after at t=1051, a legitimate token signed by k5 arrives.
+	// Even though the refresh was triggered by an unverifiable forged token, k5 (the new rotation)
+	// must have been preserved in cache, allowing the valid token to verify without another fetch!
+	const auto valid_k5_token = Sign(k5, 2000, 1051);
+	CHECK(ValidateToken(valid_k5_token, BaseOpts(1051), ctx) == VerifyResult::Ok);
+	CHECK(http.call_count == 1); // No new network call!
+}

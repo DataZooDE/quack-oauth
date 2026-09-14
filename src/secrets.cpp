@@ -32,6 +32,19 @@ static void Redact(KeyValueSecret &secret, std::initializer_list<const char *> f
 	}
 }
 
+static bool IsLocalhostUrl(const string &url) {
+	static const char *kPrefixes[] = {"http://localhost/", "http://localhost:", "http://localhost",
+	                                  "http://127.0.0.1/", "http://127.0.0.1:", "http://127.0.0.1",
+	                                  "http://[::1]/",     "http://[::1]:",     "http://[::1]"};
+	for (const auto *p : kPrefixes) {
+		const size_t len = strlen(p);
+		if (url.compare(0, len, p) == 0) {
+			return true;
+		}
+	}
+	return false;
+}
+
 static void ValidateHttpUrl(const string &field_name, const string &url) {
 	if (url.empty()) {
 		return;
@@ -49,7 +62,12 @@ static void ValidateHttpUrl(const string &field_name, const string &url) {
 	const bool is_https = url.rfind("https://", 0) == 0;
 	const bool is_http = url.rfind("http://", 0) == 0;
 	if (!is_https && !is_http) {
-		throw InvalidInputException("quack_oauth: " + field_name + " must begin with 'https://' or 'http://'");
+		throw InvalidInputException("quack_oauth: " + field_name +
+		                            " must begin with 'https://' (or 'http://localhost' for local development)");
+	}
+	if (is_http && !IsLocalhostUrl(url)) {
+		throw InvalidInputException("quack_oauth: " + field_name +
+		                            " must use 'https://' (plain 'http://' is only allowed for localhost development)");
 	}
 }
 

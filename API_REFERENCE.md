@@ -79,12 +79,15 @@ picks the path:
 - `tokeninfo` — Google-style opaque-token endpoint; no Basic auth,
   numbers-as-strings tolerated.
 
-Returns `true` if the token is valid, or `false` on any validation failure.
+Returns `true` if the token is valid, or `false` on any token rejection. Once the
+active server SECRET and listener configuration are valid, token validation
+failures (expired, invalid signature, unknown kid, jwks throttled) return `false`.
 At the SQL scalar interface, callers see an undifferentiated `false` across
-all rejections (including expired tokens, invalid signatures, unknown kids,
-and transient cold-miss fetch budget throttling). The underlying reason is
-disambiguated in `quack_oauth_audit_log()` (e.g. `jwks_throttled`, `invalid_signature`,
-`expired`) and logged to the DuckDB logger at `WARNING` level.
+all token rejections. The underlying reason is disambiguated in `quack_oauth_audit_log()`
+(e.g. `jwks_throttled`, `invalid_signature`, `expired`) and logged to the DuckDB logger
+at `WARNING` level. Setup and environment errors (e.g. missing `quack_oauth_server_secret_name`,
+unrecognized secret, or plaintext guard violation without `quack_oauth_trust_plaintext`)
+throw standard DuckDB exceptions.
 
 ```sql
 SELECT quack_oauth_check_token('eyJhbGciOiJSUzI1NiIs...');
@@ -451,7 +454,7 @@ When identity providers (such as Microsoft Entra ID) rotate key material while r
 - **Corroborated key eviction**: To protect against transient network glitches or partial IdP responses evicting valid keys, key absence from a 200 OK response must be observed across **2 consecutive distinct refreshes** before the cached key is evicted. Existing keys continue to verify until absence is corroborated.
 - **Multi-tenant partitioning**: JWKS documents, cached keys, and per-kid cooldowns are strictly partitioned by `(jwks_uri, kid)` composite keys. Refreshing or evicting keys for Tenant A cannot mutate, invalidate, leak across, or starve the per-kid refresh window for Tenant B. (The 2-second outbound fetch budget window operates as a process-global protection to prevent network storms).
 - **Request-path latency**: Refreshes happen synchronously on the request thread encountering an unusable key signature failure against currently-cached keys, bounded by `quack_oauth_jwks_min_refresh_s` (default 30 seconds) per `kid` and a process-global fetch rate limit (2 seconds).
-- **Starvation & DoS resistance**: Fresh key material fetched from the IdP over TLS is committed to the cache even if the triggering token fails verification, preventing forged or corrupted tokens from starving legitimate key rotation recovery. Cold misses during a fresh document window (<2s) reject immediately as `unknown_kid` without burning the global fetch slot. Repeated requests with already-known keys emit `refresh_no_rotation` and do not re-fetch.
+- **Starvation & DoS resistance**: Fresh key material fetched from the IdP over TLS is committed to the cache even if the triggering token fails verification, preventing forged or corrupted tokens from starving legitimate key rotation recovery. Cold misses during a fresh document window (<2s) reject immediately as `unknown_kid` without burning the global fetch slot. Tokens signed by valid cached keys verify directly from cache without outbound HTTP requests or refresh events. When an invalid-signature request triggers a rate-limited fetch that yields no new key material, `refresh_no_rotation` is audited.
 - **Troubleshooting**: If clients experience bursts of `invalid_signature` or `jwks_throttled` errors during an IdP rotation, inspect `quack_oauth_audit_log()` for `jwks_refresh` events and `quack_oauth_diagnose()` for granular throttle counters (`throttled=N`, `budget_throttled=N`, `kid_throttled=N`) on `jwks_cache`. Refresh rate-limiting is logged to the DuckDB logger as `quack_oauth: JWKS refresh rate-limited by min_refresh_s for kid='...'` or `quack_oauth: JWKS refresh throttled by global fetch budget (2s window) for kid='...'` (viewable via `SET enable_logging = true; SELECT * FROM duckdb_logs WHERE message LIKE 'quack_oauth:%';`); network failures appear as `refresh_fetch_failed`.
 
 ---

@@ -199,6 +199,11 @@ static bool CommitAndAudit(const std::string &kid, uint64_t reservation_id, cons
 	return committed;
 }
 
+// Design note: Sibling key ingestion is intentionally additive for existing cached kids:
+// OnPassiveFetchSuccess unions freshly observed key material into existing entries without
+// resetting their active reservation or changing fetched_at_s. If total keys exceed capacity
+// (kMaxKeysPerKid = 4), oldest cached keys are trimmed to preserve fresh material while
+// keeping active unrotated keys undisturbed.
 static void IngestSiblingKeys(const std::unordered_map<std::string, std::vector<Jwk>> &keys_by_kid,
                               const std::string &target_kid, int64_t now_s, ValidateContext &ctx) {
 	std::unordered_set<std::string> present_kids;
@@ -242,6 +247,57 @@ static std::optional<std::vector<Jwk>> FetchAndParseJwks(const std::string &kid,
 	return keys;
 }
 
+static void PrioritizeMatchingKey(std::vector<Jwk> &candidates, std::string_view token, const std::string &token_alg,
+                                  const VerifyOptions &opts, std::optional<VerifyResult> &out_verified) {
+	if (candidates.size() <= 1) {
+		return;
+	}
+	for (std::size_t i = 0; i < candidates.size(); ++i) {
+		std::vector<Jwk> single = {candidates[i]};
+		const auto res = SelectAndVerify(token, token_alg, single, opts);
+		if (res.has_value() && SignatureMatchesCandidate(*res)) {
+			if (i > 0) {
+				std::swap(candidates[0], candidates[i]);
+			}
+			out_verified = res;
+			break;
+		}
+	}
+}
+
+static void PrioritizeNewKeys(std::vector<Jwk> &candidates, const std::vector<Jwk> &existing_keys) {
+	if (candidates.size() <= 4 || existing_keys.empty()) {
+		return;
+	}
+	std::vector<Jwk> reordered;
+	reordered.reserve(candidates.size());
+	for (const auto &k : candidates) {
+		bool is_old = false;
+		for (const auto &old_k : existing_keys) {
+			if (SameKeyMaterial(k, old_k)) {
+				is_old = true;
+				break;
+			}
+		}
+		if (!is_old) {
+			reordered.push_back(k);
+		}
+	}
+	for (const auto &k : candidates) {
+		bool is_old = false;
+		for (const auto &old_k : existing_keys) {
+			if (SameKeyMaterial(k, old_k)) {
+				is_old = true;
+				break;
+			}
+		}
+		if (is_old) {
+			reordered.push_back(k);
+		}
+	}
+	candidates = std::move(reordered);
+}
+
 static void CommitTargetKid(const std::string &kid, std::uint64_t reservation_id, std::string_view token,
                             const std::string &token_alg,
                             const std::unordered_map<std::string, std::vector<Jwk>> &keys_by_kid,
@@ -249,9 +305,9 @@ static void CommitTargetKid(const std::string &kid, std::uint64_t reservation_id
                             std::optional<VerifyResult> &out_verified) {
 	const auto cand_it = keys_by_kid.find(kid);
 	if (cand_it == keys_by_kid.end()) {
-		const bool evicted = ctx.jwks_cache.RecordKidAbsent(kid, reservation_id, opts.now_s, ctx.jwks_uri);
 		if (out_refresh) {
 			out_refresh->kid = kid;
+			const bool evicted = ctx.jwks_cache.RecordKidAbsent(kid, reservation_id, opts.now_s, ctx.jwks_uri);
 			out_refresh->SetReason(evicted ? RefreshReason::KidEvicted : RefreshReason::KidAbsent);
 		}
 		return;
@@ -266,21 +322,12 @@ static void CommitTargetKid(const std::string &kid, std::uint64_t reservation_id
 		return;
 	}
 
-	if (candidates.size() > 1) {
-		for (std::size_t i = 0; i < candidates.size(); ++i) {
-			std::vector<Jwk> single = {candidates[i]};
-			const auto res = SelectAndVerify(token, token_alg, single, opts);
-			if (res.has_value() && SignatureMatchesCandidate(*res)) {
-				if (i > 0) {
-					std::swap(candidates[0], candidates[i]);
-				}
-				out_verified = res;
-				break;
-			}
-		}
-	}
+	PrioritizeMatchingKey(candidates, token, token_alg, opts, out_verified);
 
 	const auto live_lookup = ctx.jwks_cache.Lookup(kid, opts.now_s, ctx.jwks_uri);
+	if (!out_verified.has_value()) {
+		PrioritizeNewKeys(candidates, live_lookup.keys);
+	}
 	const bool committed =
 	    CommitAndAudit(kid, reservation_id, candidates, live_lookup.keys, opts.now_s, ctx, out_refresh);
 	if (!committed) {
@@ -426,8 +473,12 @@ VerifyResult ValidateToken(std::string_view token, const VerifyOptions &opts, Va
 	ctx.jwks_cache.ReconcileAbsentKids(present_kids, opts.now_s, ctx.jwks_uri);
 
 	for (const auto &[k_kid, k_keys] : keys_by_kid) {
-		const auto usable = ScreenUsableKeys(k_keys);
+		auto usable = ScreenUsableKeys(k_keys);
 		if (!usable.empty()) {
+			if (k_kid == parsed->kid) {
+				std::optional<VerifyResult> cold_verified;
+				PrioritizeMatchingKey(usable, token, parsed->alg, opts, cold_verified);
+			}
 			ctx.jwks_cache.OnPassiveFetchSuccess(k_kid, usable, opts.now_s, ctx.jwks_uri);
 		}
 	}
