@@ -504,10 +504,10 @@ for C++ API changes.
   The `CMakeLists.txt` source list is split into `DUCKDB_WASM_SAFE_SOURCES`
   and `DUCKDB_NATIVE_ONLY_SOURCES`; the native-only set is conditionally
   excluded under `if(EMSCRIPTEN)`, and the matching `Register*` calls in
-  `quack_oauth_extension.cpp` are wrapped in `#ifndef EMSCRIPTEN`. **When
+  `quack_oauth_extension.cpp` are wrapped in `#ifndef __EMSCRIPTEN__`. **When
   adding a new network-touching scalar / table function: put its `.cpp` in
   `DUCKDB_NATIVE_ONLY_SOURCES`, and wrap both its `#include` and its
-  `Register*(loader)` call in the entry point's `#ifndef EMSCRIPTEN`
+  `Register*(loader)` call in the entry point's `#ifndef __EMSCRIPTEN__`
   block.** Don't add `#include <openssl/…>` in any of the
   `DUCKDB_WASM_SAFE_SOURCES` files. PURE_SOURCES are always
   wasm-safe (they're already free of DuckDB / httplib deps). **To

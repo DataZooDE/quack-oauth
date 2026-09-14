@@ -22,7 +22,7 @@
 #include "settings.hpp"
 #include "quack_oauth_banner.hpp"
 
-#ifndef EMSCRIPTEN
+#ifndef __EMSCRIPTEN__
 #include "telemetry.hpp"
 #endif
 
@@ -57,7 +57,7 @@ static string ReadSetting(ClientContext &context, const string &key) {
 	return v.ToString();
 }
 
-#ifndef EMSCRIPTEN
+#ifndef __EMSCRIPTEN__
 struct ProbeCache {
 	std::mutex mu;
 	std::string uri;
@@ -69,7 +69,7 @@ static ProbeCache g_probe_cache;
 
 static unique_ptr<FunctionData> DiagnoseBind(ClientContext &context, TableFunctionBindInput &,
                                              vector<LogicalType> &return_types, vector<string> &names) {
-#ifndef EMSCRIPTEN
+#ifndef __EMSCRIPTEN__
 	PostHogTelemetry::Instance().RecordFunctionCall("quack_oauth_diagnose");
 #endif
 	return_types = {LogicalType::VARCHAR, LogicalType::VARCHAR, LogicalType::VARCHAR};
@@ -155,7 +155,7 @@ static unique_ptr<FunctionData> DiagnoseBind(ClientContext &context, TableFuncti
 		}
 
 		std::ostringstream detail;
-#ifndef EMSCRIPTEN
+#ifndef __EMSCRIPTEN__
 		const auto now_s =
 		    std::chrono::duration_cast<std::chrono::seconds>(std::chrono::system_clock::now().time_since_epoch())
 		        .count();
@@ -286,7 +286,7 @@ struct AuditLogGlobalState : public GlobalTableFunctionState {
 
 static unique_ptr<FunctionData> AuditLogBind(ClientContext &, TableFunctionBindInput &,
                                              vector<LogicalType> &return_types, vector<string> &names) {
-#ifndef EMSCRIPTEN
+#ifndef __EMSCRIPTEN__
 	PostHogTelemetry::Instance().RecordFunctionCall("quack_oauth_audit_log");
 #endif
 	return_types = {LogicalType::BIGINT,  LogicalType::VARCHAR, LogicalType::VARCHAR, LogicalType::VARCHAR,
@@ -357,7 +357,7 @@ struct CurrentPrincipalGlobalState : public GlobalTableFunctionState {
 
 static unique_ptr<FunctionData> CurrentPrincipalBind(ClientContext &, TableFunctionBindInput &,
                                                      vector<LogicalType> &return_types, vector<string> &names) {
-#ifndef EMSCRIPTEN
+#ifndef __EMSCRIPTEN__
 	PostHogTelemetry::Instance().RecordFunctionCall("quack_oauth_current_principal");
 #endif
 	return_types = {LogicalType::VARCHAR, LogicalType::VARCHAR, LogicalType::VARCHAR,

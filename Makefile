@@ -89,3 +89,4 @@ e2e: release
 ci_config_test:
 	@./scripts/test_ci_wasm_excluded.sh
 	@./scripts/test_fmt_patch.sh
+	@./scripts/test_wasm_guards.sh

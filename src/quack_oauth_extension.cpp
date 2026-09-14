@@ -9,7 +9,7 @@
 
 // Network-touching scalars are skipped on wasm32 -- duckdb_httplib_openssl
 // is not available there. See S-14 in docs/IMPLEMENTATION.md.
-#ifndef EMSCRIPTEN
+#ifndef __EMSCRIPTEN__
 #include "acquire_function.hpp"
 #include "check_token_function.hpp"
 #include "device_login_function.hpp"
@@ -41,7 +41,7 @@ namespace duckdb {
 
 static void LoadInternal(ExtensionLoader &loader) {
 	auto &config = DBConfig::GetConfig(loader.GetDatabaseInstance());
-#ifndef EMSCRIPTEN
+#ifndef __EMSCRIPTEN__
 	// Anonymous usage telemetry. Same key, same library, same opt-out paths
 	// as ../erpl and ../erpl-web. SetAPIKey must precede CaptureExtensionLoad;
 	// settings registration follows so that user-supplied
@@ -55,7 +55,7 @@ static void LoadInternal(ExtensionLoader &loader) {
 	RegisterQuackOauthSecrets(loader);
 	RegisterQuackOauthDiagnose(loader);
 	RegisterQuackOauthCheckAuthorization(loader);
-#ifndef EMSCRIPTEN
+#ifndef __EMSCRIPTEN__
 	RegisterQuackOauthCheckToken(loader);
 	RegisterQuackOauthLogin(loader);
 	RegisterQuackOauthLogout(loader);

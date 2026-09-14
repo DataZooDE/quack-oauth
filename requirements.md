@@ -230,7 +230,7 @@ Requirements use the convention **MUST / SHOULD / MAY** (RFC 2119).
 - **R-C-5** Refresh tokens, when issued, MUST be persisted by
   updating the secret in DuckDB's secret manager. They MUST never be
   written to a separate file by the extension.
-- **R-C-6** In a DuckDB-Wasm build (`-DEMSCRIPTEN`), the extension
+- **R-C-6** In a DuckDB-Wasm build (`__EMSCRIPTEN__`, compiler-provided), the extension
   MUST NOT compile any OAuth-flow code. It MUST consume only the
   `access_token` and `expires_at` fields of the secret. Acquiring
   tokens is the host page's responsibility.
@@ -293,7 +293,7 @@ defaults for issuer/JWKS/introspection/validation-mode.
   including the legacy shared-secret strings. There is no fallback
   mode.
 - **R-X-3** Native and Wasm builds MUST share one source tree gated
-  by `#ifdef EMSCRIPTEN`. No platform-specific source files outside
+  by `#ifdef __EMSCRIPTEN__`. No platform-specific source files outside
   one isolated `platform/` subtree.
 
 ## 6. Non-functional requirements
