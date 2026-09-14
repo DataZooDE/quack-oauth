@@ -11,6 +11,14 @@
 
 #include "duckdb/common/exception.hpp"
 #include "duckdb/logging/logger.hpp"
+
+// DuckDB 1.4 spells this `DUCKDB_LOG_WARN`; 1.5+ renamed it to
+// `DUCKDB_LOG_WARNING`. Map the new spelling to the old one when only
+// the 1.4 macro is defined.
+#if !defined(DUCKDB_LOG_WARNING) && defined(DUCKDB_LOG_WARN)
+#define DUCKDB_LOG_WARNING DUCKDB_LOG_WARN
+#endif
+
 #include "duckdb/common/types/data_chunk.hpp"
 #include "duckdb/common/types/vector.hpp"
 #include "duckdb/common/vector_operations/unary_executor.hpp"
