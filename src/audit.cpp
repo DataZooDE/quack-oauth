@@ -44,11 +44,13 @@ std::vector<AuditEvent> AuditRing::Snapshot() const {
 }
 
 // Quote a value if it contains spaces or `=`, to keep log lines parseable
-// as key=value pairs. Backslash and quote inside the value get escaped.
+// as key=value pairs. Backslash, quote, carriage return, newline, tab, and control characters inside the value get
+// escaped.
 static std::string MaybeQuote(const std::string &v) {
 	bool needs_quoting = v.empty();
 	for (char c : v) {
-		if (c == ' ' || c == '=' || c == '"' || c == '\\') {
+		const auto uc = static_cast<unsigned char>(c);
+		if (c == ' ' || c == '=' || c == '"' || c == '\\' || uc < 0x20 || uc == 0x7f) {
 			needs_quoting = true;
 			break;
 		}
@@ -59,9 +61,28 @@ static std::string MaybeQuote(const std::string &v) {
 	out.reserve(v.size() + 2);
 	out.push_back('"');
 	for (char c : v) {
-		if (c == '"' || c == '\\')
+		const auto uc = static_cast<unsigned char>(c);
+		if (c == '"' || c == '\\') {
 			out.push_back('\\');
-		out.push_back(c);
+			out.push_back(c);
+		} else if (c == '\r') {
+			out.push_back('\\');
+			out.push_back('r');
+		} else if (c == '\n') {
+			out.push_back('\\');
+			out.push_back('n');
+		} else if (c == '\t') {
+			out.push_back('\\');
+			out.push_back('t');
+		} else if (uc < 0x20 || uc == 0x7f) {
+			static const char hex[] = "0123456789abcdef";
+			out.push_back('\\');
+			out.push_back('x');
+			out.push_back(hex[(uc >> 4) & 0x0f]);
+			out.push_back(hex[uc & 0x0f]);
+		} else {
+			out.push_back(c);
+		}
 	}
 	out.push_back('"');
 	return out;

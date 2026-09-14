@@ -222,5 +222,27 @@ DROP SECRET rs_bad;
 statement ok
 DROP TABLE bad_policies;
 
+# Security: policy_table with quotes is escaped properly and does not break out
+statement ok
+CREATE SECRET rs_quote (
+    TYPE quack_oauth_server,
+    issuer       'https://idp.test',
+    audience     'api://quack',
+    jwks_uri     'https://idp.nonexistent.invalid/jwks',
+    policy_table 'main.bad''policies'
+);
+
+statement ok
+SET quack_oauth_server_secret_name = 'rs_quote';
+
+query I
+SELECT quack_oauth_check_authorization('no-such-session', 'SELECT 1');
+----
+false
+
+statement ok
+DROP SECRET rs_quote;
+
 statement ok
 SET quack_oauth_server_secret_name = '';
+

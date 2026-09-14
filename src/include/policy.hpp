@@ -66,7 +66,6 @@ bool GlobMatch(std::string_view pattern, std::string_view value);
 // `default_allow == false` -- fails the whole request. The returned
 // `PolicyOutcome::reason` names the failing object / column when
 // applicable so the operator-facing audit row is actionable.
-PolicyOutcome EvaluatePolicy(const PolicyDocument &doc, const Principal &principal,
-                             const AuthzRequest &request);
+PolicyOutcome EvaluatePolicy(const PolicyDocument &doc, const Principal &principal, const AuthzRequest &request);
 
 } // namespace quack_oauth

@@ -33,6 +33,10 @@ static void OnTelemetryKey(ClientContext &, SetScope, Value &parameter) {
 static std::atomic<int32_t> g_startup_min_refresh_s {30};
 static std::once_flag g_startup_floor_once;
 
+int32_t GetJwksMinRefreshFloor() {
+	return g_startup_min_refresh_s.load(std::memory_order_relaxed);
+}
+
 static void OnJwksMinRefreshSeconds(ClientContext &, SetScope scope, Value &parameter) {
 	if (scope == SetScope::SESSION) {
 		throw InvalidInputException("quack_oauth_jwks_min_refresh_s is a global setting; use GLOBAL scope (e.g. SET "
@@ -60,7 +64,25 @@ static void OnJwksMinRefreshSeconds(ClientContext &, SetScope scope, Value &para
 	state.jwks_cache.SetMinRefreshSeconds(val);
 }
 
+static void OnClockSkewSeconds(ClientContext &, SetScope scope, Value &parameter) {
+	if (scope == SetScope::SESSION) {
+		throw InvalidInputException("quack_oauth_clock_skew_s is a global setting; use GLOBAL scope (e.g. SET "
+		                            "GLOBAL ... / RESET GLOBAL ...)");
+	}
+	if (parameter.IsNull()) {
+		throw InvalidInputException("quack_oauth_clock_skew_s cannot be NULL");
+	}
+	const auto val = parameter.GetValue<int32_t>();
+	if (val < 0) {
+		throw InvalidInputException("quack_oauth_clock_skew_s must be non-negative (got %d)", val);
+	}
+	if (val > 3600) {
+		throw InvalidInputException("quack_oauth_clock_skew_s must be at most 3600 (got %d)", val);
+	}
+}
+
 // R-S-11(c) helpers: resolve each setting's default from the matching
+
 // `QUACK_OAUTH_<UPPER>` environment variable when present. SET in SQL
 // still overrides at runtime. SECRET-field overrides happen at SECRET
 // read time, not here. Convention: setting `quack_oauth_validation_mode`
@@ -106,7 +128,9 @@ void RegisterQuackOauthSettings(DBConfig &config) {
 	// R-S-3: clock skew for JWT exp/nbf/iat checks.
 	config.AddExtensionOption(
 	    "quack_oauth_clock_skew_s", "Allowable clock skew (seconds) when verifying JWT exp/nbf/iat (R-S-3).",
-	    LogicalType::INTEGER, EnvIntDefault("QUACK_OAUTH_CLOCK_SKEW_S", 60), nullptr, SetScope::GLOBAL);
+	    LogicalType::INTEGER,
+	    Value::INTEGER(std::clamp(quack_oauth::EnvIntOrDefault("QUACK_OAUTH_CLOCK_SKEW_S", 60), 0, 3600)),
+	    OnClockSkewSeconds, SetScope::GLOBAL);
 
 	// R-S-4: rate-limit per-kid JWKS refresh to guard against poll DoS.
 	std::call_once(g_startup_floor_once, []() {

@@ -172,7 +172,8 @@ provider's templates. Explicit SECRET fields always win, so you can
 override any single URL.
 
 Supported presets: **`keycloak`**, **`entra`**, **`google`**,
-**`github`**, **`okta`** (reserved — use `generic` today), **`generic`**.
+**`github`**, **`okta`** (reserved — configure fields explicitly or use `generic`), **`generic`**.
+
 
 ### Keycloak (JWKS, default mode)
 

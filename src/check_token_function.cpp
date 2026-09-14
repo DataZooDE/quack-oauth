@@ -31,7 +31,9 @@
 #include "quack_oauth_state.hpp"
 #include "retry_http_client.hpp"
 #include "secret_accessor.hpp"
+#include "secrets.hpp"
 #include "secure_scrub.hpp"
+
 #include "telemetry.hpp"
 #include "tracing.hpp"
 #include "validator.hpp"
@@ -82,7 +84,8 @@ static ServerConfig ReadServerConfigCore(ClientContext &context, const SecretAcc
 	}
 	cfg.issuer = accessor.Get("issuer");
 	cfg.audience = accessor.Get("audience");
-	cfg.clock_skew_s = ReadIntSetting(context, "quack_oauth_clock_skew_s", 60);
+	cfg.clock_skew_s = std::clamp<int64_t>(ReadIntSetting(context, "quack_oauth_clock_skew_s", 60), 0, 3600);
+
 	cfg.jwks_uri = accessor.Get("jwks_uri");
 	cfg.introspection_endpoint = accessor.Get("introspection_endpoint");
 	cfg.introspect_client_id = accessor.Get("introspect_client_id");
@@ -107,6 +110,13 @@ static void ApplyProviderPreset(ClientContext &context, const SecretAccessor &ac
 		return;
 	}
 	const auto provider_id = quack_oauth::ProviderFromString(provider_name);
+	if (provider_id == quack_oauth::ProviderId::Okta) {
+		if (cfg.issuer.empty() || cfg.jwks_uri.empty()) {
+			throw InvalidInputException(
+			    "quack_oauth: provider preset 'okta' is reserved for future auto-fill; "
+			    "please configure `issuer` and `jwks_uri` explicitly on the SECRET (or use provider='generic').");
+		}
+	}
 	const auto tenant_or_realm = accessor.Get("tenant_or_realm");
 	if (provider_id != quack_oauth::ProviderId::Google && tenant_or_realm.empty()) {
 		// Tenant-templated providers need a tenant/realm to materialise
@@ -146,6 +156,7 @@ static void ValidateServerConfig(const ServerConfig &cfg, const string &secret_n
 			                            "(required for validation_mode='jwks')",
 			                            secret_name);
 		}
+		ValidateHttpUrl("jwks_uri", cfg.jwks_uri);
 		return;
 	}
 	if (cfg.mode == "introspect") {
@@ -154,6 +165,7 @@ static void ValidateServerConfig(const ServerConfig &cfg, const string &secret_n
 			                            "`introspection_endpoint` (required for validation_mode='introspect')",
 			                            secret_name);
 		}
+		ValidateHttpUrl("introspection_endpoint", cfg.introspection_endpoint);
 		return;
 	}
 	if (cfg.mode == "tokeninfo") {
@@ -163,6 +175,7 @@ static void ValidateServerConfig(const ServerConfig &cfg, const string &secret_n
 			                            "use the IdP's tokeninfo URL, e.g. https://oauth2.googleapis.com/tokeninfo)",
 			                            secret_name);
 		}
+		ValidateHttpUrl("introspection_endpoint", cfg.introspection_endpoint);
 		return;
 	}
 	if (cfg.mode == "github_check") {
@@ -180,8 +193,10 @@ static void ValidateServerConfig(const ServerConfig &cfg, const string &secret_n
 			                            "/applications/{client_id}/token endpoint).",
 			                            secret_name);
 		}
+		ValidateHttpUrl("introspection_endpoint", cfg.introspection_endpoint);
 		return;
 	}
+
 	throw InvalidInputException("quack_oauth_check_token: unknown validation_mode '%s' (expected 'jwks', "
 	                            "'introspect', 'tokeninfo', or 'github_check')",
 	                            cfg.mode);
@@ -269,7 +284,7 @@ static const char *VerifyResultReason(quack_oauth::VerifyResult r) {
 }
 
 static void EmitTokenAudit(ClientContext &context, const string &token, quack_oauth::VerifyResult outcome,
-                           int64_t now_s, const quack_oauth::Principal *principal_on_success) {
+                           const string &reason, int64_t now_s, const quack_oauth::Principal *principal_on_success) {
 	quack_oauth::AuditEvent e;
 	e.timestamp_unix_s = now_s;
 	const bool ok = outcome == quack_oauth::VerifyResult::Ok;
@@ -279,7 +294,7 @@ static void EmitTokenAudit(ClientContext &context, const string &token, quack_oa
 		e.subject = principal_on_success->subject;
 		e.issuer = principal_on_success->issuer;
 	}
-	e.reason = VerifyResultReason(outcome);
+	e.reason = reason;
 	EmitAuditEvent(context, e);
 }
 
@@ -365,7 +380,13 @@ static void EmitAuditsAndScrub(ClientContext &context, string &token_str, const 
                                std::vector<ThrottledLogEvent> &throttled_events) {
 	const bool ok = row.outcome == quack_oauth::VerifyResult::Ok;
 	guard.unlock();
-	EmitTokenAudit(context, token_str, row.outcome, now_s, (ok && row.have_principal) ? &row.principal : nullptr);
+	std::string audit_reason = VerifyResultReason(row.outcome);
+	if (!ok && (row.refresh_reason_enum == quack_oauth::RefreshReason::Throttled ||
+	            row.refresh_reason_enum == quack_oauth::RefreshReason::BudgetThrottled)) {
+		audit_reason = "jwks_throttled";
+	}
+	EmitTokenAudit(context, token_str, row.outcome, audit_reason, now_s,
+	               (ok && row.have_principal) ? &row.principal : nullptr);
 	if (!row.refresh_kid.empty()) {
 		if (row.refresh_reason_enum == quack_oauth::RefreshReason::Throttled ||
 		    row.refresh_reason_enum == quack_oauth::RefreshReason::BudgetThrottled) {
@@ -400,6 +421,54 @@ static string SanitizeLogField(const string &str, size_t max_len = 256) {
 	return safe;
 }
 
+static void LogThrottledEvents(ClientContext &context, QuackOauthState &shared_state,
+                               std::vector<ThrottledLogEvent> &throttled_events, int64_t now_s) {
+	if (throttled_events.empty()) {
+		return;
+	}
+	std::sort(throttled_events.begin(), throttled_events.end());
+	throttled_events.erase(std::unique(throttled_events.begin(), throttled_events.end()), throttled_events.end());
+	for (const auto &item : throttled_events) {
+		const string safe_kid = SanitizeLogField(item.kid, 256);
+		const string safe_uri = SanitizeLogField(item.jwks_uri, 512);
+		const string dedup_key = safe_kid + ":" + item.reason + ":" + safe_uri;
+
+		auto it = shared_state.last_throttle_logged_s.find(dedup_key);
+		if (it != shared_state.last_throttle_logged_s.end() && now_s >= it->second && (now_s - it->second < 30)) {
+			continue;
+		}
+		shared_state.last_throttle_logged_s[dedup_key] = now_s;
+
+		const std::string uri_suffix = safe_uri.empty() ? "" : (" jwks_uri='" + safe_uri + "'");
+		if (item.reason == quack_oauth::kReasonRefreshThrottled) {
+			DUCKDB_LOG_WARNING(context, "quack_oauth: JWKS refresh rate-limited by min_refresh_s for kid='" + safe_kid +
+			                                "'" + uri_suffix);
+		} else {
+			DUCKDB_LOG_WARNING(context,
+			                   "quack_oauth: JWKS refresh throttled by global fetch budget (2s window) for kid='" +
+			                       safe_kid + "'" + uri_suffix);
+		}
+	}
+	if (shared_state.last_throttle_logged_s.size() > 1000) {
+		for (auto it = shared_state.last_throttle_logged_s.begin(); it != shared_state.last_throttle_logged_s.end();) {
+			if (now_s < it->second || (now_s - it->second > 30)) {
+				it = shared_state.last_throttle_logged_s.erase(it);
+			} else {
+				++it;
+			}
+		}
+		if (shared_state.last_throttle_logged_s.size() > 1000) {
+			std::vector<std::pair<std::string, int64_t>> entries(shared_state.last_throttle_logged_s.begin(),
+			                                                     shared_state.last_throttle_logged_s.end());
+			std::sort(entries.begin(), entries.end(), [](const auto &a, const auto &b) { return a.second < b.second; });
+			const size_t to_remove = entries.size() - 800;
+			for (size_t i = 0; i < to_remove; ++i) {
+				shared_state.last_throttle_logged_s.erase(entries[i].first);
+			}
+		}
+	}
+}
+
 // Drive a chunk through a per-row validator. Centralises the boilerplate
 // (UnifiedVectorFormat parallel iteration, principal caching, audit
 // emission, R-N-3 secure scrub) that was previously copy-pasted across
@@ -414,26 +483,33 @@ static void RunValidationLoop(Vector &tokens, idx_t count, Vector &result, Clien
 		UnifiedVectorFormat sid_format;
 		tokens.ToUnifiedFormat(count, tok_format);
 		session_ids->ToUnifiedFormat(count, sid_format);
+
 		const auto *tok_data = UnifiedVectorFormat::GetData<string_t>(tok_format);
 		const auto *sid_data = UnifiedVectorFormat::GetData<string_t>(sid_format);
-		result.SetVectorType(VectorType::FLAT_VECTOR);
 		auto *out_data = FlatVector::GetData<bool>(result);
+
 		for (idx_t i = 0; i < count; ++i) {
 			const auto tok_idx = tok_format.sel->get_index(i);
 			const auto sid_idx = sid_format.sel->get_index(i);
-			if (!tok_format.validity.RowIsValid(tok_idx) || !sid_format.validity.RowIsValid(sid_idx)) {
-				FlatVector::Validity(result).SetInvalid(i);
+
+			if (!tok_format.validity.RowIsValid(tok_idx)) {
+				out_data[i] = false;
 				continue;
 			}
+
 			const auto raw_token = tok_data[tok_idx].GetString();
 			auto token_str = std::string(quack_oauth::StripBearerPrefix(raw_token));
-			const auto sid_str = sid_data[sid_idx].GetString();
 			const auto row = validate_row(token_str);
 			const bool ok = row.outcome == quack_oauth::VerifyResult::Ok;
 			out_data[i] = ok;
-			if (ok && row.have_principal && !sid_str.empty()) {
-				StoreSessionPrincipal(shared_state, sid_str, row.principal, now_s);
+
+			if (ok && row.have_principal && sid_format.validity.RowIsValid(sid_idx)) {
+				const auto sid = sid_data[sid_idx].GetString();
+				if (!sid.empty()) {
+					StoreSessionPrincipal(shared_state, sid, row.principal, now_s);
+				}
 			}
+
 			EmitAuditsAndScrub(context, token_str, row, now_s, guard, jwks_uri, throttled_events);
 		}
 	} else {
@@ -447,43 +523,7 @@ static void RunValidationLoop(Vector &tokens, idx_t count, Vector &result, Clien
 		});
 	}
 
-	if (!throttled_events.empty()) {
-		std::sort(throttled_events.begin(), throttled_events.end());
-		throttled_events.erase(std::unique(throttled_events.begin(), throttled_events.end()), throttled_events.end());
-		for (const auto &item : throttled_events) {
-			const string safe_kid = SanitizeLogField(item.kid, 256);
-			const string safe_uri = SanitizeLogField(item.jwks_uri, 512);
-			const string dedup_key = safe_kid + ":" + item.reason + ":" + safe_uri;
-			auto it = shared_state.last_throttle_logged_s.find(dedup_key);
-			if (it != shared_state.last_throttle_logged_s.end() && (now_s - it->second < 30)) {
-				continue;
-			}
-			shared_state.last_throttle_logged_s[dedup_key] = now_s;
-
-			const std::string uri_suffix = safe_uri.empty() ? "" : (" jwks_uri='" + safe_uri + "'");
-			if (item.reason == quack_oauth::kReasonRefreshThrottled) {
-				DUCKDB_LOG_WARNING(context, "quack_oauth: JWKS refresh rate-limited by min_refresh_s for kid='" +
-				                                safe_kid + "'" + uri_suffix);
-			} else {
-				DUCKDB_LOG_WARNING(context,
-				                   "quack_oauth: JWKS refresh throttled by global fetch budget (2s window) for kid='" +
-				                       safe_kid + "'" + uri_suffix);
-			}
-		}
-		if (shared_state.last_throttle_logged_s.size() > 1000) {
-			for (auto it = shared_state.last_throttle_logged_s.begin();
-			     it != shared_state.last_throttle_logged_s.end();) {
-				if (now_s - it->second > 30) {
-					it = shared_state.last_throttle_logged_s.erase(it);
-				} else {
-					++it;
-				}
-			}
-			if (shared_state.last_throttle_logged_s.size() > 1000) {
-				shared_state.last_throttle_logged_s.clear();
-			}
-		}
-	}
+	LogThrottledEvents(context, shared_state, throttled_events, now_s);
 }
 
 // Shared validation entry point. Both the 1-arg form (direct CLI use) and
@@ -588,10 +628,6 @@ static void ValidateChunk(Vector &tokens, idx_t count, Vector &result, ClientCon
 	}
 }
 
-static void CheckTokenScalarFun1(DataChunk &args, ExpressionState &state, Vector &result) {
-	ValidateChunk(args.data[0], args.size(), result, state.GetContext(), nullptr);
-}
-
 // R-N-4: refuse to validate a token over the wire when the active quack
 // listener is bound to a non-loopback host AND the operator has not
 // explicitly opted in via `quack_oauth_trust_plaintext = true`. The check
@@ -628,6 +664,11 @@ static void EnforcePlaintextGuard(ClientContext &context) {
 	}
 }
 
+static void CheckTokenScalarFun1(DataChunk &args, ExpressionState &state, Vector &result) {
+	EnforcePlaintextGuard(state.GetContext());
+	ValidateChunk(args.data[0], args.size(), result, state.GetContext(), nullptr);
+}
+
 static void CheckTokenScalarFun3(DataChunk &args, ExpressionState &state, Vector &result) {
 	EnforcePlaintextGuard(state.GetContext());
 	// quack's calling convention (verified against duckdb-quack
@@ -636,28 +677,25 @@ static void CheckTokenScalarFun3(DataChunk &args, ExpressionState &state, Vector
 	//   args[0] = session_id        -- server-generated, used as the
 	//                                  Principal-cache key for the authz
 	//                                  handoff.
-	// args[1] = auth_string       -- the HTTP Authorization header (e.g.
+	//   args[1] = auth_string       -- the HTTP Authorization header (e.g.
 	//                                  'Bearer eyJ...') or token attach option
 	//                                  the client supplied. Optional 'Bearer '
 	//                                  prefix is stripped automatically.
-	// args[2] = token             -- quack's own pre-shared random PSK
-	//                                  (from `quack_serve`), ignored by quack_oauth.
+	//   args[2] = token             -- quack's internal PSK (from quack_serve's
+	//                                  token option). Ignored here because we
+	//                                  authenticate the client's bearer token,
+	//                                  not the server PSK.
 	ValidateChunk(args.data[1], args.size(), result, state.GetContext(), &args.data[0]);
 }
 
 void RegisterQuackOauthCheckToken(ExtensionLoader &loader) {
-	// Both signatures share the name so operators can pick the one that fits.
-	// The 1-arg form is convenient for direct SQL invocation; the 3-arg form
-	// matches `quack_check_token`'s signature exactly so it can be wired in
-	// via `SET quack_authentication_function = 'quack_oauth_check_token'`
-	// after `LOAD quack` (slice S-9).
 	ScalarFunctionSet set("quack_oauth_check_token");
+
 	ScalarFunction fn1({LogicalType::VARCHAR}, LogicalType::BOOLEAN,
 	                   DATAZOO_GUARD(QUACK_OAUTH_BANNER, CheckTokenScalarFun1));
-	// Each call may issue an HTTP fetch (JWKS / introspect / tokeninfo) and
-	// always emits audit events. MUST NOT be constant-folded.
 	fn1.stability = FunctionStability::VOLATILE;
 	set.AddFunction(fn1);
+
 	ScalarFunction fn3({LogicalType::VARCHAR, LogicalType::VARCHAR, LogicalType::VARCHAR}, LogicalType::BOOLEAN,
 	                   DATAZOO_GUARD(QUACK_OAUTH_BANNER, CheckTokenScalarFun3));
 	fn3.stability = FunctionStability::VOLATILE;
@@ -667,8 +705,10 @@ void RegisterQuackOauthCheckToken(ExtensionLoader &loader) {
 	FunctionDescription desc1;
 	desc1.description = "Validate an OAuth 2.1 / OIDC access token against the active quack_oauth_server "
 	                    "SECRET. Returns true if the token verifies (JWKS-mode signature check, RFC 7662 "
-	                    "introspection, or Google-style tokeninfo per the SECRET's validation_mode).";
+	                    "introspection, or Google-style tokeninfo per global setting quack_oauth_validation_mode "
+	                    "or provider preset).";
 	desc1.parameter_names = {"token"};
+
 	desc1.parameter_types = {LogicalType::VARCHAR};
 	desc1.examples = {"SELECT quack_oauth_check_token('eyJhbGciOi...')"};
 	desc1.categories = {"quack_oauth"};
@@ -676,13 +716,14 @@ void RegisterQuackOauthCheckToken(ExtensionLoader &loader) {
 
 	FunctionDescription desc3;
 	desc3.description =
-	    "3-argument form that matches quack's quack_check_token callback signature exactly. "
-	    "Validates auth_string after stripping an optional Bearer prefix (ignoring quack's PSK token argument) "
-	    "AND caches the extracted Principal keyed by session_id so a subsequent quack_oauth_check_authorization() "
-	    "call can apply the policy. Wired into quack via `SET quack_authentication_function = "
-	    "'quack_oauth_check_token'`.";
+	    "3-argument form matching quack's quack_check_token callback signature. "
+	    "Validates client token in auth_string (arg 2) after stripping optional Bearer prefix (ignoring quack's "
+	    "internal PSK in arg 3) AND caches the extracted Principal keyed by session_id (arg 1) so a subsequent "
+	    "quack_oauth_check_authorization() call can apply policies. Wired into quack via `SET "
+	    "quack_authentication_function = 'quack_oauth_check_token'`.";
 	desc3.parameter_names = {"session_id", "auth_string", "token"};
 	desc3.parameter_types = {LogicalType::VARCHAR, LogicalType::VARCHAR, LogicalType::VARCHAR};
+
 	desc3.examples = {"SELECT quack_oauth_check_token('sess-1', 'Bearer eyJhbGciOi...', '')"};
 	desc3.categories = {"quack_oauth"};
 	info.descriptions.push_back(std::move(desc3));

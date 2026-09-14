@@ -19,6 +19,7 @@
 #include "retry_http_client.hpp"
 #include "secret_accessor.hpp"
 #include "validator.hpp"
+#include "settings.hpp"
 #include "quack_oauth_banner.hpp"
 
 #ifndef EMSCRIPTEN
@@ -99,17 +100,14 @@ static unique_ptr<FunctionData> DiagnoseBind(ClientContext &context, TableFuncti
 		Append(detail, "entries", std::to_string(entries));
 		Append(detail, "unknown_kids", std::to_string(unknown_kids));
 		Append(detail, "min_refresh_s", std::to_string(state.jwks_cache.GetMinRefreshSeconds()));
+		Append(detail, "min_refresh_floor", std::to_string(duckdb::GetJwksMinRefreshFloor()));
 		Append(detail, "throttled", std::to_string(state.jwks_cache.GetThrottledRefreshesCount()));
 		Append(detail, "budget_throttled", std::to_string(state.jwks_cache.GetThrottledBudgetCount()));
 		Append(detail, "kid_throttled", std::to_string(state.jwks_cache.GetThrottledPerKidCount()));
 		const auto last_reason = state.jwks_cache.GetLastRefreshReason();
-		if (!last_reason.empty()) {
-			Append(detail, "last_refresh_reason", last_reason);
-		}
+		Append(detail, "last_refresh_reason", last_reason.empty() ? "(none)" : last_reason);
 		const auto last_throttled = state.jwks_cache.GetLastThrottledAt();
-		if (last_throttled > 0) {
-			Append(detail, "last_throttled_at", std::to_string(last_throttled));
-		}
+		Append(detail, "last_throttled_at", std::to_string(last_throttled));
 		string status = "empty";
 		if (entries > 0) {
 			status = "warm";
@@ -167,8 +165,8 @@ static unique_ptr<FunctionData> DiagnoseBind(ClientContext &context, TableFuncti
 			probe.status = quack_oauth::IdpProbeResult::Status::Unconfigured;
 		} else {
 			std::lock_guard<std::mutex> pguard(g_probe_cache.mu);
-			if (g_probe_cache.uri == probe_uri && now_s - g_probe_cache.probed_at_s < 2 &&
-			    g_probe_cache.probed_at_s > 0) {
+			if (g_probe_cache.uri == probe_uri && g_probe_cache.probed_at_s > 0 && now_s >= g_probe_cache.probed_at_s &&
+			    (now_s - g_probe_cache.probed_at_s) < 2) {
 				probe = g_probe_cache.result;
 			} else {
 				run_probe = true;

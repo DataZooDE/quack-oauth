@@ -326,7 +326,8 @@ static VerifyResult VerifyWithVerifier(const jwt::decoded_jwt<TraitsT> &decoded,
 	if (!opts.expected_audience.empty()) {
 		verifier.with_audience(opts.expected_audience);
 	}
-	verifier.leeway(static_cast<std::size_t>(opts.clock_skew_s));
+	const auto clamped_skew = std::clamp<std::int64_t>(opts.clock_skew_s, 0, 3600);
+	verifier.leeway(static_cast<std::size_t>(clamped_skew));
 
 	std::error_code ec;
 	verifier.verify(decoded, ec);
@@ -350,7 +351,7 @@ static VerifyResult VerifyWithVerifier(const jwt::decoded_jwt<TraitsT> &decoded,
 	if (static_cast<E>(ec.value()) == E::token_expired) {
 		if (decoded.has_not_before()) {
 			const auto nbf = ToUnixSeconds(decoded.get_not_before());
-			if (opts.now_s + opts.clock_skew_s < nbf) {
+			if (opts.now_s + clamped_skew < nbf) {
 				return VerifyResult::NotYetValid;
 			}
 		}

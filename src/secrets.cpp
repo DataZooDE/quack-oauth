@@ -1,4 +1,5 @@
 #include "secrets.hpp"
+#include "plaintext_guard.hpp"
 
 #include "duckdb/common/exception.hpp"
 #include "duckdb/main/secret/secret.hpp"
@@ -99,16 +100,10 @@ static bool IsLocalhostUrl(const string &url) {
 		return false;
 	}
 
-	string lower_host;
-	lower_host.reserve(host.size());
-	for (char c : host) {
-		lower_host.push_back(static_cast<char>(tolower(static_cast<unsigned char>(c))));
-	}
-
-	return lower_host == "localhost" || lower_host == "127.0.0.1" || lower_host == "::1";
+	return quack_oauth::IsLoopbackHost(host);
 }
 
-static void ValidateHttpUrl(const string &field_name, const string &url) {
+void ValidateHttpUrl(const string &field_name, const string &url) {
 	if (url.empty()) {
 		return;
 	}
@@ -128,9 +123,39 @@ static void ValidateHttpUrl(const string &field_name, const string &url) {
 		throw InvalidInputException("quack_oauth: " + field_name +
 		                            " must begin with 'https://' (or 'http://localhost' for local development)");
 	}
+	const size_t scheme_len = is_https ? 8 : 7;
+	const size_t auth_end = url.find_first_of("/?#", scheme_len);
+	const std::string_view authority = (auth_end == string::npos)
+	                                       ? std::string_view(url).substr(scheme_len)
+	                                       : std::string_view(url).substr(scheme_len, auth_end - scheme_len);
+	if (authority.find('@') != std::string_view::npos) {
+		throw InvalidInputException("quack_oauth: " + field_name + " must not contain userinfo ('@')");
+	}
 	if (is_http && !IsLocalhostUrl(url)) {
 		throw InvalidInputException("quack_oauth: " + field_name +
 		                            " must use 'https://' (plain 'http://' is only allowed for localhost development)");
+	}
+}
+
+static void ValidateTenantOrRealm(const string &val) {
+	if (val.empty()) {
+		return;
+	}
+	if (val.size() > 2048) {
+		throw InvalidInputException("quack_oauth: tenant_or_realm exceeds maximum allowed length of 2048 characters");
+	}
+	for (char c : val) {
+		if (static_cast<unsigned char>(c) < 32 || static_cast<unsigned char>(c) == 127 || c == '"' || c == '\'' ||
+		    c == '\\' || c == ' ') {
+			throw InvalidInputException(
+			    "quack_oauth: tenant_or_realm contains invalid or control characters (must not contain spaces, quotes, "
+			    "backslashes, or control characters)");
+		}
+	}
+	if (val.rfind("http://", 0) == 0 || val.rfind("https://", 0) == 0) {
+		ValidateHttpUrl("tenant_or_realm", val);
+	} else if (val.find('@') != string::npos) {
+		throw InvalidInputException("quack_oauth: tenant_or_realm must not contain userinfo ('@')");
 	}
 }
 
@@ -196,6 +221,10 @@ static unique_ptr<BaseSecret> CreateServerSecret(ClientContext &, CreateSecretIn
 	const auto intro_it = result->secret_map.find("introspection_endpoint");
 	if (intro_it != result->secret_map.end()) {
 		ValidateHttpUrl("introspection_endpoint", intro_it->second.ToString());
+	}
+	const auto tenant_it = result->secret_map.find("tenant_or_realm");
+	if (tenant_it != result->secret_map.end()) {
+		ValidateTenantOrRealm(tenant_it->second.ToString());
 	}
 
 	Redact(*result, {"introspect_client_secret"});

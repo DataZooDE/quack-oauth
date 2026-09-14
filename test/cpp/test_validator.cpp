@@ -1193,7 +1193,84 @@ TEST_CASE("Validator: cold-miss ingest filters unusable keys through ScreenUsabl
 	CHECK(lookup.keys.empty());
 }
 
+TEST_CASE("Validator: cold-miss on enc-only published key returns NoMatchingKey and negative-caches miss to prevent "
+          "fetch loop",
+          "[validator][cold-miss][enc-only]") {
+	JwksCache cache(30);
+	const auto enc_key = GenerateValidatorKey("enc-kid");
+
+	FakeHttpClient http;
+	http.next_response = IHttpClient::Response {200, std::string(R"({"keys":[)") + R"({"kid":")" + enc_key.jwk.kid +
+	                                                     R"(","kty":"RSA","use":"enc","alg":"RSA-OAEP","n":")" +
+	                                                     enc_key.jwk.n + R"(","e":")" + enc_key.jwk.e + R"("}]})"};
+	ValidateContext ctx {http, cache, "https://idp.test/jwks"};
+
+	const auto token = Sign(enc_key, 2000, 1000);
+	const auto res = ValidateToken(token, BaseOpts(1000), ctx);
+	CHECK(res == VerifyResult::NoMatchingKey);
+	CHECK(http.call_count == 1);
+
+	// Cache MUST hold a negative-cache miss for enc-kid to prevent fetch loop
+	const auto lookup = cache.Lookup("enc-kid", 1005, "https://idp.test/jwks");
+	CHECK(lookup.status == JwksLookupStatus::RateLimited);
+	CHECK(cache.MissSize() == 1);
+
+	// Subsequent validation attempt during cooldown is throttled without an HTTP fetch
+	const auto res2 = ValidateToken(token, BaseOpts(1005), ctx);
+	CHECK(res2 == VerifyResult::JwksThrottled);
+	CHECK(http.call_count == 1);
+}
+
+TEST_CASE("Validator: sibling key published only as enc-only increments absence and evicts cached signing key",
+          "[validator][sibling][enc-only-eviction]") {
+	JwksCache cache(30);
+	const auto target_old = GenerateValidatorKey("target-kid");
+	const auto target_new = GenerateValidatorKey("target-kid");
+	const auto sib_key = GenerateValidatorKey("sib-kid");
+
+	// Initial cache: target and sibling both have cached signing keys
+	cache.OnFetchSuccess(target_old.jwk.kid, {target_old.jwk}, 1000, kTestJwksUri);
+	cache.OnFetchSuccess(sib_key.jwk.kid, {sib_key.jwk}, 1000, kTestJwksUri);
+
+	FakeHttpClient http;
+	ValidateContext ctx {http, cache, kTestJwksUri};
+
+	// Refresh 1 at t=1035: IdP rotates target-kid, but publishes sib-kid with use="enc" (no signing keys)
+	http.next_response =
+	    IHttpClient::Response {200, std::string(R"({"keys":[)") + R"({"kid":")" + target_new.jwk.kid +
+	                                    R"(","kty":"RSA","use":"sig","alg":"RS256","n":")" + target_new.jwk.n +
+	                                    R"(","e":")" + target_new.jwk.e + R"("},)" + R"({"kid":")" + sib_key.jwk.kid +
+	                                    R"(","kty":"RSA","use":"enc","alg":"RSA-OAEP","n":")" + sib_key.jwk.n +
+	                                    R"(","e":")" + sib_key.jwk.e + R"("}]})"};
+
+	const auto target_token1 = Sign(target_new, 2000, 1035);
+	CHECK(ValidateToken(target_token1, BaseOpts(1035), ctx) == VerifyResult::Ok);
+
+	// First absence: cached signing key for sib-kid is retained pending corroboration
+	const auto sib_lookup1 = cache.Lookup("sib-kid", 1036, kTestJwksUri);
+	CHECK(sib_lookup1.status == JwksLookupStatus::Hit);
+	CHECK(sib_lookup1.keys.size() == 1);
+
+	// Refresh 2 at t=1070: Another rotation on target-kid; sib-kid is STILL published only with use="enc"
+	const auto target_new2 = GenerateValidatorKey("target-kid");
+	http.next_response =
+	    IHttpClient::Response {200, std::string(R"({"keys":[)") + R"({"kid":")" + target_new2.jwk.kid +
+	                                    R"(","kty":"RSA","use":"sig","alg":"RS256","n":")" + target_new2.jwk.n +
+	                                    R"(","e":")" + target_new2.jwk.e + R"("},)" + R"({"kid":")" + sib_key.jwk.kid +
+	                                    R"(","kty":"RSA","use":"enc","alg":"RSA-OAEP","n":")" + sib_key.jwk.n +
+	                                    R"(","e":")" + sib_key.jwk.e + R"("}]})"};
+
+	const auto target_token2 = Sign(target_new2, 2000, 1070);
+	CHECK(ValidateToken(target_token2, BaseOpts(1070), ctx) == VerifyResult::Ok);
+
+	// Second consecutive absence corroborates revocation: sib-kid's stale signing key MUST BE EVICTED!
+	const auto sib_lookup2 = cache.Lookup("sib-kid", 1071, kTestJwksUri);
+	CHECK(sib_lookup2.status == JwksLookupStatus::Miss);
+	CHECK(sib_lookup2.keys.empty());
+}
+
 TEST_CASE("Validator: TryRefreshRotatedKid commits target kid before sibling ingest under LRU pressure",
+
           "[validator][lru][ordering]") {
 	JwksCache cache(30, /*max_entries=*/2);
 	const auto target_old = GenerateValidatorKey("target-kid");
@@ -1525,7 +1602,7 @@ TEST_CASE("Validator: multi-tenant caches partitioned by jwks_uri do not cross-t
 	CHECK(http.call_count == 1);
 }
 
-TEST_CASE("Validator: screening failure for published kid returns UnsupportedKeyType / UnusableKey without negative "
+TEST_CASE("Validator: screening failure for published kid returns UnsupportedKeyType / UnusableKey and enters negative "
           "caching (F7)",
           "[validator][screening][unusable-key][f7]") {
 	JwksCache cache(30);
@@ -1542,9 +1619,9 @@ TEST_CASE("Validator: screening failure for published kid returns UnsupportedKey
 	const auto res = ValidateToken(token, BaseOpts(1000), ctx);
 	CHECK(res == VerifyResult::UnusableKey);
 
-	// Must NOT be placed in negative cache (lookup is Miss, not RateLimited)
+	// MUST be placed in negative cache (lookup is RateLimited, preventing fetch amplification loop)
 	const auto lookup = cache.Lookup("p521-kid", 1001, "https://idp.test/jwks");
-	CHECK(lookup.status == JwksLookupStatus::Miss);
+	CHECK(lookup.status == JwksLookupStatus::RateLimited);
 }
 
 TEST_CASE("Validator: per-kid rate-limited lookup returns JwksThrottled (F8)",
@@ -1659,6 +1736,38 @@ TEST_CASE("Validator: alg mismatch on cached key triggers refresh and succeeds i
 	CHECK(http.call_count == 1);
 }
 
+TEST_CASE("Validator: alg mismatch on cached key records throttled refresh and returns NoMatchingKey during cooldown",
+          "[validator][rotation][alg-mismatch-throttled]") {
+	const auto old_key = GenerateValidatorKey("target-kid");
+	const auto new_key = GenerateValidatorKey("target-kid");
+
+	JwksCache cache(30);
+	// Cached key has RS256 at t=1000
+	cache.OnFetchSuccess("target-kid", {old_key.jwk}, 1000, kTestJwksUri);
+
+	FakeHttpClient http;
+	ValidateContext ctx {http, cache, "https://idp.test/jwks"};
+
+	const auto token = jwt::create<TraitsT>()
+	                       .set_type("JWT")
+	                       .set_key_id("target-kid")
+	                       .set_issuer("https://idp.test")
+	                       .set_subject("alice")
+	                       .set_audience("api://quack")
+	                       .set_issued_at(std::chrono::system_clock::time_point(std::chrono::seconds(1010)))
+	                       .set_expires_at(std::chrono::system_clock::time_point(std::chrono::seconds(2000)))
+	                       .sign(jwt::algorithm::rs384("", new_key.priv_pem, "", ""));
+
+	VerifyOptions opts = BaseOpts(1010);
+	opts.allowed_algorithms = {"RS256", "RS384"};
+
+	RefreshEvent refresh;
+	const auto res = ValidateToken(token, opts, ctx, &refresh);
+	CHECK(res == VerifyResult::NoMatchingKey);
+	CHECK(refresh.reason == kReasonRefreshThrottled);
+	CHECK(http.call_count == 0);
+}
+
 TEST_CASE("Validator: 5 candidate keys preserves signature-matching key for expired token",
           "[validator][rotation][prioritize-expired]") {
 	const auto k1 = GenerateValidatorKey("target-kid");
@@ -1733,6 +1842,47 @@ TEST_CASE("Validator: 200 OK JWKS refresh corroborates and evicts absent sibling
 
 	// After 2nd refresh: kid-b absence is corroborated across 2 consecutive distinct 200 OK refreshes -> EVICTED!
 	CHECK(cache.Lookup("kid-b", 1101, kTestJwksUri).status == JwksLookupStatus::Miss);
+}
+
+TEST_CASE("Validator: present non-signing sibling key (use=enc) increments absent count and is evicted",
+          "[validator][sibling][enc-retention]") {
+	JwksCache cache(30);
+	const auto ka1 = GenerateValidatorKey("kid-a");
+	const auto ka2 = GenerateValidatorKey("kid-a");
+	const auto ka3 = GenerateValidatorKey("kid-a");
+	const auto kb = GenerateValidatorKey("kid-enc");
+
+	// Cache initially has both kid-a and kid-enc
+	cache.OnFetchSuccess("kid-a", {ka1.jwk}, 1000, kTestJwksUri);
+	cache.OnFetchSuccess("kid-enc", {kb.jwk}, 1000, kTestJwksUri);
+
+	FakeHttpClient http;
+	// 1st JWKS response: kid-a has ka2, AND kid-enc is present with use="enc"
+	http.next_response = IHttpClient::Response {
+	    200, std::string(R"({"keys":[)") + R"({"kid":"kid-a","kty":"RSA","use":"sig","alg":"RS256","n":")" + ka2.jwk.n +
+	             R"(","e":")" + ka2.jwk.e + R"("},)" +
+	             R"({"kid":"kid-enc","kty":"RSA","use":"enc","alg":"RSA-OAEP","n":")" + kb.jwk.n + R"(","e":")" +
+	             kb.jwk.e + R"("}]})"};
+
+	ValidateContext ctx {http, cache, kTestJwksUri};
+
+	// Token signed by ka2 triggers refresh of kid-a at t=1050
+	const auto token_a2 = Sign(ka2, 2000, 1050);
+	CHECK(ValidateToken(token_a2, BaseOpts(1050), ctx) == VerifyResult::Ok);
+
+	// 2nd JWKS response at t=1100: kid-a rotates to ka3, kid-enc is STILL present with use="enc"
+	http.next_response = IHttpClient::Response {
+	    200, std::string(R"({"keys":[)") + R"({"kid":"kid-a","kty":"RSA","use":"sig","alg":"RS256","n":")" + ka3.jwk.n +
+	             R"(","e":")" + ka3.jwk.e + R"("},)" +
+	             R"({"kid":"kid-enc","kty":"RSA","use":"enc","alg":"RSA-OAEP","n":")" + kb.jwk.n + R"(","e":")" +
+	             kb.jwk.e + R"("}]})"};
+
+	const auto token_a3 = Sign(ka3, 2000, 1100);
+	CHECK(ValidateToken(token_a3, BaseOpts(1100), ctx) == VerifyResult::Ok);
+
+	// kid-enc is only published with use="enc" (no signing keys), so after 2 consecutive refreshes
+	// its stale cached signing key is authoritatively evicted!
+	CHECK(cache.Lookup("kid-enc", 1101, kTestJwksUri).status == JwksLookupStatus::Miss);
 }
 
 TEST_CASE("Validator: cold miss with 5 same-kid keys preserves token-matching key even if 5th in document",

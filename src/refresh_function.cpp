@@ -82,11 +82,12 @@ void RegisterQuackOauthRefresh(ExtensionLoader &loader) {
 	fn.stability = FunctionStability::VOLATILE;
 	CreateScalarFunctionInfo info(std::move(fn));
 	FunctionDescription desc;
-	desc.description = "Run an RFC 6749 §6 refresh_token grant against the token endpoint of the named "
-	                   "quack_oauth SECRET. Reads token_endpoint + client_id [+ client_secret] + "
-	                   "refresh_token from the SECRET, POSTs grant_type=refresh_token, and persists the "
-	                   "rotated access_token + refresh_token (if returned) + expires_at back onto the "
-	                   "SECRET, and returns the ISO-8601 expires_at timestamp. Supports both public and confidential clients.";
+	desc.description =
+	    "Run an RFC 6749 §6 refresh_token grant against the token endpoint of the named "
+	    "quack_oauth SECRET. Reads token_endpoint + client_id [+ client_secret] + "
+	    "refresh_token from the SECRET, POSTs grant_type=refresh_token, and persists the "
+	    "rotated access_token + refresh_token (if returned) + expires_at back onto the "
+	    "SECRET, and returns the ISO-8601 expires_at timestamp. Supports both public and confidential clients.";
 	desc.parameter_names = {"secret_name"};
 	desc.parameter_types = {LogicalType::VARCHAR};
 	desc.examples = {"SELECT quack_oauth_refresh('my_client_secret')"};

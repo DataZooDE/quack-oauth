@@ -137,6 +137,14 @@ TEST_CASE("VerifyJwt: clock skew gives a token leeway past exp", "[jwt][verify][
 	CHECK(VerifyJwt(token, k.jwk, BaseOpts(1700000000)) == VerifyResult::Ok);
 }
 
+TEST_CASE("VerifyJwt: negative clock skew does not cause underflow bypass for expired token", "[jwt][verify][skew]") {
+	const auto &k = GetTestKey();
+	const auto token = SignRs256(k, 1699000000, 1698990000, "https://idp.test", "api://quack");
+	auto opts = BaseOpts(1700000000);
+	opts.clock_skew_s = -10;
+	CHECK(VerifyJwt(token, k.jwk, opts) == VerifyResult::Expired);
+}
+
 TEST_CASE("VerifyJwt: not-yet-valid token is rejected", "[jwt][verify][nbf]") {
 	const auto &k = GetTestKey();
 	const auto token = SignRs256(k, 1700003600, 1700000000, "https://idp.test", "api://quack", /*nbf*/ 1700000200);

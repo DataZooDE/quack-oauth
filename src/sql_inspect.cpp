@@ -49,8 +49,7 @@ namespace {
 
 std::string LowerAscii(std::string_view s) {
 	std::string out(s);
-	std::transform(out.begin(), out.end(), out.begin(),
-	               [](unsigned char c) { return std::tolower(c); });
+	std::transform(out.begin(), out.end(), out.begin(), [](unsigned char c) { return std::tolower(c); });
 	return out;
 }
 
@@ -58,8 +57,7 @@ std::string LowerAscii(std::string_view s) {
 // known catalog schemas. Metadata reads don't need policy gating.
 bool IsSystemObject(const std::string &qual) {
 	static const std::string kSysPrefixes[] = {
-	    "information_schema.", "pg_catalog.", "main.duckdb_",
-	    "system.information_schema.", "system.main.",
+	    "information_schema.", "pg_catalog.", "main.duckdb_", "system.information_schema.", "system.main.",
 	};
 	for (const auto &p : kSysPrefixes) {
 		if (qual.rfind(p, 0) == 0) {
@@ -74,8 +72,7 @@ bool IsSystemObject(const std::string &qual) {
 	return false;
 }
 
-void AddObject(AuthzRequest &req, const std::string &catalog, const std::string &schema,
-               const std::string &table) {
+void AddObject(AuthzRequest &req, const std::string &catalog, const std::string &schema, const std::string &table) {
 	if (table.empty()) {
 		return;
 	}
@@ -241,8 +238,7 @@ void WalkTableRef(const duckdb::TableRef &ref, AuthzRequest &req) {
 		// attached catalogs by path, which schema isolation never gated (F1).
 		const auto &tf = ref.Cast<duckdb::TableFunctionRef>();
 		std::string fn_name;
-		if (tf.function &&
-		    tf.function->GetExpressionClass() == duckdb::ExpressionClass::FUNCTION) {
+		if (tf.function && tf.function->GetExpressionClass() == duckdb::ExpressionClass::FUNCTION) {
 			fn_name = tf.function->Cast<duckdb::FunctionExpression>().function_name;
 		}
 		if (fn_name.empty()) {

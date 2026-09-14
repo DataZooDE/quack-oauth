@@ -128,13 +128,14 @@ void RegisterQuackOauthDeviceLogin(ExtensionLoader &loader) {
 	fn.stability = FunctionStability::VOLATILE;
 	CreateScalarFunctionInfo info(std::move(fn));
 	FunctionDescription desc;
-	desc.description = "Run an RFC 8628 device authorization flow against the named quack_oauth SECRET. "
-	                   "Requests a device + user code, prints the verification URL + user_code to stderr "
-	                   "for the operator to visit on a second device, then polls the token endpoint with "
-	                   "RFC 8628 §3.5 error handling (pending / slow_down back-off / access_denied / "
-	                   "expired_token). On success persists access_token + refresh_token + expires_at "
-	                   "back onto the SECRET and returns the ISO-8601 expires_at timestamp. Use for interactive auth on "
-	                   "input-constrained devices.";
+	desc.description =
+	    "Run an RFC 8628 device authorization flow against the named quack_oauth SECRET. "
+	    "Requests a device + user code, prints the verification URL + user_code to stderr "
+	    "for the operator to visit on a second device, then polls the token endpoint with "
+	    "RFC 8628 §3.5 error handling (pending / slow_down back-off / access_denied / "
+	    "expired_token). On success persists access_token + refresh_token + expires_at "
+	    "back onto the SECRET and returns the ISO-8601 expires_at timestamp. Use for interactive auth on "
+	    "input-constrained devices.";
 	desc.parameter_names = {"secret_name"};
 	desc.parameter_types = {LogicalType::VARCHAR};
 	desc.examples = {"SELECT quack_oauth_device_login('my_client_secret')"};

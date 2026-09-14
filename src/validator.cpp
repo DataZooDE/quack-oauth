@@ -201,8 +201,10 @@ static bool CommitAndAudit(const std::string &kid, uint64_t reservation_id, cons
 static void IngestSiblingKeys(const std::unordered_map<std::string, std::vector<Jwk>> &keys_by_kid,
                               const std::string &target_kid, int64_t now_s, ValidateContext &ctx) {
 	std::unordered_set<std::string> present_kids;
-	for (const auto &[s_kid, _] : keys_by_kid) {
-		present_kids.insert(s_kid);
+	for (const auto &[s_kid, s_keys] : keys_by_kid) {
+		if (!s_kid.empty()) {
+			present_kids.insert(s_kid);
+		}
 	}
 	ctx.jwks_cache.ReconcileAbsentKids(present_kids, now_s, ctx.jwks_uri, target_kid);
 
@@ -260,9 +262,10 @@ static void PrioritizeMatchingKey(std::vector<Jwk> &candidates, std::string_view
 }
 
 static void PrioritizeNewKeys(std::vector<Jwk> &candidates, const std::vector<Jwk> &existing_keys) {
-	if (candidates.size() <= 4 || existing_keys.empty()) {
+	if (candidates.size() <= kMaxKeysPerKid || existing_keys.empty()) {
 		return;
 	}
+
 	std::vector<Jwk> reordered;
 	reordered.reserve(candidates.size());
 	for (const auto &k : candidates) {
@@ -460,11 +463,11 @@ VerifyResult ValidateToken(std::string_view token, const VerifyOptions &opts, Va
 
 	const auto keys_by_kid = GroupSigningKeysByKid(keys);
 
+	std::optional<VerifyResult> cold_verified;
 	for (const auto &[k_kid, k_keys] : keys_by_kid) {
 		auto usable = ScreenUsableKeys(k_keys);
 		if (!usable.empty()) {
 			if (k_kid == parsed->kid) {
-				std::optional<VerifyResult> cold_verified;
 				PrioritizeMatchingKey(usable, token, parsed->alg, opts, cold_verified);
 			}
 			ctx.jwks_cache.OnPassiveFetchSuccess(k_kid, usable, opts.now_s, ctx.jwks_uri);
@@ -473,6 +476,7 @@ VerifyResult ValidateToken(std::string_view token, const VerifyOptions &opts, Va
 
 	const auto second_lookup = ctx.jwks_cache.Lookup(parsed->kid, opts.now_s, ctx.jwks_uri);
 	if (second_lookup.status != JwksLookupStatus::Hit || second_lookup.keys.empty()) {
+		ctx.jwks_cache.OnFetchMiss(parsed->kid, opts.now_s, ctx.jwks_uri);
 		const auto cand_it = keys_by_kid.find(parsed->kid);
 		if (cand_it != keys_by_kid.end()) {
 			bool saw_rsa_too_small = false;
@@ -487,10 +491,17 @@ VerifyResult ValidateToken(std::string_view token, const VerifyOptions &opts, Va
 			}
 			return saw_rsa_too_small ? VerifyResult::UnsupportedKeyType : VerifyResult::UnusableKey;
 		}
-		ctx.jwks_cache.OnFetchMiss(parsed->kid, opts.now_s, ctx.jwks_uri);
+		for (const auto &k : keys) {
+			if (k.kid == parsed->kid) {
+				return VerifyResult::NoMatchingKey;
+			}
+		}
 		return VerifyResult::UnknownKid;
 	}
 
+	if (cold_verified.has_value() && SignatureMatchesCandidate(*cold_verified)) {
+		return *cold_verified;
+	}
 	return VerifyAgainstCachedKid(token, parsed->alg, second_lookup.keys, opts);
 }
 

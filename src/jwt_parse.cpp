@@ -115,9 +115,12 @@ std::optional<JwtParsed> ParseJwt(std::string_view token) {
 	}
 }
 
+static inline bool IsAsciiSpace(char c) noexcept {
+	return c == ' ' || c == '\t' || c == '\r' || c == '\n' || c == '\v' || c == '\f';
+}
+
 std::string_view StripBearerPrefix(std::string_view auth) noexcept {
-	while (!auth.empty() &&
-	       (auth.front() == ' ' || auth.front() == '\t' || auth.front() == '\r' || auth.front() == '\n')) {
+	while (!auth.empty() && IsAsciiSpace(auth.front())) {
 		auth.remove_prefix(1);
 	}
 	if (auth.size() >= 6) {
@@ -129,15 +132,14 @@ std::string_view StripBearerPrefix(std::string_view auth) noexcept {
 				break;
 			}
 		}
-		if (matches && (auth.size() == 6 || auth[6] == ' ' || auth[6] == '\t')) {
+		if (matches && (auth.size() == 6 || IsAsciiSpace(auth[6]))) {
 			auth.remove_prefix(6);
-			while (!auth.empty() &&
-			       (auth.front() == ' ' || auth.front() == '\t' || auth.front() == '\r' || auth.front() == '\n')) {
+			while (!auth.empty() && IsAsciiSpace(auth.front())) {
 				auth.remove_prefix(1);
 			}
 		}
 	}
-	while (!auth.empty() && (auth.back() == ' ' || auth.back() == '\t' || auth.back() == '\r' || auth.back() == '\n')) {
+	while (!auth.empty() && IsAsciiSpace(auth.back())) {
 		auth.remove_suffix(1);
 	}
 	return auth;

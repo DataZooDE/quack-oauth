@@ -55,12 +55,27 @@ struct ColumnLayout {
 	int allow_idx = -1;
 };
 
+static string EscapeSingleQuotes(const string &str) {
+	string out;
+	out.reserve(str.size() + 4);
+	for (char c : str) {
+		if (c == '\'') {
+			out += "''";
+		} else {
+			out += c;
+		}
+	}
+	return out;
+}
+
 static std::optional<ColumnLayout> DiscoverColumns(Connection &conn, const string &qualified_table) {
 	std::ostringstream sql;
-	sql << "SELECT lower(name) AS n FROM pragma_table_info('" << qualified_table << "') ORDER BY cid";
+	sql << "SELECT lower(name) AS n FROM pragma_table_info('" << EscapeSingleQuotes(qualified_table)
+	    << "') ORDER BY cid";
 	auto result = conn.Query(sql.str());
 	if (result->HasError())
 		return std::nullopt;
+
 	ColumnLayout layout;
 	int i = 0;
 	for (auto &row : result->Collection().GetRows()) {

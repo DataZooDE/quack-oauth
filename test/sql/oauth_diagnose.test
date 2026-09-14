@@ -33,7 +33,7 @@ true
 
 # Cache rows must carry status and expected detail keys
 query II
-SELECT status, detail LIKE '%entries=%' AND detail LIKE '%unknown_kids=%' AND detail LIKE '%min_refresh_s=%' AND detail LIKE '%throttled=%' AND detail LIKE '%budget_throttled=%' AND detail LIKE '%kid_throttled=%'
+SELECT status, detail LIKE '%entries=%' AND detail LIKE '%unknown_kids=%' AND detail LIKE '%min_refresh_s=%' AND detail LIKE '%min_refresh_floor=%' AND detail LIKE '%throttled=%' AND detail LIKE '%budget_throttled=%' AND detail LIKE '%kid_throttled=%' AND detail LIKE '%last_refresh_reason=%' AND detail LIKE '%last_throttled_at=%'
 FROM quack_oauth_diagnose() WHERE component = 'jwks_cache';
 ----
 empty	true

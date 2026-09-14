@@ -616,3 +616,57 @@ TEST_CASE("JwksCache: HasFreshJwksDocument with scoped URI does not fall back to
 	// Tenant B never fetched, so it must NOT be considered fresh!
 	CHECK_FALSE(cache.HasFreshJwksDocument(101, 2, "https://tenant-b.test/jwks"));
 }
+
+TEST_CASE("JwksCache: ReconcileAbsentKids does NOT pollute last_refresh_attempt_s of absent siblings",
+          "[jwks][cache][absent-sibling-rate-limit]") {
+	JwksCache cache(30);
+	cache.OnFetchSuccess("k1", {MakeRsaJwk("k1")}, 1000);
+	cache.OnFetchSuccess("k2", {MakeRsaJwk("k2")}, 1000);
+
+	// At t=1040, k1 refreshes. The response only contains k1 (k2 is absent from this response).
+	// k2's consecutive_absent_count will become 1.
+	cache.ReconcileAbsentKids(/*present_kids=*/ {"k1"}, /*now_s=*/1040, /*jwks_uri=*/"", /*exclude_kid=*/"k1");
+
+	// At t=1045, k2 needs to refresh.
+	// Since k2's last refresh attempt was at t=1000 (45s ago, > 30s), k2 must NOT be rate-limited!
+	CHECK(cache.TryReserveRefresh("k2", 1045) != 0);
+}
+
+TEST_CASE("JwksCache: ReconcileAbsentKids does NOT cancel concurrent in-flight reservation of absent sibling",
+          "[jwks][cache][absent-sibling-reservation]") {
+	JwksCache cache(30);
+	cache.OnFetchSuccess("k1", {MakeRsaJwk("k1")}, 1000);
+	cache.OnFetchSuccess("k2", {MakeRsaJwk("k2")}, 1000);
+
+	// Thread 2 reserves a refresh for k2 at t=1040
+	const auto res_k2 = cache.TryReserveRefresh("k2", 1040);
+	REQUIRE(res_k2 != 0);
+
+	// Thread 1 concurrently refreshes k1 at t=1041. The fetched document contains only k1 (k2 omitted).
+	// k2's consecutive_absent_count increments, but k2's in-flight reservation MUST NOT be cleared!
+	cache.ReconcileAbsentKids(/*present_kids=*/ {"k1"}, /*now_s=*/1041, /*jwks_uri=*/"", /*exclude_kid=*/"k1");
+
+	// Thread 2 finishes fetching fresh keys for k2 and commits its reservation.
+	const auto new_k2 = MakeRsaJwk("k2");
+	const auto commit_res = cache.CommitRefresh("k2", res_k2, {new_k2}, 1042);
+	CHECK(commit_res);
+}
+
+TEST_CASE("JwksCache: OnFetchSuccess guards fetched_at_s against minor clock rewind", "[jwks][cache][clock-rewind]") {
+	JwksCache cache(30);
+	cache.OnFetchSuccess("k1", {MakeRsaJwk("k1")}, 1050);
+
+	// A reservation at t=1081 succeeds (31s elapsed)
+	const auto res = cache.TryReserveRefresh("k1", 1081);
+	REQUIRE(res != 0);
+
+	// Out-of-order older fetch completion at t=1020 must NOT rewind fetched_at_s
+	cache.OnFetchSuccess("k1", {MakeRsaJwk("k1")}, 1020);
+
+	// Even a major clock reset (e.g. t=500, << 1050) must NOT rewind fetched_at_s backwards
+	cache.OnFetchSuccess("k1", {MakeRsaJwk("k1")}, 500);
+
+	// A commit at t=1085 should still be valid relative to fetched_at_s=1050
+	const auto commit_ok = cache.CommitRefresh("k1", res, {MakeRsaJwk("k1")}, 1085);
+	CHECK(commit_ok);
+}

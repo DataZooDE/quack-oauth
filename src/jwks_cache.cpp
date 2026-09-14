@@ -92,7 +92,7 @@ void JwksCache::OnFetchSuccess(const std::string &kid, const std::vector<Jwk> &k
 		}
 		hit->second.keys = keys;
 		TrimToCap(hit->second);
-		hit->second.fetched_at_s = now_s;
+		hit->second.fetched_at_s = std::max(hit->second.fetched_at_s, now_s);
 		hit->second.consecutive_absent_count = 0;
 		hit_lru_.erase(hit->second.lru_it);
 		hit_lru_.push_front(hit->first);
@@ -174,8 +174,6 @@ void JwksCache::ReconcileAbsentKids(const std::unordered_set<std::string> &prese
 		if (present_kids.find(kid) != present_kids.end()) {
 			entry.consecutive_absent_count = 0;
 		} else {
-			entry.current_reservation_id = 0;
-			entry.last_refresh_attempt_s = now_s;
 			entry.consecutive_absent_count++;
 			if (entry.consecutive_absent_count >= 2) {
 				to_evict.push_back(cache_key);

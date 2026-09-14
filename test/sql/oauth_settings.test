@@ -115,4 +115,22 @@ WHERE name = 'quack_oauth_validation_mode';
 ----
 true
 
+# SET rejects SET SESSION for clock_skew_s (must be SET GLOBAL)
+statement error
+SET SESSION quack_oauth_clock_skew_s = 60;
+----
+quack_oauth_clock_skew_s is a global setting; use GLOBAL scope
+
+# SET rejects negative values or values > 3600 for clock_skew_s
+statement error
+SET quack_oauth_clock_skew_s = -5;
+----
+quack_oauth_clock_skew_s must be non-negative (got -5)
+
+statement error
+SET quack_oauth_clock_skew_s = 7200;
+----
+quack_oauth_clock_skew_s must be at most 3600 (got 7200)
+
+
 

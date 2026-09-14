@@ -22,8 +22,10 @@ WHERE function_name LIKE 'quack_oauth%';
 - [Scalar functions](#scalar-functions)
   - [`quack_oauth_check_token`](#quack_oauth_check_token)
   - [`quack_oauth_check_authorization`](#quack_oauth_check_authorization)
+  - [`quack_oauth_acquire`](#quack_oauth_acquire)
   - [`quack_oauth_login`](#quack_oauth_login)
   - [`quack_oauth_refresh`](#quack_oauth_refresh)
+  - [`quack_oauth_logout`](#quack_oauth_logout)
   - [`quack_oauth_device_login`](#quack_oauth_device_login)
 - [Table functions](#table-functions)
   - [`quack_oauth_diagnose`](#quack_oauth_diagnose)
@@ -43,13 +45,16 @@ WHERE function_name LIKE 'quack_oauth%';
 | Function | Kind | Purpose |
 |----------|------|---------|
 | `quack_oauth_check_token(token)` | scalar | Validate a bearer token via JWKS / introspection / tokeninfo |
-| `quack_oauth_check_token(session_id, auth_string, token)` | scalar | quack callback shape — validates + caches Principal by session |
+| `quack_oauth_check_token(session_id, auth_string, ignored_psk)` | scalar | quack callback shape — validates + caches Principal by session |
 | `quack_oauth_check_authorization(session_id, query_string)` | scalar | Action-aware policy check against the cached Principal |
+| `quack_oauth_acquire(secret_name)` | scalar | One-stop client orchestrator; returns valid access token for `ATTACH` |
 | `quack_oauth_login(secret_name)` | scalar | RFC 6749 §4.4 `client_credentials` grant |
 | `quack_oauth_refresh(secret_name)` | scalar | RFC 6749 §6 `refresh_token` grant |
+| `quack_oauth_logout(secret_name)` | scalar | Clears cached tokens from a client SECRET |
 | `quack_oauth_device_login(secret_name)` | scalar | RFC 8628 device authorization flow |
 | `quack_oauth_diagnose()` | table | Health snapshot: extension config, caches, audit-ring summary |
 | `quack_oauth_audit_log()` | table | Last N auth decisions as typed rows (token redacted) |
+
 
 ---
 
@@ -63,7 +68,8 @@ Two overloads share this name.
 
 | Parameter | Type    | Description |
 |-----------|---------|-------------|
-| `token`   | VARCHAR | The bearer access token (JWT or opaque, per validation mode). |
+| `token`   | VARCHAR | The bearer access token (JWT or opaque, per validation mode). A case-insensitive `Bearer` prefix followed by whitespace (space `' '`, tab `'\t'`, carriage return `'\r'`, newline `'\n'`) is stripped automatically before validation (note: `Bearer: <token>` with a colon is not accepted). |
+
 
 Validates the token against the active `quack_oauth_server` SECRET
 (selected by `quack_oauth_server_secret_name`). The global setting
@@ -96,19 +102,55 @@ throw standard DuckDB exceptions.
 SELECT quack_oauth_check_token('eyJhbGciOiJSUzI1NiIs...');
 ```
 
+##### Failure triage recipe
+
+When `quack_oauth_check_token` returns `false`, run this two-query triage recipe to identify why the token was rejected and verify system health:
+
+```sql
+-- Query 1: Inspect the most recent token failure and rejection reason
+SELECT timestamp_unix_s, event_type, reason, kid, token_hash, subject
+FROM quack_oauth_audit_log()
+ORDER BY timestamp_unix_s DESC
+LIMIT 1;
+
+-- Query 2: Verify provider status, secret readiness, and cache health
+SELECT * FROM quack_oauth_diagnose();
+```
+
+> [!NOTE]
+> **Audit ring capacity caveat**: In-memory `quack_oauth_audit_log()` stores a fixed ring buffer of the last 64 events. Under high request concurrency, failure entries may be rapidly evicted from the ring. Run Query 1 immediately upon failure, or configure persistent auditing via the `audit_table` secret parameter on the server SECRET.
+
 #### `quack_oauth_check_token(session_id VARCHAR, auth_string VARCHAR, token VARCHAR) → BOOLEAN`
 
 | Parameter      | Type    | Description |
 |----------------|---------|-------------|
 | `session_id`   | VARCHAR | quack's per-session id; used as the key for the principal cache. |
-| `auth_string`  | VARCHAR | The raw HTTP `Authorization` header value (e.g. `Bearer eyJ...`) containing the OAuth access token. The optional `Bearer ` prefix is stripped automatically before validation. |
-| `token`        | VARCHAR | quack's pre-shared PSK token from `quack_serve`. Ignored by `quack_oauth` (present for callback signature compatibility with `quack`). |
+| `auth_string`  | VARCHAR | The raw HTTP `Authorization` header value (e.g. `Bearer eyJ...`) containing the client's OAuth access token. A case-insensitive `Bearer` prefix followed by ASCII whitespace (`' '`, `'\t'`, `'\r'`, `'\n'`, `'\v'`, `'\f'`) is stripped automatically before validation. |
+| `token`        | VARCHAR | quack's pre-shared PSK token from `quack_serve` (`quack_token`). Ignored by `quack_oauth` (OAuth bearer token verification is performed exclusively against `auth_string`; parameter 3 exists solely for callback signature compatibility with quack). |
+
+##### Bearer Prefix Normalization Rules
+
+The following table documents how `StripBearerPrefix` normalizes raw authentication strings across various client input shapes:
+
+| Input Authorization / Token String | Stripped Output | Notes |
+|:---|:---|:---|
+| `Bearer eyJhbGciOi...` | `eyJhbGciOi...` | Standard RFC 6750 header with single space |
+| `bearer   eyJhbGciOi...` | `eyJhbGciOi...` | Case-insensitive prefix and multiple space characters |
+| `Bearer\teyJhbGciOi...` | `eyJhbGciOi...` | Tab or whitespace separator (`\t`, `\r`, `\n`, `\v`, `\f`) |
+| `  eyJhbGciOi...  ` | `eyJhbGciOi...` | Leading and trailing whitespace trimmed |
+| `Bearer: eyJhbGciOi...` | `Bearer: eyJhbGciOi...` | Non-whitespace delimiter preserved; subsequent JWT parser rejects invalid character |
+| `BearerXYZ` | `BearerXYZ` | Prefix match requires whitespace boundary; non-token input fails validation |
+| `Bearer` | `""` | Bearer keyword alone normalizes to empty string |
+
+> [!CAUTION]
+> **Session ID security**: In quack deployments, `session_id` is a server-generated, cryptographically random handle created per connection. Untrusted SQL callers should not be permitted to supply arbitrary `session_id` values to this 3-argument function, as doing so could allow planting a principal under an existing victim's session identifier.
 
 Matches `quack`'s `quack_check_token(session_id, auth_string, token)`
 callback signature exactly. **Side effect**: on success, the extracted
 Principal (subject, scopes, audience, exp) is cached against
 `session_id` in process-local state so a later
 `quack_oauth_check_authorization()` call can apply the policy.
+
 
 Wired into quack after `LOAD`:
 
@@ -120,6 +162,7 @@ SET quack_authorization_function  = 'quack_oauth_check_authorization';
 ```sql
 SELECT quack_oauth_check_token('sess-42', 'Bearer eyJhbGciOi...', '');
 ```
+
 
 ---
 
@@ -162,9 +205,34 @@ SELECT quack_oauth_check_authorization('sess-42', 'ATTACH ''quack:rs'' AS r');  
 
 ---
 
+### `quack_oauth_acquire`
+
+`quack_oauth_acquire(secret_name VARCHAR) → VARCHAR`
+
+| Parameter     | Type    | Description |
+|---------------|---------|-------------|
+| `secret_name` | VARCHAR | Name of a `quack_oauth` (client) SECRET. |
+
+One-stop client orchestrator (R-C-2 / R-C-4). Returns a valid access token from the named client SECRET:
+- If a cached `access_token` exists and is still fresh (based on `expires_at` with a safety margin), returns it immediately without network traffic.
+- If expired and a `refresh_token` is present, transparently executes `quack_oauth_refresh(secret_name)`.
+- If expired or empty without a refresh token, transparently executes `quack_oauth_login(secret_name)`.
+
+Designed for threading directly into DuckDB `ATTACH`:
+
+```sql
+ATTACH 'quack:rs.example.com:9494' AS rs (
+    TYPE quack,
+    token quack_oauth_acquire('cli')
+);
+```
+
+---
+
 ### `quack_oauth_login`
 
 `quack_oauth_login(secret_name VARCHAR) → VARCHAR`
+
 
 | Parameter     | Type    | Description |
 |---------------|---------|-------------|
@@ -178,7 +246,11 @@ onto the SECRET, and returns the new `expires_at` timestamp.
 
 Use for machine-to-machine (service-account) flows.
 
+> [!NOTE]
+> Client authentication flows (`quack_oauth_login`, `quack_oauth_refresh`, and `quack_oauth_device_login`) require native networking (`unavailable_on_wasm`). On WebAssembly builds, invoking these client functions returns a platform-unavailable exception, whereas server-side validation functions (`quack_oauth_check_token`, `quack_oauth_check_authorization`) operate across all supported DuckDB architectures.
+
 ```sql
+
 CREATE SECRET cli (
     TYPE quack_oauth,
     token_endpoint 'https://keycloak.example.com/realms/prod/protocol/openid-connect/token',
@@ -211,9 +283,26 @@ SELECT quack_oauth_refresh('cli');
 
 ---
 
+### `quack_oauth_logout`
+
+`quack_oauth_logout(secret_name VARCHAR) → BOOLEAN`
+
+| Parameter     | Type    | Description |
+|---------------|---------|-------------|
+| `secret_name` | VARCHAR | Name of a `quack_oauth` (client) SECRET. |
+
+Clears `access_token`, `refresh_token`, and `expires_at` on the named `quack_oauth` SECRET (R-C-8). Returns `true`. Use when a user or session explicitly logs out so that cached credentials are removed from local storage and cannot be reused.
+
+```sql
+SELECT quack_oauth_logout('cli');
+```
+
+---
+
 ### `quack_oauth_device_login`
 
 `quack_oauth_device_login(secret_name VARCHAR) → VARCHAR`
+
 
 | Parameter     | Type    | Description |
 |---------------|---------|-------------|
@@ -258,14 +347,49 @@ with a status and a `detail` string of `key=value` pairs:
 |-----------------------|---------------------------|------------------------|
 | `decision_cache`      | `empty` \| `warm`         | `entries=` |
 | `extension`           | `configured` \| `unconfigured` | `enabled= secret_name= validation_mode= provider=` |
-| `idp_reachability`    | `reachable` \| `unreachable` \| `unconfigured` \| `unavailable_on_wasm` | `uri= http_status=` (on wasm: `uri= reason=wasm_host_owns_network`) |
-| `jwks_cache`          | `empty` \| `warm` \| `misses_only` | `entries= unknown_kids= min_refresh_s= throttled= budget_throttled= kid_throttled=` |
+| `jwks_cache`          | `empty` \| `warm` \| `misses_only` | `entries= unknown_kids= min_refresh_s= min_refresh_floor= throttled= budget_throttled= kid_throttled= last_refresh_reason= last_throttled_at=` |
 | `recent_decisions`    | `empty` \| `active`       | `count=N/CAP accepted= rejected= allowed= denied= refreshed= refresh_noop= refresh_failed=` |
 | `session_principals`  | `empty` \| `active`       | `sessions=` |
 
+The `jwks_cache` detail string stably emits all 9 metrics across all states:
+- `entries`: Count of currently cached valid signing keys.
+- `unknown_kids`: Count of currently negative-cached unknown key IDs.
+- `min_refresh_s`: Effective per-kid minimum refresh cooldown (in seconds).
+- `min_refresh_floor`: Immutable startup floor in seconds (`QUACK_OAUTH_JWKS_MIN_REFRESH_S`, default 30).
+- `throttled`: Total suppressed refresh attempts (`throttled = budget_throttled + kid_throttled`).
+- `budget_throttled`: Refreshes suppressed by the 2-second global process-wide fetch budget.
+- `kid_throttled`: Refreshes suppressed by the per-kid cooldown window.
+- `last_refresh_reason`: Internal reason of the most recent refresh attempt (or `(none)` if never triggered).
+- `last_throttled_at`: Unix epoch seconds of the most recent throttle event (or `0`).
+
+### Breaking Changes
+
+#### WebAssembly `idp_reachability` Status Rename
+In prior releases, WebAssembly builds reported `skipped_wasm` for the `idp_reachability` component in `quack_oauth_diagnose()`. This has been renamed to `unavailable_on_wasm` to distinguish unsupported platform environments from runtime configuration skips.
+
+**Dashboard Migration SQL:**
+```sql
+-- Before:
+SELECT * FROM quack_oauth_diagnose() WHERE component = 'idp_reachability' AND status = 'skipped_wasm';
+
+-- After (backward-compatible check):
+SELECT * FROM quack_oauth_diagnose() WHERE component = 'idp_reachability' AND status IN ('unavailable_on_wasm', 'skipped_wasm');
+```
+
 ```sql
 SELECT * FROM quack_oauth_diagnose();
+
+-- Recipe: Parse diagnose details into structured key-value metrics
+SELECT component,
+       split_part(kv, '=', 1) AS metric,
+       split_part(kv, '=', 2) AS val
+FROM (
+    SELECT component, unnest(string_split(detail, ' ')) AS kv
+    FROM quack_oauth_diagnose()
+)
+WHERE kv LIKE '%=%';
 ```
+
 
 ---
 
@@ -313,16 +437,49 @@ the first 8 hex characters of its SHA-256.
 | `jwks_refresh` | `refresh_fetch_failed` | Outbound JWKS HTTP GET failed or returned non-200. |
 | `jwks_refresh` | `refresh_parse_failed` | Outbound JWKS response was not valid JSON or contained no keys. |
 | `jwks_refresh` | `refresh_kid_absent` | Fresh JWKS document did not contain the requested `kid` (first observation; cached key retained pending corroboration). |
-| `jwks_refresh` | `refresh_kid_evicted` | Consecutive fresh JWKS documents confirmed `kid` absence; cached key authoritatively evicted (F2 corroboration). |
+| `jwks_refresh` | `refresh_kid_evicted` | Consecutive fresh JWKS documents confirmed `kid` absence; cached key authoritatively evicted (corroborated eviction across two consecutive observations). |
 | `jwks_refresh` | `refresh_superseded` | Refresh discarded because a concurrent reservation committed first. |
 | `authz_allow` | `rule allow` | Explicit allow rule matched in `policy_table`. |
 | `authz_allow` | `default allow` | No rule matched; fallback to `quack_oauth_policy_default='allow'`. |
 | `authz_deny` | `rule deny` | Explicit deny rule matched in `policy_table`. |
 | `authz_deny` | `default deny` | No rule matched; fallback to `quack_oauth_policy_default='deny'`. |
 
-> **Note on throttled refresh logging**: When a refresh attempt is suppressed by `min_refresh_s` or the 2-second global fetch budget window, internal reason codes `refresh_throttled` and `refresh_budget_throttled` are emitted directly to the DuckDB warning logger (`DUCKDB_LOG_WARNING`, deduplicated per vector chunk) rather than polluting the audit ring. The resulting token evaluation failure appears in the audit ring as `invalid_signature` (for existing cached keys) or `jwks_throttled` (for cold misses and negative-cached unknown kids). Detailed throttle breakdown is observable via `quack_oauth_diagnose().jwks_cache` (`budget_throttled` and `kid_throttled`).
+> **Note on throttled refresh logging**: When a refresh attempt is suppressed by `min_refresh_s` or the 2-second global fetch budget window, internal reason codes `refresh_throttled` and `refresh_budget_throttled` are emitted directly to the DuckDB warning logger (`DUCKDB_LOG_WARNING`, deduplicated per vector chunk and throttled to once per 30s per unique sanitized key/reason/uri) rather than polluting the audit ring. The resulting token evaluation failure appears in the audit ring as `jwks_throttled` (for both cold misses and throttled cached-key refreshes), clearly distinguishing rate-limiting from cryptographic signature mismatches (`invalid_signature`). Detailed throttle breakdown is observable via `quack_oauth_diagnose().jwks_cache` (`budget_throttled` and `kid_throttled`).
+
+##### Throttle Signal Mapping
+
+When refresh rate-limiting triggers, throttle signals appear across three observation layers with corresponding retry guidance:
+
+| Observation Source | Signal / Counter | Meaning | Recommended Action |
+|--------------------|------------------|---------|---------------------|
+| DuckDB Warning Log | `quack_oauth: JWKS refresh rate-limited by min_refresh_s for kid='...'` | Per-`kid` refresh suppressed within cooldown window | Retry request after `quack_oauth_jwks_min_refresh_s` (default 30s) |
+| DuckDB Warning Log | `quack_oauth: JWKS refresh throttled by global fetch budget (2s window)` | Process-wide refresh budget exhausted (burst limit) | Retry request after 2s global window resets |
+| `quack_oauth_diagnose()` | `jwks_cache: kid_throttled=<count>` | Cumulative count of per-`kid` cooldown throttles | Check if IdP keys rotated faster than configured `min_refresh_s` |
+| `quack_oauth_diagnose()` | `jwks_cache: budget_throttled=<count>` | Cumulative count of global budget throttles | Check if high volume of unknown `kid` tokens hit server |
+| `quack_oauth_audit_log()` | `event_type='token_rejected', reason='jwks_throttled'` | Token verification rejected because outbound JWKS refresh was throttled (cold miss or cached key) | Wait until cooldown expires before presenting token again |
+
+###### Worked Example: Tracing a Throttled Request
+
+Suppose an incoming token presents a rotated or unrecognized signature for `kid='key-2026'` while a refresh cooldown is active:
+
+1. **DuckDB Warning Log** (server console or `duckdb_logs`):
+   ```
+   [WARNING] quack_oauth: JWKS refresh rate-limited by min_refresh_s for kid='key-2026'
+   ```
+2. **`quack_oauth_diagnose()`**:
+   ```sql
+   SELECT detail FROM quack_oauth_diagnose() WHERE component = 'jwks_cache';
+   -- Returns: entries=1 unknown_kids=0 min_refresh_s=30 min_refresh_floor=30 throttled=1 budget_throttled=0 kid_throttled=1 last_refresh_reason=unusable_key last_throttled_at=1715000000
+   ```
+3. **`quack_oauth_audit_log()`**:
+   ```sql
+   SELECT event_type, reason FROM quack_oauth_audit_log() LIMIT 1;
+   -- Returns: event_type='token_rejected', reason='jwks_throttled'
+   ```
 
 For persistent audit, set `audit_table` on the server SECRET to a SQL
+
+
 table with the same column shape (BIGINT + 7 × VARCHAR); the extension
 also INSERTs each event there.
 
@@ -341,7 +498,11 @@ LIMIT 20;
 
 The **resource-server** side. One per IdP / realm / tenant.
 
+> [!WARNING]
+> **SSRF and Privilege Boundary**: Creating `quack_oauth_server` SECRETs and assigning `quack_oauth_server_secret_name` are privileged operations. The extension performs outbound network requests to the configured `jwks_uri` and `introspection_endpoint`. Restrict SECRET creation to trusted database administrators, enforce HTTPS, and ensure URLs point strictly to legitimate identity providers.
+
 | Field                       | Type    | Sensitive | Required | Description |
+
 |-----------------------------|---------|-----------|----------|-------------|
 | `issuer`                    | VARCHAR | no        | for `jwks` mode | OAuth issuer URL (the `iss` claim). |
 | `audience`                  | VARCHAR | no        | recommended | Expected `aud` claim. |
@@ -439,8 +600,10 @@ All settings are global (SET applies process-wide; there is no per-session overr
 | `quack_oauth_enabled`                | BOOLEAN | `false`     | Master switch (R-S-1). Defaults off so `LOAD` is side-effect-free. |
 | `quack_oauth_validation_mode`        | VARCHAR | `'jwks'`    | `jwks` \| `introspect` \| `tokeninfo` \| `github_check` (R-S-2). |
 | `quack_oauth_provider`               | VARCHAR | `'generic'` | First-class preset: `entra` \| `google` \| `keycloak` \| `okta` \| `github` \| `generic` (R-S-12). |
-| `quack_oauth_clock_skew_s`           | INTEGER | `60`        | Allowable clock skew (seconds) for JWT `exp`/`nbf`/`iat` (R-S-3). |
-| `quack_oauth_jwks_min_refresh_s`     | INTEGER | `30`        | Min seconds between JWKS refreshes per kid (R-S-4). Must be between the startup floor and 3600; cannot be lowered below startup floor (default 30, override via `QUACK_OAUTH_JWKS_MIN_REFRESH_S`). Process-global setting that applies across all chunk validations until reset. |
+| `quack_oauth_clock_skew_s`           | INTEGER | `60`        | Allowable clock skew (seconds) for JWT `exp`/`nbf`/`iat` (R-S-3). Enforces global scope and clamp range `[0, 3600]`. Negative values and values > 3600 are rejected. |
+| `quack_oauth_jwks_min_refresh_s`     | INTEGER | `30`        | Min seconds between JWKS refreshes per kid (R-S-4). Clamped to `[startup_floor, 3600]`; cannot be lowered below the process startup floor (default 30, override via `QUACK_OAUTH_JWKS_MIN_REFRESH_S`). `RESET GLOBAL quack_oauth_jwks_min_refresh_s` restores the configured startup floor. Fixed limits: 2s global fetch budget window and 4 keys cached per kid. |
+
+
 | `quack_oauth_introspect_cache_s`     | INTEGER | `30`        | Cache lifetime for `introspect`-mode decisions, capped at token `exp` (R-S-5). |
 | `quack_oauth_renew_skew_s`           | INTEGER | `60`        | Client refreshes the access token this many seconds before `expires_at` (R-C-2). |
 | `quack_oauth_policy_default`         | VARCHAR | `'deny'`    | Default decision when no `policy_table` rule matches: `allow` or `deny` (R-S-7). |
@@ -454,10 +617,11 @@ All settings are global (SET applies process-wide; there is no per-session overr
 When identity providers (such as Microsoft Entra ID) rotate key material while reusing the same `kid`, cached keys will fail signature verification on new tokens. The extension automatically detects this and triggers a rate-limited, synchronous on-demand JWKS refresh on the request path to recover the new key without requiring process restart or cache invalidation.
 
 - **Multi-key cache entry**: On a successful 200 OK JWKS fetch, cached keys for the target `kid` are synchronized with the keys currently published in the document, capped at 4 keys per `kid`. If a fetch fails or times out, all existing cached keys are preserved.
-- **Corroborated sibling key eviction**: To protect against transient network glitches or partial IdP responses evicting valid keys, whole-`kid` absence of sibling keys from a 200 OK response during a key rotation refresh must be observed across **2 consecutive distinct refreshes** before the cached sibling key is evicted. Cold unknown-`kid` misses passively ingest discovered keys without incrementing absence counters or evicting unrelated cached keys. Existing keys continue to verify until absence is corroborated.
+- **Corroborated sibling key eviction**: To protect against transient network glitches or partial IdP responses evicting valid keys, whole-`kid` absence of sibling keys from a 200 OK response during a key rotation refresh must be observed across **2 consecutive distinct refreshes** before the cached sibling key is evicted. Cold unknown-`kid` misses passively ingest discovered signing keys without incrementing absence counters or evicting unrelated cached keys, preventing unauthenticated callers presenting random `kid` values from triggering cache-eviction attacks. Sibling keys published with non-signing key usage (e.g. `use='enc'`) have their absence corroborated and are evicted after 2 consecutive absences, preventing non-signing keys from masquerading as valid signing keys. Existing keys continue to verify until absence is corroborated.
 - **Multi-tenant partitioning**: JWKS documents, cached keys, and per-kid cooldowns are strictly partitioned by `(jwks_uri, kid)` composite keys. Refreshing or evicting keys for Tenant A cannot mutate, invalidate, leak across, or starve the per-kid refresh window for Tenant B. (The 2-second outbound fetch budget window operates as a process-global protection to prevent network storms).
 - **Request-path latency**: Refreshes happen synchronously on the request thread encountering an unusable key signature failure against currently-cached keys, bounded by `quack_oauth_jwks_min_refresh_s` (default 30 seconds) per `kid` and a process-global fetch rate limit (2 seconds).
 - **Starvation & DoS resistance**: Fresh key material fetched from the IdP over TLS is committed to the cache even if the triggering token fails verification, preventing forged or corrupted tokens from starving legitimate key rotation recovery. Cold misses during a fresh document window (<2s) reject immediately as `unknown_kid` without burning the global fetch slot. Tokens signed by valid cached keys verify directly from cache without outbound HTTP requests or refresh events. When an invalid-signature request triggers a rate-limited fetch that yields no new key material, `refresh_no_rotation` is audited.
+- **Outage resilience vs revocation tradeoff**: Valid tokens signed by cached keys verify directly against local memory until their `exp` timestamp without outbound network calls to the IdP. This guarantees query continuity during IdP network partitions or outages. When immediate token-level revocation is required prior to expiration, use `introspect` mode instead of `jwks`.
 - **Troubleshooting**: If clients experience bursts of `invalid_signature` or `jwks_throttled` errors during an IdP rotation, inspect `quack_oauth_audit_log()` for `jwks_refresh` events and `quack_oauth_diagnose()` for granular throttle counters (`throttled=N`, `budget_throttled=N`, `kid_throttled=N`) on `jwks_cache`. Refresh rate-limiting is logged to the DuckDB logger as `quack_oauth: JWKS refresh rate-limited by min_refresh_s for kid='...'` or `quack_oauth: JWKS refresh throttled by global fetch budget (2s window) for kid='...'` (viewable via `SET enable_logging = true; SELECT * FROM duckdb_logs WHERE message LIKE 'quack_oauth:%';`); network failures appear as `refresh_fetch_failed`.
 
 ---
@@ -484,9 +648,10 @@ template, so the operator surface stays minimal for the common cases.
 | `entra`    | tenant GUID      | `jwks`             | Microsoft Entra ID. Use a custom API scope (`api://<client_id>/.default`), **not** Microsoft Graph — Graph tokens carry a `nonce` in the JWT header and are not third-party-verifiable. |
 | `google`   | (n/a)            | `tokeninfo`        | Service-account tokens have no `sub`; numbers may come back as JSON strings. |
 | `keycloak` | realm name       | `jwks`             | Confidential client required for introspection. |
-| `okta`     | org host         | `jwks`             | Same as keycloak otherwise. |
+| `okta`     | (reserved)       | `jwks`             | Reserved for future auto-fill; configure `issuer` and `jwks_uri` explicitly on the SECRET (or use `generic`). |
 | `github`   | (n/a)            | `github_check`     | GitHub-flavoured token check. |
 | `generic`  | (n/a)            | per setting        | Fall back to manually-set `issuer` / `jwks_uri` / etc. |
+
 
 
 ---
