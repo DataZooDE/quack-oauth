@@ -49,8 +49,12 @@ struct JwtParsed {
 // foundation for both the JWKS validator and Catch2 unit testing of claim
 // extraction.
 //
-// Returns `std::nullopt` if `token` is not a well-formed compact JWT
-// (wrong segment count, non-base64url payload, non-JSON header/payload).
+// Normalizes an HTTP Authorization header or token input by stripping an
+// optional case-insensitive "Bearer " prefix (and any adjacent whitespace).
+// Returns the bare access token string view. If no Bearer scheme is present,
+// returns the trimmed input.
+std::string_view StripBearerPrefix(std::string_view auth) noexcept;
+
 std::optional<JwtParsed> ParseJwt(std::string_view token);
 
 } // namespace quack_oauth

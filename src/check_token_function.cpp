@@ -425,7 +425,8 @@ static void RunValidationLoop(Vector &tokens, idx_t count, Vector &result, Clien
 				FlatVector::Validity(result).SetInvalid(i);
 				continue;
 			}
-			auto token_str = tok_data[tok_idx].GetString();
+			const auto raw_token = tok_data[tok_idx].GetString();
+			auto token_str = std::string(quack_oauth::StripBearerPrefix(raw_token));
 			const auto sid_str = sid_data[sid_idx].GetString();
 			const auto row = validate_row(token_str);
 			const bool ok = row.outcome == quack_oauth::VerifyResult::Ok;
@@ -437,7 +438,8 @@ static void RunValidationLoop(Vector &tokens, idx_t count, Vector &result, Clien
 		}
 	} else {
 		UnaryExecutor::Execute<string_t, bool>(tokens, result, count, [&](string_t token) {
-			auto token_str = token.GetString();
+			const auto raw_token = token.GetString();
+			auto token_str = std::string(quack_oauth::StripBearerPrefix(raw_token));
 			const auto row = validate_row(token_str);
 			const bool ok = row.outcome == quack_oauth::VerifyResult::Ok;
 			EmitAuditsAndScrub(context, token_str, row, now_s, guard, jwks_uri, throttled_events);
@@ -634,16 +636,12 @@ static void CheckTokenScalarFun3(DataChunk &args, ExpressionState &state, Vector
 	//   args[0] = session_id        -- server-generated, used as the
 	//                                  Principal-cache key for the authz
 	//                                  handoff.
-	//   args[1] = auth_string       -- the `token` attach option the
-	//                                  client supplied on `ATTACH … (TYPE
-	//                                  quack, token '<JWT>')`. This is
-	//                                  where the OAuth bearer lives.
-	//   args[2] = token             -- quack's own pre-shared random PSK
-	//                                  (from `quack_serve`). The default
-	//                                  `quack_check_token` uses it for a
-	//                                  shared-secret check; we ignore it,
-	//                                  the JWKS / introspect / tokeninfo
-	//                                  paths don't need it.
+	// args[1] = auth_string       -- the HTTP Authorization header (e.g.
+	//                                  'Bearer eyJ...') or token attach option
+	//                                  the client supplied. Optional 'Bearer '
+	//                                  prefix is stripped automatically.
+	// args[2] = token             -- quack's own pre-shared random PSK
+	//                                  (from `quack_serve`), ignored by quack_oauth.
 	ValidateChunk(args.data[1], args.size(), result, state.GetContext(), &args.data[0]);
 }
 

@@ -115,4 +115,27 @@ std::optional<JwtParsed> ParseJwt(std::string_view token) {
 	}
 }
 
+std::string_view StripBearerPrefix(std::string_view auth) noexcept {
+	while (!auth.empty() && (auth.front() == ' ' || auth.front() == '\t')) {
+		auth.remove_prefix(1);
+	}
+	if (auth.size() >= 6) {
+		const char b[] = {'b', 'e', 'a', 'r', 'e', 'r'};
+		bool matches = true;
+		for (size_t i = 0; i < 6; ++i) {
+			if (static_cast<char>(tolower(static_cast<unsigned char>(auth[i]))) != b[i]) {
+				matches = false;
+				break;
+			}
+		}
+		if (matches && (auth.size() == 6 || auth[6] == ' ' || auth[6] == '\t')) {
+			auth.remove_prefix(6);
+			while (!auth.empty() && (auth.front() == ' ' || auth.front() == '\t')) {
+				auth.remove_prefix(1);
+			}
+		}
+	}
+	return auth;
+}
+
 } // namespace quack_oauth

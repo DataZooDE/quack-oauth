@@ -66,9 +66,9 @@ Two overloads share this name.
 | `token`   | VARCHAR | The bearer access token (JWT or opaque, per validation mode). |
 
 Validates the token against the active `quack_oauth_server` SECRET
-(selected by `quack_oauth_server_secret_name`). The SECRET's
-`validation_mode` (or the session's `quack_oauth_validation_mode`)
-picks the path:
+(selected by `quack_oauth_server_secret_name`). The global setting
+`quack_oauth_validation_mode` (or first-class provider preset via
+`quack_oauth_provider`) picks the path:
 
 - `jwks` — verify the JWT signature against the JWKS endpoint with
   per-`kid` cache + rate-limited refresh + clock-skew tolerance.
@@ -78,6 +78,9 @@ picks the path:
   token_exp − now)`. Negative decisions are NOT cached (revocation-safe).
 - `tokeninfo` — Google-style opaque-token endpoint; no Basic auth,
   numbers-as-strings tolerated.
+- `github_check` — GitHub App token validation via
+  `POST /applications/{client_id}/token`.
+
 
 Returns `true` if the token is valid, or `false` on any token rejection. Once the
 active server SECRET and listener configuration are valid, token validation
@@ -434,7 +437,7 @@ All settings are global (SET applies process-wide; there is no per-session overr
 | Setting                              | Type    | Default     | Description |
 |--------------------------------------|---------|-------------|-------------|
 | `quack_oauth_enabled`                | BOOLEAN | `false`     | Master switch (R-S-1). Defaults off so `LOAD` is side-effect-free. |
-| `quack_oauth_validation_mode`        | VARCHAR | `'jwks'`    | `jwks` \| `introspect` \| `tokeninfo` (R-S-2). |
+| `quack_oauth_validation_mode`        | VARCHAR | `'jwks'`    | `jwks` \| `introspect` \| `tokeninfo` \| `github_check` (R-S-2). |
 | `quack_oauth_provider`               | VARCHAR | `'generic'` | First-class preset: `entra` \| `google` \| `keycloak` \| `okta` \| `github` \| `generic` (R-S-12). |
 | `quack_oauth_clock_skew_s`           | INTEGER | `60`        | Allowable clock skew (seconds) for JWT `exp`/`nbf`/`iat` (R-S-3). |
 | `quack_oauth_jwks_min_refresh_s`     | INTEGER | `30`        | Min seconds between JWKS refreshes per kid (R-S-4). Must be between the startup floor and 3600; cannot be lowered below startup floor (default 30, override via `QUACK_OAUTH_JWKS_MIN_REFRESH_S`). Process-global setting that applies across all chunk validations until reset. |
@@ -461,11 +464,12 @@ When identity providers (such as Microsoft Entra ID) rotate key material while r
 
 ## Validation modes
 
-| Mode         | Use when                                                                 | Cache behaviour |
-|--------------|--------------------------------------------------------------------------|-----------------|
-| `jwks`       | The IdP issues JWTs (RS256/384/512, ES256/384 on P-256/P-384, or EdDSA on Ed25519) and exposes a JWKS endpoint. | Per-`kid` JWKS cache + per-token decision cache. |
-| `introspect` | The IdP issues opaque tokens (or you want centralised revocation). RFC 7662. | Positive decisions cached up to `min(quack_oauth_introspect_cache_s, exp − now)`. **Negative** decisions never cached. |
-| `tokeninfo`  | Google-style endpoints that return JSON claims directly for opaque tokens. | Same as `introspect`. |
+| Mode           | Use when                                                                 | Cache behaviour |
+|----------------|--------------------------------------------------------------------------|-----------------|
+| `jwks`         | The IdP issues JWTs (RS256/384/512, ES256/384 on P-256/P-384, or EdDSA on Ed25519) and exposes a JWKS endpoint. | Per-`kid` JWKS cache + per-token decision cache. |
+| `introspect`   | The IdP issues opaque tokens (or you want centralised revocation). RFC 7662. | Positive decisions cached up to `min(quack_oauth_introspect_cache_s, exp − now)`. **Negative** decisions never cached. |
+| `tokeninfo`    | Google-style endpoints that return JSON claims directly for opaque tokens. | Same as `introspect`. |
+| `github_check` | GitHub Apps validating user-to-server or installation tokens via GitHub REST API. | Same as `introspect`. |
 
 ---
 
@@ -481,8 +485,9 @@ template, so the operator surface stays minimal for the common cases.
 | `google`   | (n/a)            | `tokeninfo`        | Service-account tokens have no `sub`; numbers may come back as JSON strings. |
 | `keycloak` | realm name       | `jwks`             | Confidential client required for introspection. |
 | `okta`     | org host         | `jwks`             | Same as keycloak otherwise. |
-| `github`   | (n/a)            | `GithubCheck`      | GitHub-flavoured token check. |
+| `github`   | (n/a)            | `github_check`     | GitHub-flavoured token check. |
 | `generic`  | (n/a)            | per setting        | Fall back to manually-set `issuer` / `jwks_uri` / etc. |
+
 
 ---
 
