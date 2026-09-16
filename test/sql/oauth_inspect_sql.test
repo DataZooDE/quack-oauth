@@ -102,13 +102,49 @@ SELECT array_to_string(objects, ',') FROM quack_oauth_inspect_sql('SELECT id, co
 ----
 main.entitled,main.other_tenant
 
-# NOTE: the CTE alias itself (`main.c`) is surfaced alongside the real
-# table. It is not a real object, so under an object_pattern policy it
-# needs a matching rule -- a known wart, pre-dating the fn: work.
+# A CTE alias is not an object. Its body is walked; the alias itself is
+# dropped, so an object_pattern policy doesn't deny a legitimate CTE.
 query I
 SELECT array_to_string(objects, ',') FROM quack_oauth_inspect_sql('WITH c AS (SELECT * FROM other_tenant) SELECT * FROM c');
 ----
-main.c,main.other_tenant
+main.other_tenant
+
+# The alias is only skipped when referenced bare. An explicit schema
+# means a real table, and still gates.
+query I
+SELECT array_to_string(objects, ',') FROM quack_oauth_inspect_sql('WITH c AS (SELECT 1) SELECT * FROM main.c');
+----
+main.c
+
+# CTE scope is per statement -- the second `t` here is a real table.
+query I
+SELECT array_to_string(objects, ',') FROM quack_oauth_inspect_sql('WITH t AS (SELECT 1) SELECT * FROM t; SELECT * FROM t;');
+----
+main.t
+
+# The CTE is still in scope inside a nested subquery.
+query I
+SELECT array_to_string(objects, ',') FROM quack_oauth_inspect_sql('WITH c AS (SELECT * FROM a) SELECT * FROM c WHERE EXISTS (SELECT 1 FROM c)');
+----
+main.a
+
+# A CTE may shadow a real table name; the reference is to the CTE.
+query I
+SELECT array_to_string(objects, ',') FROM quack_oauth_inspect_sql('WITH trips AS (SELECT * FROM src) SELECT * FROM trips');
+----
+main.src
+
+# Without a CTE of that name, the same bare reference is a table.
+query I
+SELECT array_to_string(objects, ',') FROM quack_oauth_inspect_sql('SELECT * FROM c');
+----
+main.c
+
+# A CTE in the query does not disturb fn: gating.
+query I
+SELECT array_to_string(objects, ',') FROM quack_oauth_inspect_sql('WITH c AS (SELECT 1) SELECT * FROM c, read_csv(''x.csv'')');
+----
+fn:read_csv
 
 # ---------------------------------------------------------------------------
 # Actions and columns

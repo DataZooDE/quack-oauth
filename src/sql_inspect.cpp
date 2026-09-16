@@ -140,11 +140,31 @@ void AddColumn(AuthzRequest &req, const std::string &col) {
 	}
 }
 
-void WalkTableRef(const duckdb::TableRef &ref, AuthzRequest &req);
+// Walk state. `req` is the result being built; `cte_names` holds the CTE
+// aliases in scope for the CURRENT statement.
+//
+// A CTE reference parses as a plain `BaseTableRef` -- binding is what would
+// resolve it to the CTE body, and we only parse. Left alone, `WITH c AS (…)
+// SELECT * FROM c` surfaces `main.c`, an object that does not exist, so an
+// object_pattern policy denies a legitimate query. We skip a base table whose
+// bare (unqualified) name matches a CTE in scope; an explicitly qualified
+// `main.c` is still gated, and the set is reset per statement so a later
+// statement's real table of the same name is not waved through.
+struct WalkCtx {
+	AuthzRequest &req;
+	std::vector<std::string> cte_names;
 
-void WalkQueryNode(const duckdb::QueryNode &qn, AuthzRequest &req);
+	bool IsCte(const std::string &name) const {
+		return std::find(cte_names.begin(), cte_names.end(), name) != cte_names.end();
+	}
+};
 
-void WalkExpression(const duckdb::ParsedExpression &expr, AuthzRequest &req) {
+void WalkTableRef(const duckdb::TableRef &ref, WalkCtx &ctx);
+
+void WalkQueryNode(const duckdb::QueryNode &qn, WalkCtx &ctx);
+
+void WalkExpression(const duckdb::ParsedExpression &expr, WalkCtx &ctx) {
+	AuthzRequest &req = ctx.req;
 	if (expr.GetExpressionClass() == duckdb::ExpressionClass::COLUMN_REF) {
 		const auto &cr = expr.Cast<duckdb::ColumnRefExpression>();
 		if (!cr.column_names.empty()) {
@@ -160,46 +180,57 @@ void WalkExpression(const duckdb::ParsedExpression &expr, AuthzRequest &req) {
 		// another tenant's rows unchecked (the F2 gap).
 		const auto &sq = expr.Cast<duckdb::SubqueryExpression>();
 		if (sq.subquery && sq.subquery->node) {
-			WalkQueryNode(*sq.subquery->node, req);
+			WalkQueryNode(*sq.subquery->node, ctx);
 		}
 	}
 	duckdb::ParsedExpressionIterator::EnumerateChildren(
-	    expr, [&](const duckdb::ParsedExpression &child) { WalkExpression(child, req); });
+	    expr, [&](const duckdb::ParsedExpression &child) { WalkExpression(child, ctx); });
 }
 
-void WalkQueryNode(const duckdb::QueryNode &qn, AuthzRequest &req) {
+void WalkQueryNode(const duckdb::QueryNode &qn, WalkCtx &ctx) {
+	AuthzRequest &req = ctx.req;
 	switch (qn.type) {
 	case duckdb::QueryNodeType::SELECT_NODE: {
 		const auto &sn = qn.Cast<duckdb::SelectNode>();
+		// Register CTE aliases before walking anything: a `FROM c` in this
+		// node -- or in a nested subquery, where the CTE is still in scope --
+		// must be recognised as the CTE, not as a table (see WalkCtx).
+		for (const auto &kv : sn.cte_map.map) {
+			const auto cte_name = LowerAscii(kv.first);
+			if (!ctx.IsCte(cte_name)) {
+				ctx.cte_names.push_back(cte_name);
+			}
+		}
 		if (sn.from_table) {
-			WalkTableRef(*sn.from_table, req);
+			WalkTableRef(*sn.from_table, ctx);
 		}
 		for (const auto &expr : sn.select_list) {
 			if (expr) {
-				WalkExpression(*expr, req);
+				WalkExpression(*expr, ctx);
 			}
 		}
 		// Walk the remaining expression clauses too — a subquery reaching
 		// another tenant hides in WHERE/HAVING/QUALIFY/GROUP BY just as easily
 		// as in the SELECT list (F2). WalkExpression recurses into subqueries.
 		if (sn.where_clause) {
-			WalkExpression(*sn.where_clause, req);
+			WalkExpression(*sn.where_clause, ctx);
 		}
 		if (sn.having) {
-			WalkExpression(*sn.having, req);
+			WalkExpression(*sn.having, ctx);
 		}
 		if (sn.qualify) {
-			WalkExpression(*sn.qualify, req);
+			WalkExpression(*sn.qualify, ctx);
 		}
 		for (const auto &g : sn.groups.group_expressions) {
 			if (g) {
-				WalkExpression(*g, req);
+				WalkExpression(*g, ctx);
 			}
 		}
-		// CTE definitions
+		// CTE bodies are real objects -- walk them. The aliases were
+		// registered above.
 		for (const auto &kv : sn.cte_map.map) {
 			if (kv.second && kv.second->query && kv.second->query->node) {
-				WalkQueryNode(*kv.second->query->node, req);
+				WalkQueryNode(*kv.second->query->node, ctx);
 			}
 		}
 		break;
@@ -212,15 +243,15 @@ void WalkQueryNode(const duckdb::QueryNode &qn, AuthzRequest &req) {
 #if QUACK_OAUTH_SETOP_HAS_CHILDREN
 		for (const auto &child : son.children) {
 			if (child) {
-				WalkQueryNode(*child, req);
+				WalkQueryNode(*child, ctx);
 			}
 		}
 #else
 		if (son.left) {
-			WalkQueryNode(*son.left, req);
+			WalkQueryNode(*son.left, ctx);
 		}
 		if (son.right) {
-			WalkQueryNode(*son.right, req);
+			WalkQueryNode(*son.right, ctx);
 		}
 #endif
 		break;
@@ -233,27 +264,34 @@ void WalkQueryNode(const duckdb::QueryNode &qn, AuthzRequest &req) {
 	}
 }
 
-void WalkTableRef(const duckdb::TableRef &ref, AuthzRequest &req) {
+void WalkTableRef(const duckdb::TableRef &ref, WalkCtx &ctx) {
+	AuthzRequest &req = ctx.req;
 	switch (ref.type) {
 	case duckdb::TableReferenceType::BASE_TABLE: {
 		const auto &bt = ref.Cast<duckdb::BaseTableRef>();
+		// An unqualified name matching a CTE in scope is a reference to that
+		// CTE, not to a table. Only bare names qualify -- an explicit
+		// `main.c` still gates.
+		if (bt.catalog_name.empty() && bt.schema_name.empty() && ctx.IsCte(LowerAscii(bt.table_name))) {
+			break;
+		}
 		AddObject(req, bt.catalog_name, bt.schema_name, bt.table_name);
 		break;
 	}
 	case duckdb::TableReferenceType::JOIN: {
 		const auto &jr = ref.Cast<duckdb::JoinRef>();
 		if (jr.left) {
-			WalkTableRef(*jr.left, req);
+			WalkTableRef(*jr.left, ctx);
 		}
 		if (jr.right) {
-			WalkTableRef(*jr.right, req);
+			WalkTableRef(*jr.right, ctx);
 		}
 		break;
 	}
 	case duckdb::TableReferenceType::SUBQUERY: {
 		const auto &sr = ref.Cast<duckdb::SubqueryRef>();
 		if (sr.subquery && sr.subquery->node) {
-			WalkQueryNode(*sr.subquery->node, req);
+			WalkQueryNode(*sr.subquery->node, ctx);
 		}
 		break;
 	}
@@ -282,7 +320,7 @@ void WalkTableRef(const duckdb::TableRef &ref, AuthzRequest &req) {
 		// object is still gated.
 		const auto &pr = ref.Cast<duckdb::PivotRef>();
 		if (pr.source) {
-			WalkTableRef(*pr.source, req);
+			WalkTableRef(*pr.source, ctx);
 		}
 		break;
 	}
@@ -347,12 +385,13 @@ Action ClassifyStatement(const duckdb::SQLStatement &s) {
 	}
 }
 
-void WalkStatement(const duckdb::SQLStatement &s, AuthzRequest &req) {
+void WalkStatement(const duckdb::SQLStatement &s, WalkCtx &ctx) {
+	AuthzRequest &req = ctx.req;
 	switch (s.type) {
 	case duckdb::StatementType::SELECT_STATEMENT: {
 		const auto &ss = s.Cast<duckdb::SelectStatement>();
 		if (ss.node) {
-			WalkQueryNode(*ss.node, req);
+			WalkQueryNode(*ss.node, ctx);
 		}
 		break;
 	}
@@ -368,31 +407,31 @@ void WalkStatement(const duckdb::SQLStatement &s, AuthzRequest &req) {
 		const auto &is = s.Cast<duckdb::InsertStatement>();
 		AddObject(req, is.catalog, is.schema, is.table);
 		if (is.select_statement && is.select_statement->node) {
-			WalkQueryNode(*is.select_statement->node, req);
+			WalkQueryNode(*is.select_statement->node, ctx);
 		}
 		if (is.table_ref) {
-			WalkTableRef(*is.table_ref, req);
+			WalkTableRef(*is.table_ref, ctx);
 		}
 		break;
 	}
 	case duckdb::StatementType::UPDATE_STATEMENT: {
 		const auto &us = s.Cast<duckdb::UpdateStatement>();
 		if (us.table) {
-			WalkTableRef(*us.table, req);
+			WalkTableRef(*us.table, ctx);
 		}
 		if (us.from_table) {
-			WalkTableRef(*us.from_table, req);
+			WalkTableRef(*us.from_table, ctx);
 		}
 		break;
 	}
 	case duckdb::StatementType::DELETE_STATEMENT: {
 		const auto &ds = s.Cast<duckdb::DeleteStatement>();
 		if (ds.table) {
-			WalkTableRef(*ds.table, req);
+			WalkTableRef(*ds.table, ctx);
 		}
 		for (const auto &uref : ds.using_clauses) {
 			if (uref) {
-				WalkTableRef(*uref, req);
+				WalkTableRef(*uref, ctx);
 			}
 		}
 		break;
@@ -402,7 +441,7 @@ void WalkStatement(const duckdb::SQLStatement &s, AuthzRequest &req) {
 		if (cs.info) {
 			AddObject(req, cs.info->catalog, cs.info->schema, cs.info->table);
 			if (cs.info->select_statement) {
-				WalkQueryNode(*cs.info->select_statement, req);
+				WalkQueryNode(*cs.info->select_statement, ctx);
 			}
 		}
 		break;
@@ -442,7 +481,11 @@ AuthzRequest InspectSql(const std::string &query) {
 	req.action = ClassifyStatement(*parser.statements.front());
 	for (const auto &stmt : parser.statements) {
 		if (stmt) {
-			WalkStatement(*stmt, req);
+			// Fresh CTE scope per statement: `WITH t AS (…) SELECT * FROM t;
+			// SELECT * FROM t;` must still gate the second `t`, which is a
+			// real table.
+			WalkCtx ctx {req, {}};
+			WalkStatement(*stmt, ctx);
 		}
 	}
 	return req;

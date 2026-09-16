@@ -372,6 +372,11 @@ collects:
   **except `duckdb_secrets` and `duckdb_settings`**, which carry
   credential material. A table function whose name can't be
   resolved denies the whole request. See "Level 8" below.
+- **`objects`, CTE aliases** — a CTE name is not an object. Its body
+  is walked, but the alias is dropped, so `WITH c AS (SELECT * FROM
+  t) SELECT * FROM c` gates `main.t` alone. Only bare references are
+  skipped: an explicit `main.c` is a real table and still gates, and
+  the scope resets per statement.
 - **`columns`** — the unqualified column names a SELECT projects.
   `SELECT *` produces the sentinel `*`.
 
