@@ -1,0 +1,217 @@
+# name: test/sql/oauth_inspect_sql.test
+# description: quack_oauth_inspect_sql() surfaces the authorization object walk
+# group: [sql]
+
+statement error
+SELECT * FROM quack_oauth_inspect_sql('SELECT 1');
+----
+Catalog Error
+
+require quack_oauth
+
+# Column contract. DESCRIBE FROM <table_function()> returns a single
+# pre-formatted column in DuckDB 1.5.x, so assert types via typeof().
+query IIIII
+SELECT typeof(action), typeof(objects), typeof(columns), typeof(unsafe), typeof(error)
+FROM quack_oauth_inspect_sql('SELECT a FROM t');
+----
+VARCHAR	VARCHAR[]	VARCHAR[]	BOOLEAN	VARCHAR
+
+# Base tables surface as schema.table, defaulting to the `main` schema.
+query II
+SELECT action, array_to_string(objects, ',') FROM quack_oauth_inspect_sql('SELECT id FROM trips');
+----
+Scan	main.trips
+
+# ---------------------------------------------------------------------------
+# F1 -- table functions surface under the reserved `fn:` namespace.
+# Without this, `SELECT ... FROM entitled, read_csv(...)` authorized with
+# only the entitled object walked.
+# ---------------------------------------------------------------------------
+
+query I
+SELECT array_to_string(objects, ',') FROM quack_oauth_inspect_sql('SELECT * FROM read_csv(''x.csv'')');
+----
+fn:read_csv
+
+query I
+SELECT array_to_string(objects, ',') FROM quack_oauth_inspect_sql('SELECT * FROM entitled, read_csv(''http://evil/x.csv'')');
+----
+main.entitled,fn:read_csv
+
+# Function names are lowercased, like object names.
+query I
+SELECT array_to_string(objects, ',') FROM quack_oauth_inspect_sql('SELECT * FROM READ_PARQUET(''x.parquet'')');
+----
+fn:read_parquet
+
+# ---------------------------------------------------------------------------
+# Catalog metadata is not gated -- the function spelling and the view
+# spelling expose the same rows, so they get the same treatment.
+# ---------------------------------------------------------------------------
+
+query I
+SELECT len(objects) FROM quack_oauth_inspect_sql('SELECT table_name FROM information_schema.tables');
+----
+0
+
+query I
+SELECT len(objects) FROM quack_oauth_inspect_sql('SELECT * FROM duckdb_tables()');
+----
+0
+
+query I
+SELECT len(objects) FROM quack_oauth_inspect_sql('SELECT * FROM duckdb_columns()');
+----
+0
+
+# ... except the members that carry credential material and have no
+# catalog-view twin. `duckdb_secrets()` is the cross-join that would
+# otherwise defeat a zero-object deny.
+query I
+SELECT array_to_string(objects, ',') FROM quack_oauth_inspect_sql('SELECT * FROM duckdb_secrets()');
+----
+fn:duckdb_secrets
+
+query I
+SELECT array_to_string(objects, ',') FROM quack_oauth_inspect_sql('SELECT * FROM duckdb_settings()');
+----
+fn:duckdb_settings
+
+query I
+SELECT array_to_string(objects, ',') FROM quack_oauth_inspect_sql('SELECT * FROM entitled, duckdb_secrets()');
+----
+main.entitled,fn:duckdb_secrets
+
+# ---------------------------------------------------------------------------
+# F2 -- expression subqueries are walked, not just FROM and the SELECT list.
+# ---------------------------------------------------------------------------
+
+query I
+SELECT array_to_string(objects, ',') FROM quack_oauth_inspect_sql('SELECT (SELECT max(x) FROM other_tenant) FROM entitled');
+----
+main.entitled,main.other_tenant
+
+query I
+SELECT array_to_string(objects, ',') FROM quack_oauth_inspect_sql('SELECT * FROM entitled WHERE EXISTS (SELECT 1 FROM other_tenant)');
+----
+main.entitled,main.other_tenant
+
+query I
+SELECT array_to_string(objects, ',') FROM quack_oauth_inspect_sql('SELECT id, count(*) FROM entitled GROUP BY id HAVING count(*) > (SELECT max(x) FROM other_tenant)');
+----
+main.entitled,main.other_tenant
+
+# A CTE alias is not an object. Its body is walked; the alias itself is
+# dropped, so an object_pattern policy doesn't deny a legitimate CTE.
+query I
+SELECT array_to_string(objects, ',') FROM quack_oauth_inspect_sql('WITH c AS (SELECT * FROM other_tenant) SELECT * FROM c');
+----
+main.other_tenant
+
+# The alias is only skipped when referenced bare. An explicit schema
+# means a real table, and still gates.
+query I
+SELECT array_to_string(objects, ',') FROM quack_oauth_inspect_sql('WITH c AS (SELECT 1) SELECT * FROM main.c');
+----
+main.c
+
+# CTE scope is per statement -- the second `t` here is a real table.
+query I
+SELECT array_to_string(objects, ',') FROM quack_oauth_inspect_sql('WITH t AS (SELECT 1) SELECT * FROM t; SELECT * FROM t;');
+----
+main.t
+
+# The CTE is still in scope inside a nested subquery.
+query I
+SELECT array_to_string(objects, ',') FROM quack_oauth_inspect_sql('WITH c AS (SELECT * FROM a) SELECT * FROM c WHERE EXISTS (SELECT 1 FROM c)');
+----
+main.a
+
+# A CTE may shadow a real table name; the reference is to the CTE.
+query I
+SELECT array_to_string(objects, ',') FROM quack_oauth_inspect_sql('WITH trips AS (SELECT * FROM src) SELECT * FROM trips');
+----
+main.src
+
+# Without a CTE of that name, the same bare reference is a table.
+query I
+SELECT array_to_string(objects, ',') FROM quack_oauth_inspect_sql('SELECT * FROM c');
+----
+main.c
+
+# A CTE in the query does not disturb fn: gating.
+query I
+SELECT array_to_string(objects, ',') FROM quack_oauth_inspect_sql('WITH c AS (SELECT 1) SELECT * FROM c, read_csv(''x.csv'')');
+----
+fn:read_csv
+
+# A WITH clause must never swallow the rest of the statement. DuckDB 1.4.x
+# wraps it in a CTENode instead of a SelectNode cte_map, and before that
+# node type was handled the whole select half went unwalked on the LTS
+# line -- yielding zero objects, which is NOT fail-closed: a zero-object
+# request skips every rule carrying an object_pattern (policy.cpp), so an
+# object-scoped deny could be laundered through a CTE. Tables unrelated to
+# the CTE must still appear.
+# Sorted: the walk order of a CTE body vs. the outer FROM differs between
+# the 1.4 and 1.5 parse shapes. The object SET is what the policy evaluates.
+query I
+SELECT array_to_string(list_sort(objects), ',') FROM quack_oauth_inspect_sql('WITH c AS (SELECT * FROM a) SELECT * FROM b');
+----
+main.a,main.b
+
+query I
+SELECT len(objects) > 0 FROM quack_oauth_inspect_sql('WITH c AS (SELECT * FROM secret) SELECT * FROM c');
+----
+true
+
+# The insert target and the CTE body are both walked.
+query I
+SELECT array_to_string(list_sort(objects), ',') FROM quack_oauth_inspect_sql('INSERT INTO dst WITH c AS (SELECT * FROM a) SELECT * FROM c');
+----
+main.a,main.dst
+
+# WITH RECURSIVE: the seed is walked, the self-reference is a CTE name.
+query I
+SELECT array_to_string(objects, ',') FROM quack_oauth_inspect_sql('WITH RECURSIVE r AS (SELECT * FROM seed UNION ALL SELECT * FROM r) SELECT * FROM r');
+----
+main.seed
+
+# ---------------------------------------------------------------------------
+# Actions and columns
+# ---------------------------------------------------------------------------
+
+query II
+SELECT action, array_to_string(objects, ',') FROM quack_oauth_inspect_sql('INSERT INTO t VALUES (1)');
+----
+Insert	main.t
+
+query I
+SELECT array_to_string(columns, ',') FROM quack_oauth_inspect_sql('SELECT * FROM trips');
+----
+*
+
+query I
+SELECT array_to_string(columns, ',') FROM quack_oauth_inspect_sql('SELECT SSN, Name FROM people');
+----
+ssn,name
+
+# ---------------------------------------------------------------------------
+# Fail-closed: unparseable SQL is marked unsafe, and the authorization
+# layer denies on that flag under both policy modes.
+# ---------------------------------------------------------------------------
+
+query I
+SELECT unsafe FROM quack_oauth_inspect_sql('SELECT FROM WHERE ((');
+----
+true
+
+query I
+SELECT unsafe FROM quack_oauth_inspect_sql('SELECT a FROM t');
+----
+false
+
+statement error
+SELECT * FROM quack_oauth_inspect_sql(NULL);
+----
+must not be NULL

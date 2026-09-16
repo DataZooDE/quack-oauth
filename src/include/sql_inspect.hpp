@@ -16,11 +16,23 @@ namespace quack_oauth {
 // surface as their own actions (carving the old "everything falls back
 // to Scan" model).
 //
-// `objects` is the set of fully-qualified schema-objects the statement
-// touches: tables, views, and table-function-references that resolve to
-// a base table. Each entry is `"schema.table"` in lowercase, deduped.
-// System tables (information_schema.*, pg_catalog.*, duckdb_*) are
-// filtered out -- the policy doesn't gate metadata reads.
+// `objects` is the set of schema-objects the statement touches: tables,
+// views, and table-function-references that resolve to a base table.
+// Entries are lowercased and deduped, and come in two shapes:
+//
+//   * `"schema.table"` for base tables and views. System tables
+//     (information_schema.*, pg_catalog.*, duckdb_*) are filtered out --
+//     the policy doesn't gate metadata reads.
+//   * `"fn:<name>"` for table-function references (`fn:read_csv`,
+//     `fn:postgres_query`). These reach secrets, remote endpoints and
+//     attached catalogs by path, which schema-scoped rules never gated,
+//     so default-deny must cover them. The reserved `fn:` prefix cannot
+//     collide with a `schema.table` name. The `duckdb_*` metadata family
+//     is exempt for parity with the catalog views above, except
+//     `duckdb_secrets` / `duckdb_settings`, which carry credentials.
+//
+// A table function whose name can't be resolved sets `unsafe` rather
+// than going unsurfaced.
 //
 // `columns` is the set of *unqualified* column names the SELECT projects
 // (lowercased, deduped). `SELECT *` produces the special sentinel

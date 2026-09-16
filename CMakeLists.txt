@@ -78,6 +78,7 @@ set(DUCKDB_WASM_SAFE_SOURCES
     src/audit_sink.cpp
     src/check_authorization_function.cpp
     src/diagnose.cpp
+    src/inspect_sql_function.cpp
     src/policy_table.cpp
     src/quack_oauth_extension.cpp
     src/quack_oauth_state.cpp
