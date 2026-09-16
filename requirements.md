@@ -164,6 +164,17 @@ Requirements use the convention **MUST / SHOULD / MAY** (RFC 2119).
   queries enumerate all statements; system metadata
   (`information_schema.*`, `pg_catalog.*`, `duckdb_*`) MUST be filtered
   from the object set so meta-queries don't need explicit rules.
+
+  Table-function references (`TableFunctionRef`) MUST surface as
+  `fn:<name>` in the object set, so that default-deny covers them and a
+  rule can still allow a named function. They are not base tables, so
+  schema-scoped patterns never gated them, yet on the serving
+  connection they reach secrets, remote endpoints and attached
+  catalogs by path. The `duckdb_*` metadata family is exempt for
+  parity with the catalog views above, EXCEPT `duckdb_secrets` and
+  `duckdb_settings`, which carry credential material and have no
+  catalog-view equivalent. A table function whose name cannot be
+  resolved MUST mark the request unsafe (fail closed).
 - **R-S-8** When `policy_table` is unset on the active SECRET, the
   default policy MUST be "any token with scope `quack:read` may
   attach + scan; any token with scope `quack:write` may also

@@ -363,11 +363,30 @@ collects:
   touches (`main.audit`, `main.trips_enriched`, …). System tables
   (`information_schema.*`, `pg_catalog.*`, `duckdb_*`) are filtered
   out. Subqueries, CTEs, and JOINs are walked recursively.
+- **`objects`, `fn:` entries** — table functions (`read_csv`,
+  `read_parquet`, `glob`, `postgres_query`, …) are **not** base
+  tables, so a schema-scoped rule never covered them. They surface
+  under the reserved **`fn:<name>`** namespace — `fn:read_csv`,
+  `fn:postgres_query` — so default-deny applies. The `duckdb_*`
+  metadata family is exempt, matching the catalog views above,
+  **except `duckdb_secrets` and `duckdb_settings`**, which carry
+  credential material. A table function whose name can't be
+  resolved denies the whole request. See "Level 8" below.
 - **`columns`** — the unqualified column names a SELECT projects.
   `SELECT *` produces the sentinel `*`.
 
 Policy rules can target these. See "SQL-table policy: schema"
 below.
+
+To see the walk for any statement — including why one was denied —
+use `quack_oauth_inspect_sql()`. It parses, it never executes, and
+it consults no policy:
+
+```sql
+SELECT action, objects, columns, unsafe
+FROM quack_oauth_inspect_sql('SELECT ssn FROM people, read_csv(''x.csv'')');
+-- Scan | [main.people, fn:read_csv] | [ssn] | false
+```
 
 ### Two layers of policy
 
@@ -566,6 +585,51 @@ INSERT INTO main.policies VALUES
 for that subject regardless of their scopes". A deny here trumps
 any later allow.
 
+#### Level 8 — gating table functions
+
+Table functions reach data that no schema glob describes: a path
+(`read_parquet('s3://…')`), a remote database (`postgres_query`), or
+the serving connection's own credentials (`duckdb_secrets`). They
+are gated under the `fn:` namespace, so a rule that names a schema
+does **not** cover them:
+
+```sql
+INSERT INTO main.policies VALUES
+    -- Reads across the analytics schema...
+    (10, NULL, ['analyst'], ['Scan'], 'main.*',          NULL, true),
+    -- ...plus exactly the two file readers we consider safe.
+    (11, NULL, ['analyst'], ['Scan'], 'fn:read_parquet', NULL, true),
+    (12, NULL, ['analyst'], ['Scan'], 'fn:read_csv',     NULL, true);
+```
+
+Without rules 11 and 12, `SELECT * FROM main.trips, read_csv('…')`
+denies: `main.*` matches `main.trips` but not `fn:read_csv`. That is
+the point — before the `fn:` namespace existed, the same query was
+allowed on the strength of `main.trips` alone, and the `read_csv`
+leg went ungated.
+
+**Grant narrowly.** `object_pattern = 'fn:*'` re-opens the hole
+wholesale. `fn:postgres_query` and `fn:duckdb_secrets` in particular
+should stay denied on a shared serving connection.
+
+Catalog introspection is unaffected: `duckdb_tables()`,
+`duckdb_columns()` and the rest of the `duckdb_*` family are not
+gated, exactly like the `information_schema.*` views they mirror.
+The two exceptions are `duckdb_secrets` and `duckdb_settings`, which
+can expose credentials and so always require a rule.
+
+If you are upgrading and a previously-working query starts denying,
+`quack_oauth_inspect_sql()` names the object the rule is missing:
+
+```sql
+SELECT objects FROM quack_oauth_inspect_sql('SELECT * FROM t, read_csv(''x.csv'')');
+-- [main.t, fn:read_csv]   -- 'fn:read_csv' is the one needing a rule
+```
+
+Only rules that set an `object_pattern` are affected. A rule with
+`object_pattern` NULL matches any object, `fn:` entries included, so
+Level 1-style blanket grants keep working unchanged.
+
 #### Migration from the 5-column schema
 
 Existing operators don't need to migrate — the loader introspects
@@ -625,6 +689,14 @@ WHERE subject = 'temp-contractor'
 - **Principal expiry**: `check_authorization` re-evaluates token
   validity against `principal.exp` on every call. An expired session
   drops from the cache and denies.
+- **Unparseable SQL**: if the statement doesn't parse, or contains a
+  table function whose name can't be resolved, the request is marked
+  unsafe and **denies** with `parse_error` — before any policy is
+  consulted, so `quack_oauth_policy_default = 'allow'` does not
+  override it. The audit row carries only `parse_error`; the parser
+  detail is deliberately not echoed to wire clients, since it would
+  repeat SQL fragments back. `quack_oauth_inspect_sql()` surfaces
+  that detail locally in its `error` column.
 
 ### Inspecting decisions
 
