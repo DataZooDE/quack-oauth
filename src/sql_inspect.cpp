@@ -25,6 +25,8 @@
 #include "duckdb/parser/query_node.hpp"
 #include "duckdb/parser/query_node/select_node.hpp"
 #include "duckdb/parser/query_node/set_operation_node.hpp"
+#include "duckdb/parser/query_node/cte_node.hpp"
+#include "duckdb/parser/query_node/recursive_cte_node.hpp"
 #include "duckdb/parser/expression/columnref_expression.hpp"
 #include "duckdb/parser/expression/star_expression.hpp"
 #include "duckdb/parser/parsed_expression_iterator.hpp"
@@ -256,10 +258,44 @@ void WalkQueryNode(const duckdb::QueryNode &qn, WalkCtx &ctx) {
 #endif
 		break;
 	}
+	case duckdb::QueryNodeType::CTE_NODE: {
+		// DuckDB 1.4.x parses a WITH clause into a CTENode wrapping the rest
+		// of the query, rather than attaching it to a SelectNode's cte_map
+		// the way 1.5.x does. Without this case the whole select half went
+		// unwalked on the LTS line -- every statement containing a WITH
+		// collected zero objects, which is not a fail-closed state: a
+		// zero-object request skips every rule that carries an
+		// object_pattern (see policy.cpp), so an object-scoped deny could be
+		// laundered through a CTE. Handle both shapes on both versions.
+		const auto &cn = qn.Cast<duckdb::CTENode>();
+		const auto cte_name = LowerAscii(cn.ctename);
+		if (!cte_name.empty() && !ctx.IsCte(cte_name)) {
+			ctx.cte_names.push_back(cte_name);
+		}
+		if (cn.query) {
+			WalkQueryNode(*cn.query, ctx);
+		}
+		if (cn.child) {
+			WalkQueryNode(*cn.child, ctx);
+		}
+		break;
+	}
+	case duckdb::QueryNodeType::RECURSIVE_CTE_NODE: {
+		const auto &rn = qn.Cast<duckdb::RecursiveCTENode>();
+		const auto cte_name = LowerAscii(rn.ctename);
+		if (!cte_name.empty() && !ctx.IsCte(cte_name)) {
+			ctx.cte_names.push_back(cte_name);
+		}
+		if (rn.left) {
+			WalkQueryNode(*rn.left, ctx);
+		}
+		if (rn.right) {
+			WalkQueryNode(*rn.right, ctx);
+		}
+		break;
+	}
 	default:
-		// CTE_NODE / RECURSIVE_CTE_NODE / BOUND_SUBQUERY_NODE: walk
-		// children if present. We don't unwrap exhaustively; the
-		// parent SelectStatement already covers the typical shapes.
+		// BOUND_SUBQUERY_NODE and friends: nothing parse-level to walk.
 		break;
 	}
 }

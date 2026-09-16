@@ -146,6 +146,37 @@ SELECT array_to_string(objects, ',') FROM quack_oauth_inspect_sql('WITH c AS (SE
 ----
 fn:read_csv
 
+# A WITH clause must never swallow the rest of the statement. DuckDB 1.4.x
+# wraps it in a CTENode instead of a SelectNode cte_map, and before that
+# node type was handled the whole select half went unwalked on the LTS
+# line -- yielding zero objects, which is NOT fail-closed: a zero-object
+# request skips every rule carrying an object_pattern (policy.cpp), so an
+# object-scoped deny could be laundered through a CTE. Tables unrelated to
+# the CTE must still appear.
+# Sorted: the walk order of a CTE body vs. the outer FROM differs between
+# the 1.4 and 1.5 parse shapes. The object SET is what the policy evaluates.
+query I
+SELECT array_to_string(list_sort(objects), ',') FROM quack_oauth_inspect_sql('WITH c AS (SELECT * FROM a) SELECT * FROM b');
+----
+main.a,main.b
+
+query I
+SELECT len(objects) > 0 FROM quack_oauth_inspect_sql('WITH c AS (SELECT * FROM secret) SELECT * FROM c');
+----
+true
+
+# The insert target and the CTE body are both walked.
+query I
+SELECT array_to_string(list_sort(objects), ',') FROM quack_oauth_inspect_sql('INSERT INTO dst WITH c AS (SELECT * FROM a) SELECT * FROM c');
+----
+main.a,main.dst
+
+# WITH RECURSIVE: the seed is walked, the self-reference is a CTE name.
+query I
+SELECT array_to_string(objects, ',') FROM quack_oauth_inspect_sql('WITH RECURSIVE r AS (SELECT * FROM seed UNION ALL SELECT * FROM r) SELECT * FROM r');
+----
+main.seed
+
 # ---------------------------------------------------------------------------
 # Actions and columns
 # ---------------------------------------------------------------------------
