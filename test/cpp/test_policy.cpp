@@ -193,6 +193,54 @@ TEST_CASE("EvaluatePolicy: object_pattern restricts to specific tables", "[polic
 	CHECK(EvaluatePolicy(d, p, ReqObj(Action::Scan, "main.audit")).decision == Decision::Deny);
 }
 
+TEST_CASE("EvaluatePolicy: a rule can allow one table function", "[policy][object]") {
+	PolicyDocument d;
+	{
+		PolicyRule r;
+		r.any_scope = {"analyst"};
+		r.actions = {Action::Scan};
+		r.object_pattern = "fn:read_parquet";
+		r.allow = true;
+		d.rules.push_back(r);
+	}
+	const auto p = MakePrincipal("alice", {"analyst"});
+	CHECK(EvaluatePolicy(d, p, ReqObj(Action::Scan, "fn:read_parquet")).decision == Decision::Allow);
+	// Every other table function still falls through to default-deny:
+	CHECK(EvaluatePolicy(d, p, ReqObj(Action::Scan, "fn:postgres_query")).decision == Decision::Deny);
+	CHECK(EvaluatePolicy(d, p, ReqObj(Action::Scan, "fn:duckdb_secrets")).decision == Decision::Deny);
+}
+
+TEST_CASE("EvaluatePolicy: a schema glob does not cover fn: objects", "[policy][object]") {
+	// The upgrade trap -- `main.*` reads as "everything" to an operator,
+	// but fn: names live outside any schema, so they deny.
+	PolicyDocument d;
+	{
+		PolicyRule r;
+		r.any_scope = {"analyst"};
+		r.actions = {Action::Scan};
+		r.object_pattern = "main.*";
+		r.allow = true;
+		d.rules.push_back(r);
+	}
+	const auto p = MakePrincipal("alice", {"analyst"});
+	CHECK(EvaluatePolicy(d, p, ReqObj(Action::Scan, "main.trips")).decision == Decision::Allow);
+	CHECK(EvaluatePolicy(d, p, ReqObj(Action::Scan, "fn:read_csv")).decision == Decision::Deny);
+}
+
+TEST_CASE("EvaluatePolicy: an unset object_pattern still matches fn: objects", "[policy][object]") {
+	// Blanket-allow policies (Level 1) are unaffected by fn: gating.
+	PolicyDocument d;
+	{
+		PolicyRule r;
+		r.any_scope = {"analyst"};
+		r.actions = {Action::Scan};
+		r.allow = true;
+		d.rules.push_back(r);
+	}
+	const auto p = MakePrincipal("alice", {"analyst"});
+	CHECK(EvaluatePolicy(d, p, ReqObj(Action::Scan, "fn:read_csv")).decision == Decision::Allow);
+}
+
 TEST_CASE("EvaluatePolicy: object-targeted deny short-circuits the request", "[policy][object]") {
 	// Deny-by-pattern rule with higher priority than a generic allow.
 	PolicyDocument d;

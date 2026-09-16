@@ -4,6 +4,7 @@
 #include "quack_oauth_banner.hpp"
 #include "check_authorization_function.hpp"
 #include "diagnose.hpp"
+#include "inspect_sql_function.hpp"
 #include "secrets.hpp"
 #include "settings.hpp"
 
@@ -54,6 +55,7 @@ static void LoadInternal(ExtensionLoader &loader) {
 	RegisterQuackOauthSettings(config);
 	RegisterQuackOauthSecrets(loader);
 	RegisterQuackOauthDiagnose(loader);
+	RegisterQuackOauthInspectSql(loader);
 	RegisterQuackOauthCheckAuthorization(loader);
 #ifndef __EMSCRIPTEN__
 	RegisterQuackOauthCheckToken(loader);
