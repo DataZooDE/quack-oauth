@@ -484,7 +484,26 @@ for C++ API changes.
 
 - **`make` without `GEN=ninja`** uses the default generator (Make on
   Linux/macOS, MSBuild on Windows) and is much slower. Always export
-  `GEN=ninja` locally.
+  `GEN=ninja` locally — **except for the wasm targets.**
+- **`GEN=ninja` breaks `make wasm_mvp` / `wasm_eh` / `wasm_threads`.**
+  `extension-ci-tools/makefiles/duckdb_extension.Makefile:225` configures
+  with `emcmake cmake` but *builds* with `emmake make -C build/<arch>`, so a
+  Ninja-generated tree dies with `make[1]: *** No targets specified and no
+  makefile found.` right after a successful 60-second configure. Worse, it's
+  sticky: the stale `CMAKE_GENERATOR:INTERNAL=Ninja` in
+  `build/<arch>/CMakeCache.txt` survives a re-run, so dropping `GEN` alone
+  doesn't fix it — you must `rm -rf build/<arch>` first. Preserve
+  `build/<arch>/vcpkg_installed/` across that wipe or you'll rebuild wasm
+  OpenSSL from source (~20 min). Invoke wasm builds with an explicit
+  `VCPKG_TARGET_TRIPLET=wasm32-emscripten VCPKG_HOST_TRIPLET=x64-linux`
+  and no `GEN`.
+- **`vcpkg.json` points `overlay-triplets` at a directory that no longer
+  exists.** `./extension-ci-tools/toolchains` was deleted upstream (commit
+  `cd7a046`, "Link MSVC runtime library statically"); the pinned submodule
+  tree has no `toolchains/`. vcpkg tolerates the missing overlay silently,
+  so native builds are unaffected and `wasm32-emscripten` resolves to
+  vcpkg's own community triplet. Harmless today, but it means the overlay is
+  dead config — don't trust it to pin anything.
 - **Editing `vcpkg.json` without `make clean`** can leave stale
   dependency state in `vcpkg_installed/`. Clean and rebuild.
 - **`unittest` vs `duckdb` CLI**: the unittest runner is the reliable
@@ -492,15 +511,21 @@ for C++ API changes.
   but sqllogictest verbs aren't available there).
 - **Wasm path**: wasm is currently **excluded from CI** (issue #3 —
   `wasm_mvp;wasm_eh;wasm_threads` in every `exclude_archs` of
-  `MainDistributionPipeline.yml`). The reason is a load-time failure CI
-  can't see: the wasm loadable side-module (`emcc -sSIDE_MODULE=2`) links
-  only the libraries named in `duckdb_extension_load(... LINKED_LIBS ...)`,
-  and we declare none, so jwt-cpp's OpenSSL crypto symbols are left
-  unresolved — the `.wasm` *builds* green (symbol resolution is deferred
-  to load time) but won't instantiate in the browser. OAuth's
-  interactive/redirect flows aren't viable in wasm anyway. The
-  source-side split below is **kept** so a future `LINKED_LIBS`-based
-  wasm build can be re-enabled cheaply, but no wasm artifact ships today.
+  `MainDistributionPipeline.yml`). **The reason originally recorded here
+  — unresolved jwt-cpp OpenSSL symbols in the `-sSIDE_MODULE=2` link —
+  was measured and does NOT hold; see `docs/WASM_SPIKE.md` (2026-09-16).**
+  All three targets build valid, correctly-stamped modules exporting
+  `quack_oauth_duckdb_cpp_init`, with **zero** OpenSSL imports, with or
+  without `LINKED_LIBS`: the linker drops the OpenSSL-dependent code as
+  unreachable, because every registration that drives JWT verification is
+  behind `#ifndef __EMSCRIPTEN__`. Don't spend time wiring `LINKED_LIBS`
+  — it fixes nothing. What remains unproven is whether the module
+  actually `LOAD`s (the node harnesses were inconclusive), and the real
+  open question is semantic: a wasm build would expose the authorization
+  surface but **cannot verify a JWT**, so it would authorize without
+  authenticating. OAuth's interactive/redirect flows aren't viable in
+  wasm anyway. The source-side split below is **kept**, but no wasm
+  artifact ships today.
   The `CMakeLists.txt` source list is split into `DUCKDB_WASM_SAFE_SOURCES`
   and `DUCKDB_NATIVE_ONLY_SOURCES`; the native-only set is conditionally
   excluded under `if(EMSCRIPTEN)`, and the matching `Register*` calls in
@@ -511,11 +536,12 @@ for C++ API changes.
   block.** Don't add `#include <openssl/…>` in any of the
   `DUCKDB_WASM_SAFE_SOURCES` files. PURE_SOURCES are always
   wasm-safe (they're already free of DuckDB / httplib deps). **To
-  re-enable wasm:** make the side-module self-contained by passing the
-  vcpkg wasm OpenSSL archives via `LINKED_LIBS` on the
-  `duckdb_extension_load(quack_oauth ...)` call in `extension_config.cmake`,
-  then drop the wasm archs from `exclude_archs`. Verify with a real
-  duckdb-wasm browser/node load (CI's build-green is not proof).
+  re-enable wasm:** first prove a real browser `LOAD` against duckdb-wasm
+  v1.5.5 (`@duckdb/duckdb-wasm@1.33.1-dev64.0`; older tags ship v1.5.4
+  and mismatch), then settle the authorize-without-authenticate question
+  in ADR-5, then drop the wasm archs from `exclude_archs` and invert
+  `scripts/test_ci_wasm_excluded.sh`, which today asserts the opposite.
+  CI's build-green is not proof — that is the whole trap.
 
 ## Pointers
 
