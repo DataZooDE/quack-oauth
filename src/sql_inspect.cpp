@@ -89,6 +89,27 @@ void AddObject(AuthzRequest &req, const std::string &catalog, const std::string 
 	}
 }
 
+// The `duckdb_*` metadata table functions mirror `information_schema.*` /
+// `pg_catalog.*`, which `IsSystemObject` already exempts. Gating only the
+// function spelling would buy nothing -- `duckdb_tables()` and
+// `information_schema.tables` expose the same rows -- while breaking the
+// introspection every BI client issues. So exempt the family, minus the
+// members that carry credential material and have no catalog-view twin:
+// `duckdb_secrets` is the cross-join defeat F1 closed, and DuckDB settings
+// have historically included keys such as `s3_secret_access_key`.
+bool IsExemptFunction(const std::string &name) {
+	static const std::string kNeverExempt[] = {"duckdb_secrets", "duckdb_settings"};
+	if (name.rfind("duckdb_", 0) != 0) {
+		return false;
+	}
+	for (const auto &n : kNeverExempt) {
+		if (name == n) {
+			return false;
+		}
+	}
+	return true;
+}
+
 // Surface a TABLE FUNCTION (read_csv, postgres_query, glob, read_parquet, …)
 // as a policy-gated object under the reserved `fn:` namespace, so default-deny
 // covers it and a rule can still allow a specific safe function. Table
@@ -96,9 +117,14 @@ void AddObject(AuthzRequest &req, const std::string &catalog, const std::string 
 // left unsurfaced, `SELECT … FROM entitled, read_csv('http://…')` reaches the
 // serving connection's secrets/attached catalogs unchecked (the F1 boundary
 // failure). `fn:` cannot collide with a real `schema.table` object (no `:`
-// there) and is exempt from the system-object filter.
+// there), so it is exempt from the system-object filter -- the metadata
+// carve-out is `IsExemptFunction` above instead.
 void AddFunctionObject(AuthzRequest &req, const std::string &name) {
-	const auto fn = "fn:" + LowerAscii(name.empty() ? "?" : name);
+	const auto lowered = LowerAscii(name.empty() ? "?" : name);
+	if (IsExemptFunction(lowered)) {
+		return;
+	}
+	const auto fn = "fn:" + lowered;
 	if (std::find(req.objects.begin(), req.objects.end(), fn) == req.objects.end()) {
 		req.objects.push_back(fn);
 	}
