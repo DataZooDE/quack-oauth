@@ -21,6 +21,7 @@
 #include "telemetry.hpp"
 #include "token_endpoint.hpp"
 #include "quack_oauth_banner.hpp"
+#include "duckdb_compat.hpp"
 
 namespace duckdb {
 
@@ -79,7 +80,8 @@ void RegisterQuackOauthRefresh(ExtensionLoader &loader) {
 	ScalarFunction fn("quack_oauth_refresh", {LogicalType::VARCHAR}, LogicalType::VARCHAR,
 	                  DATAZOO_GUARD(QUACK_OAUTH_BANNER, RefreshScalarFun));
 	// Side-effecting (rotates tokens on the SECRET) and HTTP-bound.
-	fn.stability = FunctionStability::VOLATILE;
+	duckdb_compat::SetStability(fn, FunctionStability::VOLATILE);
+	duckdb_compat::SetFallible(fn);
 	CreateScalarFunctionInfo info(std::move(fn));
 	FunctionDescription desc;
 	desc.description =
@@ -93,6 +95,7 @@ void RegisterQuackOauthRefresh(ExtensionLoader &loader) {
 	desc.examples = {"SELECT quack_oauth_refresh('my_client_secret')"};
 	desc.categories = {"quack_oauth"};
 	info.descriptions.push_back(std::move(desc));
+	duckdb_compat::NameFunctionsFromDescriptions(info);
 	loader.RegisterFunction(std::move(info));
 }
 

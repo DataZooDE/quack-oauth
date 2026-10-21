@@ -18,12 +18,18 @@ CREATE TABLE quack_oauth_policies (
     subject   VARCHAR,
     any_scope VARCHAR[],
     actions   VARCHAR[],
+    object_pattern VARCHAR,
     allow     BOOLEAN NOT NULL
 );
 
 statement ok
 INSERT INTO quack_oauth_policies VALUES
-    (10, NULL, ['email'], ['Scan'], true);
+    ( 2, NULL, ['email'], ['Scan','Update','Delete','Insert','CopyTo','Ddl'], 'main.src', false),
+    ( 5, NULL, ['email'], ['Scan','Update','Delete','Insert','CopyTo'], 'main.dst', true),
+    ( 5, NULL, ['email'], ['Ddl'], 'main.pub', true),
+    ( 5, NULL, ['email'], ['Ddl'], 'schema:pub', true),
+    ( 5, NULL, ['email'], ['Ddl'], 'catalog:pubcat', true),
+    (10, NULL, ['email'], ['Scan','Pragma'], NULL, true);
 
 statement ok
 CREATE SECRET rs (
@@ -48,6 +54,140 @@ query I
 SELECT quack_oauth_check_authorization('sess-p', 'SELECT 1');
 ----
 true
+
+# A Pragma grant admits the narrowly approved threads control, but cannot
+# change the authorization fallback or read settings/variables/logs.
+query I
+SELECT quack_oauth_check_authorization('sess-p', 'SET threads=4');
+----
+true
+
+query I
+SELECT quack_oauth_check_authorization('sess-p', 'SET quack_oauth_policy_default=''allow''');
+----
+false
+
+query I
+SELECT quack_oauth_check_authorization('sess-p', 'PRAGMA quack_oauth_policy_default=''allow''');
+----
+false
+
+query I
+SELECT quack_oauth_check_authorization('sess-p', 'SELECT * FROM pg_catalog.pg_settings');
+----
+false
+
+query I
+SELECT quack_oauth_check_authorization('sess-p', 'SHOW VARIABLES');
+----
+false
+
+query I
+SELECT quack_oauth_check_authorization('sess-p', 'SELECT * FROM duckdb_logs');
+----
+false
+
+query I
+SELECT quack_oauth_check_authorization('sess-p', 'CREATE SCHEMA pub');
+----
+true
+
+query I
+SELECT quack_oauth_check_authorization('sess-p', 'CREATE SCHEMA hidden');
+----
+false
+
+query I
+SELECT quack_oauth_check_authorization('sess-p', 'DETACH pubcat');
+----
+true
+
+query I
+SELECT quack_oauth_check_authorization('sess-p', 'DETACH other');
+----
+false
+
+# Object-scoped deny survives every SQL inspection path. The dst-only
+# control proves these are object decisions, rather than action denials.
+query I
+SELECT quack_oauth_check_authorization('sess-p', 'UPDATE dst SET a=1');
+----
+true
+
+query I
+SELECT quack_oauth_check_authorization('sess-p', 'SUMMARIZE src');
+----
+false
+
+query I
+SELECT quack_oauth_check_authorization('sess-p', 'IMPORT DATABASE ''/x''');
+----
+false
+
+query I
+SELECT quack_oauth_check_authorization('sess-p', 'SET search_path=''other''');
+----
+false
+
+query I
+SELECT quack_oauth_check_authorization('sess-p', 'DROP TABLE src');
+----
+false
+
+query I
+SELECT quack_oauth_check_authorization('sess-p', 'DROP TABLE pub');
+----
+true
+
+query I
+SELECT quack_oauth_check_authorization('sess-p', 'WITH a AS (SELECT * FROM src), src AS (SELECT 1) SELECT * FROM a');
+----
+false
+
+query I
+SELECT quack_oauth_check_authorization('sess-p', 'SELECT 1 ORDER BY (SELECT count(*) FROM src)');
+----
+false
+
+query I
+SELECT quack_oauth_check_authorization('sess-p', 'CREATE TABLE pub AS SELECT * FROM src');
+----
+false
+
+query I
+SELECT quack_oauth_check_authorization('sess-p', 'MERGE INTO dst USING src ON dst.id=src.id WHEN MATCHED THEN DELETE');
+----
+false
+
+query I
+SELECT quack_oauth_check_authorization('sess-p', 'UPDATE dst SET a=src.a FROM src WHERE dst.id=src.id');
+----
+false
+
+query I
+SELECT quack_oauth_check_authorization('sess-p', 'DELETE FROM dst USING src WHERE dst.id=src.id');
+----
+false
+
+query I
+SELECT quack_oauth_check_authorization('sess-p', 'COPY (SELECT * FROM src) TO ''out.csv''');
+----
+false
+
+query I
+SELECT quack_oauth_check_authorization('sess-p', 'UPDATE dst SET a=(SELECT max(a) FROM src)');
+----
+false
+
+query I
+SELECT quack_oauth_check_authorization('sess-p', 'DELETE FROM dst WHERE id IN (SELECT id FROM src)');
+----
+false
+
+query I
+SELECT quack_oauth_check_authorization('sess-p', 'WITH x AS (DELETE FROM src RETURNING *) SELECT * FROM x');
+----
+false
 
 # Same policy denies non-Scan actions for this principal -- proves the
 # action gating works through the SQL-table path. Default is 'deny'

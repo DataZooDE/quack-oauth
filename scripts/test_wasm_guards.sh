@@ -50,13 +50,20 @@ WASM_SAFE_SOURCES=(
 )
 
 if command -v g++ >/dev/null 2>&1; then
+  # This syntax check bypasses CMake, so mirror its pinned-tree AST shape
+  # definition for the 2.0 DML nodes and legacy percent-limit modifier.
+  compat_ast_flags=()
+  if [ -f "$REPO_ROOT/duckdb/src/include/duckdb/parser/query_node/update_query_node.hpp" ]; then
+    compat_ast_flags+=(-DDUCKDB_COMPAT_DML_QUERY_NODES=1)
+  fi
   echo "Verifying all ${#WASM_SAFE_SOURCES[@]} DUCKDB_WASM_SAFE_SOURCES syntax under -D__EMSCRIPTEN__..."
   for f in "${WASM_SAFE_SOURCES[@]}"; do
     if [ ! -f "$REPO_ROOT/$f" ]; then
       echo "FAIL: Expected source file $f not found" >&2
       exit 1
     fi
-    g++ -fsyntax-only -std=c++17 -D__EMSCRIPTEN__ -w \
+    g++ -fsyntax-only -std=c++17 -D__EMSCRIPTEN__ -w "${compat_ast_flags[@]}" \
+      -I"$REPO_ROOT/duckdb-compat/include" \
       -I"$REPO_ROOT/src/include" \
       -I"$REPO_ROOT/duckdb/src/include" \
       -I"$REPO_ROOT/duckdb/third_party/fmt/include" \

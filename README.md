@@ -346,14 +346,14 @@ the policy:
 | Action | Triggered by |
 |---|---|
 | `Attach` | `ATTACH 'quack:…' AS …` |
-| `Scan` *(default for reads)* | `SELECT`, `WITH`, `EXPLAIN`, `SHOW`, `RELATION` |
+| `Scan` *(default for reads)* | `SELECT`, `WITH`, `EXPLAIN` (the inner statement is still checked; `EXPLAIN ANALYZE` is unsafe), `SHOW`, `RELATION` |
 | `Insert` | `INSERT INTO …` |
 | `Update` | `UPDATE … SET …` |
 | `Delete` | `DELETE FROM …` |
-| `Ddl` | `CREATE`, `DROP`, `ALTER`, `TRANSACTION`, `CREATE FUNCTION` |
+| `Ddl` | `CREATE`, `DROP`, `ALTER`, `TRANSACTION`, `DETACH` (`CREATE FUNCTION`/`MACRO`, `LOAD` and `INSTALL` are always unsafe) |
 | `CopyTo` | `COPY <t> TO '…'` |
 | `CopyFrom` | `COPY <t> FROM '…'` |
-| `Pragma` | `PRAGMA <not-quack>`, `SET`, `LOAD` |
+| `Pragma` | Only `PRAGMA version` and `SET threads=4` (a documented compatibility exception: `threads` is global); every other `PRAGMA`/`SET`, every `RESET` and any `quack_oauth_*` setting is unsafe |
 | `ServeAdmin` | `PRAGMA quack_serve` / `quack_stop` / `quack_restart` |
 
 In addition to the action, the parser walks the statement and
@@ -361,16 +361,23 @@ collects:
 
 - **`objects`** — the schema-qualified tables / views the statement
   touches (`main.audit`, `main.trips_enriched`, …). System tables
-  (`information_schema.*`, `pg_catalog.*`, `duckdb_*`) are filtered
-  out. Subqueries, CTEs, and JOINs are walked recursively.
+  are reported. Only the exact `information_schema.tables` catalog
+  view is exempt; other system views are unsafe, including settings,
+  variables, prepared statements, and logs. Subqueries, CTEs, and JOINs
+  are walked recursively.
+- **`objects`, `schema:` / `catalog:` entries** — `CREATE SCHEMA` reports
+  `schema:<name>` and `DETACH` reports `catalog:<name>`, so Ddl rules can be
+  scoped to them. User tables named like DuckDB system views (`tables`,
+  `columns`, `views`, `duckdb_*`, `sqlite_*`, …) are reserved and treated as
+  unsafe.
 - **`objects`, `fn:` entries** — table functions (`read_csv`,
   `read_parquet`, `glob`, `postgres_query`, …) are **not** base
   tables, so a schema-scoped rule never covered them. They surface
   under the reserved **`fn:<name>`** namespace — `fn:read_csv`,
   `fn:postgres_query` — so default-deny applies. The `duckdb_*`
-  metadata family is exempt, matching the catalog views above,
-  **except `duckdb_secrets` and `duckdb_settings`**, which carry
-  credential material. A table function whose name can't be
+  catalog mirrors `duckdb_tables()` and `duckdb_columns()` are exempt;
+  every other table-function name is a policy object, including database
+  paths, variables, settings, prepared statements, and logs. A table function whose name can't be
   resolved denies the whole request. See "Level 8" below.
 - **`objects`, CTE aliases** — a CTE name is not an object. Its body
   is walked, but the alias is dropped, so `WITH c AS (SELECT * FROM
@@ -382,6 +389,28 @@ collects:
 
 Policy rules can target these. See "SQL-table policy: schema"
 below.
+
+The inspector uses a parse-only trust boundary. Operators must create and
+review any scalar macros or extension scalar functions already present in the
+serving catalog: those functions are trusted and scalar calls are not surfaced
+as policy objects. Attached catalog names must not collide with schema names
+granted by policy, because a two-part `name.table` reference may resolve as
+either `schema.table` or `catalog.main.table`. Identifier folding in inspection
+and policy matching is ASCII-only; policies using non-ASCII identifiers need
+separate controls until that matching is extended.
+The catalog metadata allowed by `information_schema.tables`,
+`duckdb_tables()` and `duckdb_columns()` includes table names, comments,
+CREATE TABLE SQL and column defaults across tenants. Deployments that cannot
+share this DDL metadata should deny the corresponding catalog access before
+serving tenants. The only approved SET control is `SET threads=4`; DuckDB can
+apply it at global scope when no scope is written, so the serving connection
+must reserve this Pragma grant for principals trusted to set that fixed value.
+Names that DuckDB would bind as a replacement-scan file read (`main.csv`,
+`"s3://bucket/key".parquet`, any part containing `/`, `\` or `:`) are denied by
+the inspector, but its file-suffix list is best effort: loaded extensions can
+register further replacement scans. As a backstop, disable replacement scans on
+the serving connection (`ClientConfig::use_replacement_scans = false`) when
+tenants should never read files through table names.
 
 To see the walk for any statement — including why one was denied —
 use `quack_oauth_inspect_sql()`. It parses, it never executes, and
@@ -617,11 +646,11 @@ leg went ungated.
 wholesale. `fn:postgres_query` and `fn:duckdb_secrets` in particular
 should stay denied on a shared serving connection.
 
-Catalog introspection is unaffected: `duckdb_tables()`,
-`duckdb_columns()` and the rest of the `duckdb_*` family are not
-gated, exactly like the `information_schema.*` views they mirror.
-The two exceptions are `duckdb_secrets` and `duckdb_settings`, which
-can expose credentials and so always require a rule.
+Catalog introspection is narrowed to `duckdb_tables()`,
+`duckdb_columns()` and `information_schema.tables`. Other `duckdb_*`
+functions require an explicit `fn:` rule; system views over settings,
+variables, prepared SQL, logs or database paths are unsafe even with a
+`main.*` grant.
 
 If you are upgrading and a previously-working query starts denying,
 `quack_oauth_inspect_sql()` names the object the rule is missing:

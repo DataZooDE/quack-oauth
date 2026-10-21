@@ -25,6 +25,7 @@
 #ifndef __EMSCRIPTEN__
 #include "telemetry.hpp"
 #endif
+#include "duckdb_compat.hpp"
 
 namespace duckdb {
 
@@ -52,7 +53,7 @@ static void Append(std::ostringstream &os, const char *k, const string &v) {
 
 static string ReadSetting(ClientContext &context, const string &key) {
 	Value v;
-	if (!context.TryGetCurrentSetting(key, v) || v.IsNull())
+	if (!duckdb_compat::TryGetContextSetting(context, key, v) || v.IsNull())
 		return "";
 	return v.ToString();
 }
@@ -68,7 +69,7 @@ static ProbeCache g_probe_cache;
 #endif
 
 static unique_ptr<FunctionData> DiagnoseBind(ClientContext &context, TableFunctionBindInput &,
-                                             vector<LogicalType> &return_types, vector<string> &names) {
+                                             vector<LogicalType> &return_types, duckdb_compat::BindNames &names) {
 #ifndef __EMSCRIPTEN__
 	PostHogTelemetry::Instance().RecordFunctionCall("quack_oauth_diagnose");
 #endif
@@ -263,13 +264,13 @@ static void DiagnoseScan(ClientContext &, TableFunctionInput &input, DataChunk &
 	idx_t out_row = 0;
 	while (state.cursor < bind_data.rows.size() && out_row < STANDARD_VECTOR_SIZE) {
 		const auto &row = bind_data.rows[state.cursor];
-		output.SetValue(0, out_row, Value(row.component));
-		output.SetValue(1, out_row, Value(row.status));
-		output.SetValue(2, out_row, Value(row.detail));
+		output.data[0].SetValue(out_row, Value(row.component));
+		output.data[1].SetValue(out_row, Value(row.status));
+		output.data[2].SetValue(out_row, Value(row.detail));
 		state.cursor++;
 		out_row++;
 	}
-	output.SetCardinality(out_row);
+	duckdb_compat::SetChildCardinality(output, out_row);
 }
 
 // ---------------------------------------------------------------------------
@@ -285,7 +286,7 @@ struct AuditLogGlobalState : public GlobalTableFunctionState {
 };
 
 static unique_ptr<FunctionData> AuditLogBind(ClientContext &, TableFunctionBindInput &,
-                                             vector<LogicalType> &return_types, vector<string> &names) {
+                                             vector<LogicalType> &return_types, duckdb_compat::BindNames &names) {
 #ifndef __EMSCRIPTEN__
 	PostHogTelemetry::Instance().RecordFunctionCall("quack_oauth_audit_log");
 #endif
@@ -310,14 +311,14 @@ static void AuditLogScan(ClientContext &, TableFunctionInput &input, DataChunk &
 	idx_t out_row = 0;
 	auto str_or_null = [&](idx_t col, const string &v) {
 		if (v.empty())
-			output.SetValue(col, out_row, Value(LogicalType::VARCHAR));
+			output.data[col].SetValue(out_row, Value(LogicalType::VARCHAR));
 		else
-			output.SetValue(col, out_row, Value(v));
+			output.data[col].SetValue(out_row, Value(v));
 	};
 	while (state.cursor < bind_data.events.size() && out_row < STANDARD_VECTOR_SIZE) {
 		const auto &e = bind_data.events[state.cursor];
-		output.SetValue(0, out_row, Value::BIGINT(e.timestamp_unix_s));
-		output.SetValue(1, out_row, Value(quack_oauth::AuditEventTypeName(e.event_type)));
+		output.data[0].SetValue(out_row, Value::BIGINT(e.timestamp_unix_s));
+		output.data[1].SetValue(out_row, Value(quack_oauth::AuditEventTypeName(e.event_type)));
 		str_or_null(2, e.subject);
 		str_or_null(3, e.issuer);
 		str_or_null(4, e.kid);
@@ -327,7 +328,7 @@ static void AuditLogScan(ClientContext &, TableFunctionInput &input, DataChunk &
 		state.cursor++;
 		out_row++;
 	}
-	output.SetCardinality(out_row);
+	duckdb_compat::SetChildCardinality(output, out_row);
 }
 
 // ---------------------------------------------------------------------------
@@ -356,7 +357,7 @@ struct CurrentPrincipalGlobalState : public GlobalTableFunctionState {
 };
 
 static unique_ptr<FunctionData> CurrentPrincipalBind(ClientContext &, TableFunctionBindInput &,
-                                                     vector<LogicalType> &return_types, vector<string> &names) {
+                                                     vector<LogicalType> &return_types, duckdb_compat::BindNames &names) {
 #ifndef __EMSCRIPTEN__
 	PostHogTelemetry::Instance().RecordFunctionCall("quack_oauth_current_principal");
 #endif
@@ -391,19 +392,19 @@ static void CurrentPrincipalScan(ClientContext &, TableFunctionInput &input, Dat
 	idx_t out_row = 0;
 	while (state.cursor < bind_data.rows.size() && out_row < STANDARD_VECTOR_SIZE) {
 		const auto &row = bind_data.rows[state.cursor];
-		output.SetValue(0, out_row, Value(row.session_id));
-		output.SetValue(1, out_row, row.subject.empty() ? Value(LogicalType::VARCHAR) : Value(row.subject));
-		output.SetValue(2, out_row, row.issuer.empty() ? Value(LogicalType::VARCHAR) : Value(row.issuer));
+		output.data[0].SetValue(out_row, Value(row.session_id));
+		output.data[1].SetValue(out_row, row.subject.empty() ? Value(LogicalType::VARCHAR) : Value(row.subject));
+		output.data[2].SetValue(out_row, row.issuer.empty() ? Value(LogicalType::VARCHAR) : Value(row.issuer));
 		vector<Value> scope_vs;
 		scope_vs.reserve(row.scopes.size());
 		for (const auto &s : row.scopes)
 			scope_vs.emplace_back(s);
-		output.SetValue(3, out_row, Value::LIST(LogicalType::VARCHAR, scope_vs));
-		output.SetValue(4, out_row, Value::BIGINT(row.exp));
+		output.data[3].SetValue(out_row, Value::LIST(LogicalType::VARCHAR, scope_vs));
+		output.data[4].SetValue(out_row, Value::BIGINT(row.exp));
 		state.cursor++;
 		out_row++;
 	}
-	output.SetCardinality(out_row);
+	duckdb_compat::SetChildCardinality(output, out_row);
 }
 
 void RegisterQuackOauthDiagnose(ExtensionLoader &loader) {
@@ -422,6 +423,7 @@ void RegisterQuackOauthDiagnose(ExtensionLoader &loader) {
 		desc.examples = {"SELECT * FROM quack_oauth_diagnose()"};
 		desc.categories = {"quack_oauth"};
 		info.descriptions.push_back(std::move(desc));
+		duckdb_compat::NameFunctionsFromDescriptions(info);
 		loader.RegisterFunction(std::move(info));
 	}
 
@@ -442,6 +444,7 @@ void RegisterQuackOauthDiagnose(ExtensionLoader &loader) {
 		desc.examples = {"SELECT * FROM quack_oauth_current_principal()"};
 		desc.categories = {"quack_oauth"};
 		info.descriptions.push_back(std::move(desc));
+		duckdb_compat::NameFunctionsFromDescriptions(info);
 		loader.RegisterFunction(std::move(info));
 	}
 
@@ -460,6 +463,7 @@ void RegisterQuackOauthDiagnose(ExtensionLoader &loader) {
 		desc.examples = {"SELECT * FROM quack_oauth_audit_log() ORDER BY timestamp_unix_s DESC LIMIT 20"};
 		desc.categories = {"quack_oauth"};
 		info.descriptions.push_back(std::move(desc));
+		duckdb_compat::NameFunctionsFromDescriptions(info);
 		loader.RegisterFunction(std::move(info));
 	}
 }

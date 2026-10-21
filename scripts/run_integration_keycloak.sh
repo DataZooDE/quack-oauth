@@ -217,6 +217,7 @@ bash "$PROJ_DIR/scripts/run_device_code_test.sh" \
     "$BASE_URL" \
     "$REALM" \
     "$PROJ_DIR/build/release/duckdb" \
-    "$PROJ_DIR/scripts/keycloak_device_consent.py"
+    "$PROJ_DIR/scripts/keycloak_device_consent.py" \
+    "$PROJ_DIR/build/release/extension/quack_oauth/quack_oauth.duckdb_extension"
 
 echo "=== PASS ==="

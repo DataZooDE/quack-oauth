@@ -22,6 +22,7 @@
 #include "secret_accessor.hpp"
 #include "telemetry.hpp"
 #include "quack_oauth_banner.hpp"
+#include "duckdb_compat.hpp"
 
 namespace duckdb {
 
@@ -144,7 +145,8 @@ void RegisterQuackOauthAcquire(ExtensionLoader &loader) {
 	                  DATAZOO_GUARD(QUACK_OAUTH_BANNER, AcquireScalarFun));
 	// Side-effecting + HTTP-bound + idempotent only in the UseCached
 	// branch. Never fold or memoise.
-	fn.stability = FunctionStability::VOLATILE;
+	duckdb_compat::SetStability(fn, FunctionStability::VOLATILE);
+	duckdb_compat::SetFallible(fn);
 	CreateScalarFunctionInfo info(std::move(fn));
 	FunctionDescription desc;
 	desc.description = "One-stop client-side OAuth orchestrator (R-C-2 + R-C-4). Reads the "
@@ -163,6 +165,7 @@ void RegisterQuackOauthAcquire(ExtensionLoader &loader) {
 	                                                            "(TYPE quack, token quack_oauth_acquire('cli'))"};
 	desc.categories = {"quack_oauth"};
 	info.descriptions.push_back(std::move(desc));
+	duckdb_compat::NameFunctionsFromDescriptions(info);
 	loader.RegisterFunction(std::move(info));
 }
 

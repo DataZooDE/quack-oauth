@@ -31,6 +31,7 @@
 #ifndef __EMSCRIPTEN__
 #include "telemetry.hpp"
 #endif
+#include "duckdb_compat.hpp"
 
 namespace duckdb {
 
@@ -166,7 +167,8 @@ void RegisterQuackOauthCheckAuthorization(ExtensionLoader &loader) {
 	                  LogicalType::BOOLEAN, DATAZOO_GUARD(QUACK_OAUTH_BANNER, CheckAuthorizationScalarFun));
 	// Emits an audit event per call AND reads from session-keyed in-memory
 	// state that may change between rows. MUST NOT be constant-folded.
-	fn.stability = FunctionStability::VOLATILE;
+	duckdb_compat::SetStability(fn, FunctionStability::VOLATILE);
+	duckdb_compat::SetFallible(fn);
 	CreateScalarFunctionInfo info(std::move(fn));
 	FunctionDescription desc;
 	desc.description = "Authorize a query for a session whose Principal was previously cached by "
@@ -186,6 +188,7 @@ void RegisterQuackOauthCheckAuthorization(ExtensionLoader &loader) {
 	                 "SELECT quack_oauth_check_authorization('sess-1', 'COPY t TO ''out.csv''')"};
 	desc.categories = {"quack_oauth"};
 	info.descriptions.push_back(std::move(desc));
+	duckdb_compat::NameFunctionsFromDescriptions(info);
 	loader.RegisterFunction(std::move(info));
 }
 

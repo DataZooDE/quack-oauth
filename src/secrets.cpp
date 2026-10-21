@@ -6,6 +6,7 @@
 #include "duckdb/main/secret/secret_manager.hpp"
 
 #include <initializer_list>
+#include "duckdb_compat.hpp"
 
 namespace duckdb {
 
@@ -238,7 +239,7 @@ static void RegisterClientSecretType(ExtensionLoader &loader) {
 	type.default_provider = "config";
 	loader.RegisterSecretType(type);
 
-	CreateSecretFunction fn = {type.name, "config", CreateClientSecret, {}};
+	CreateSecretFunction fn = {duckdb_compat::Str(type.name), "config", CreateClientSecret, {}};
 	auto add = [&fn](const char *name, LogicalTypeId logical_type_id) {
 		fn.named_parameters[name] = LogicalType(logical_type_id);
 	};
@@ -263,7 +264,7 @@ static void RegisterServerSecretType(ExtensionLoader &loader) {
 	type.default_provider = "config";
 	loader.RegisterSecretType(type);
 
-	CreateSecretFunction fn = {type.name, "config", CreateServerSecret, {}};
+	CreateSecretFunction fn = {duckdb_compat::Str(type.name), "config", CreateServerSecret, {}};
 	auto add = [&fn](const char *name, LogicalTypeId logical_type_id) {
 		fn.named_parameters[name] = LogicalType(logical_type_id);
 	};
