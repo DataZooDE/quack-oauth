@@ -33,18 +33,20 @@ STDOUT_LOG="$TMPDIR_S17/duckdb.stdout"
 trap 'rm -rf "$TMPDIR_S17"' EXIT
 
 # Spawn the DuckDB CLI running quack_oauth_device_login() in the background.
+# The secret name is test-specific: a persistent secret with a common name (e.g.
+# 'cli' in ~/.duckdb/stored_secrets) makes the lookup ambiguous and fails the test.
 # We capture stderr (the verification URI + user_code go there) and stdout
 # (the resulting access token comes back as a SELECT result).
 (
     "$DUCKDB" -unsigned -csv -noheader <<SQL >"$STDOUT_LOG" 2>"$STDERR_LOG" &
 LOAD quack_oauth;
-CREATE SECRET cli (
+CREATE SECRET qo_device_e2e (
     TYPE quack_oauth,
     device_authorization_endpoint '$DEVICE_AUTH_URL',
     token_endpoint                '$TOKEN_URL',
     client_id                     '$DEVICE_CLIENT_ID'
 );
-SELECT length(quack_oauth_device_login('cli')) > 0 AS got_expires_at;
+SELECT length(quack_oauth_device_login('qo_device_e2e')) > 0 AS got_expires_at;
 SQL
     echo $! > "$TMPDIR_S17/duckdb.pid"
     wait
