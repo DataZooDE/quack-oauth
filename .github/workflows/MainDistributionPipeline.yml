@@ -85,7 +85,11 @@ jobs:
       # Mirror erpl-web: push on tag-or-main. PRs and feature branches
       # build and verify but never publish.
       deploy_latest: ${{ startsWith(github.ref, 'refs/tags/v') || github.ref == 'refs/heads/main' }}
-      deploy_versioned: ${{ startsWith(github.ref, 'refs/tags/v') || github.ref == 'refs/heads/main' }}
+      # Versioned paths (<name>/vYYYY.MM.DD/...) come ONLY from the tag run. A main
+      # push of the same commit builds before the tag exists (stamp vX-N-gSHA), and its
+      # deploy resolves the tag at upload time: if it runs after the tag run it
+      # overwrites the release with that pre-tag build (hit duckdb-gdrive v2026.10.17).
+      deploy_versioned: ${{ startsWith(github.ref, 'refs/tags/v') }}
 
   duckdb-lts-build:
     name: Build extension binaries (v1.4.5 LTS)
@@ -121,4 +125,8 @@ jobs:
       extension_name: quack_oauth
       exclude_archs: 'windows_amd64_mingw;wasm_mvp;wasm_eh;wasm_threads'
       deploy_latest: ${{ startsWith(github.ref, 'refs/tags/v') || github.ref == 'refs/heads/main' }}
-      deploy_versioned: ${{ startsWith(github.ref, 'refs/tags/v') || github.ref == 'refs/heads/main' }}
+      # Versioned paths (<name>/vYYYY.MM.DD/...) come ONLY from the tag run. A main
+      # push of the same commit builds before the tag exists (stamp vX-N-gSHA), and its
+      # deploy resolves the tag at upload time: if it runs after the tag run it
+      # overwrites the release with that pre-tag build (hit duckdb-gdrive v2026.10.17).
+      deploy_versioned: ${{ startsWith(github.ref, 'refs/tags/v') }}
