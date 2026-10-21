@@ -13,14 +13,23 @@ project(${TARGET_NAME})
 set(CMAKE_CXX_STANDARD "17" CACHE STRING "C++ standard to enforce")
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
-include_directories(src/include)
+# This list file belongs to the extension; CMAKE_SOURCE_DIR belongs to DuckDB
+# in extension-ci-tools builds. BEFORE keeps our public headers ahead of any
+# same-named system extension headers while DuckDB's pinned headers are added
+# by the parent build.
+include_directories(BEFORE "${CMAKE_CURRENT_LIST_DIR}/src/include")
+include_directories("${CMAKE_CURRENT_LIST_DIR}/duckdb-compat/include")
+if(EXISTS "${CMAKE_SOURCE_DIR}/src/include/duckdb/parser/query_node/update_query_node.hpp")
+    add_definitions(-DDUCKDB_COMPAT_DML_QUERY_NODES=1)
+endif()
 
 # DuckDB ships cpp-httplib (namespace `duckdb_httplib_openssl`) under its
 # third_party tree. Use it directly rather than adding a separate vcpkg dep,
 # matching `../erpl-web/CMakeLists.txt` precedent. Pure-logic targets
 # (Catch2 unit tests) intentionally do NOT get this include path -- only
 # the DUCKDB_SOURCES module `http_client_duckdb.cpp` uses it.
-include_directories(./duckdb/third_party/httplib)
+# This dependency is in the pinned DuckDB source tree, not the extension.
+include_directories("${CMAKE_SOURCE_DIR}/third_party/httplib")
 
 # Anonymous usage telemetry (shared library with ../erpl and ../erpl-web).
 # Native only -- the lib uses `duckdb_httplib_openssl::SSLClient` which is
@@ -119,6 +128,12 @@ build_loadable_extension(${TARGET_NAME} " " ${EXTENSION_SOURCES})
 # (see ../erpl-web/CMakeLists.txt:168-171).
 target_compile_features(${EXTENSION_NAME} PRIVATE cxx_std_17)
 target_compile_features(${LOADABLE_EXTENSION_NAME} PRIVATE cxx_std_17)
+
+if(APPLE)
+  foreach(t ${EXTENSION_NAME} ${LOADABLE_EXTENSION_NAME})
+    target_link_libraries(${t} "-framework CoreFoundation" "-framework Security")
+  endforeach()
+endif()
 
 if(NOT EMSCRIPTEN)
   target_link_libraries(${EXTENSION_NAME} OpenSSL::SSL OpenSSL::Crypto jwt-cpp::jwt-cpp posthog_telemetry datazoo_banner)

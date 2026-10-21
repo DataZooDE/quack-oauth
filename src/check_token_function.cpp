@@ -10,14 +10,7 @@
 #include <vector>
 
 #include "duckdb/common/exception.hpp"
-#include "duckdb/logging/logger.hpp"
-
-// DuckDB 1.4 spells this `DUCKDB_LOG_WARN`; 1.5+ renamed it to
-// `DUCKDB_LOG_WARNING`. Map the new spelling to the old one when only
-// the 1.4 macro is defined.
-#if !defined(DUCKDB_LOG_WARNING) && defined(DUCKDB_LOG_WARN)
-#define DUCKDB_LOG_WARNING DUCKDB_LOG_WARN
-#endif
+#include "duckdb_compat/logging.hpp"
 
 #include "duckdb/common/types/data_chunk.hpp"
 #include "duckdb/common/types/vector.hpp"
@@ -48,6 +41,7 @@
 
 #include "duckdb/main/connection.hpp"
 #include "quack_oauth_banner.hpp"
+#include "duckdb_compat.hpp"
 
 namespace duckdb {
 
@@ -67,7 +61,7 @@ struct ServerConfig {
 
 static string ReadStringSetting(ClientContext &context, const string &key) {
 	Value v;
-	if (!context.TryGetCurrentSetting(key, v) || v.IsNull()) {
+	if (!duckdb_compat::TryGetContextSetting(context, key, v) || v.IsNull()) {
 		return "";
 	}
 	return v.ToString();
@@ -75,7 +69,7 @@ static string ReadStringSetting(ClientContext &context, const string &key) {
 
 static int64_t ReadIntSetting(ClientContext &context, const string &key, int64_t fallback) {
 	Value v;
-	if (!context.TryGetCurrentSetting(key, v) || v.IsNull()) {
+	if (!duckdb_compat::TryGetContextSetting(context, key, v) || v.IsNull()) {
 		return fallback;
 	}
 	return v.GetValue<int32_t>();
@@ -489,12 +483,12 @@ static void RunValidationLoop(Vector &tokens, idx_t count, Vector &result, Clien
 	if (session_ids != nullptr) {
 		UnifiedVectorFormat tok_format;
 		UnifiedVectorFormat sid_format;
-		tokens.ToUnifiedFormat(count, tok_format);
-		session_ids->ToUnifiedFormat(count, sid_format);
+		duckdb_compat::ToUnifiedFormat(tokens, count, tok_format);
+		duckdb_compat::ToUnifiedFormat(*session_ids, count, sid_format);
 
 		const auto *tok_data = UnifiedVectorFormat::GetData<string_t>(tok_format);
 		const auto *sid_data = UnifiedVectorFormat::GetData<string_t>(sid_format);
-		auto *out_data = FlatVector::GetData<bool>(result);
+		auto *out_data = duckdb_compat::FlatData<bool>(result);
 
 		for (idx_t i = 0; i < count; ++i) {
 			const auto tok_idx = tok_format.sel->get_index(i);
@@ -701,12 +695,14 @@ void RegisterQuackOauthCheckToken(ExtensionLoader &loader) {
 
 	ScalarFunction fn1({LogicalType::VARCHAR}, LogicalType::BOOLEAN,
 	                   DATAZOO_GUARD(QUACK_OAUTH_BANNER, CheckTokenScalarFun1));
-	fn1.stability = FunctionStability::VOLATILE;
+	duckdb_compat::SetStability(fn1, FunctionStability::VOLATILE);
+	duckdb_compat::SetFallible(fn1);
 	set.AddFunction(fn1);
 
 	ScalarFunction fn3({LogicalType::VARCHAR, LogicalType::VARCHAR, LogicalType::VARCHAR}, LogicalType::BOOLEAN,
 	                   DATAZOO_GUARD(QUACK_OAUTH_BANNER, CheckTokenScalarFun3));
-	fn3.stability = FunctionStability::VOLATILE;
+	duckdb_compat::SetStability(fn3, FunctionStability::VOLATILE);
+	duckdb_compat::SetFallible(fn3);
 	set.AddFunction(fn3);
 
 	CreateScalarFunctionInfo info(std::move(set));
@@ -736,6 +732,7 @@ void RegisterQuackOauthCheckToken(ExtensionLoader &loader) {
 	desc3.categories = {"quack_oauth"};
 	info.descriptions.push_back(std::move(desc3));
 
+	duckdb_compat::NameFunctionsFromDescriptions(info);
 	loader.RegisterFunction(std::move(info));
 }
 

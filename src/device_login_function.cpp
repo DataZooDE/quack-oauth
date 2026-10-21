@@ -2,6 +2,7 @@
 
 #include <chrono>
 #include <cstdint>
+#include <iostream>
 #include <string>
 #include <thread>
 
@@ -22,6 +23,7 @@
 #include "secret_accessor.hpp"
 #include "telemetry.hpp"
 #include "quack_oauth_banner.hpp"
+#include "duckdb_compat.hpp"
 
 namespace duckdb {
 
@@ -125,7 +127,8 @@ void RegisterQuackOauthDeviceLogin(ExtensionLoader &loader) {
 	// Side-effecting (mutates SECRET state, emits audit events) AND
 	// non-idempotent (each call mints a NEW device_code with the IdP).
 	// MUST NOT be constant-folded or memoised across rows.
-	fn.stability = FunctionStability::VOLATILE;
+	duckdb_compat::SetStability(fn, FunctionStability::VOLATILE);
+	duckdb_compat::SetFallible(fn);
 	CreateScalarFunctionInfo info(std::move(fn));
 	FunctionDescription desc;
 	desc.description =
@@ -141,6 +144,7 @@ void RegisterQuackOauthDeviceLogin(ExtensionLoader &loader) {
 	desc.examples = {"SELECT quack_oauth_device_login('my_client_secret')"};
 	desc.categories = {"quack_oauth"};
 	info.descriptions.push_back(std::move(desc));
+	duckdb_compat::NameFunctionsFromDescriptions(info);
 	loader.RegisterFunction(std::move(info));
 }
 

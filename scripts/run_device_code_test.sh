@@ -11,6 +11,10 @@
 #   2. REALM     -- e.g. quack-test
 #   3. DUCKDB    -- path to the duckdb binary with quack_oauth statically linked
 #   4. CONSENT_PY -- path to scripts/keycloak_device_consent.py
+#   5. EXTENSION  -- optional path to the built quack_oauth.duckdb_extension.
+#                    DuckDB 2.0's shell no longer links extensions statically,
+#                    so `LOAD quack_oauth` by name looks in ~/.duckdb/extensions
+#                    and fails; loading the built file works on every version.
 #
 # Exit 0 on success, non-zero on failure.
 
@@ -20,6 +24,13 @@ BASE_URL="$1"
 REALM="$2"
 DUCKDB="$3"
 CONSENT_PY="$4"
+EXTENSION="${5:-}"
+if [[ -n "$EXTENSION" ]]; then
+  ESCAPED_EXTENSION="${EXTENSION//\'/\'\'}"
+  LOAD_STMT="LOAD '$ESCAPED_EXTENSION';"
+else
+  LOAD_STMT="LOAD quack_oauth;"
+fi
 
 DEVICE_CLIENT_ID="quack-device"
 DEVICE_AUTH_URL="$BASE_URL/realms/$REALM/protocol/openid-connect/auth/device"
@@ -33,18 +44,20 @@ STDOUT_LOG="$TMPDIR_S17/duckdb.stdout"
 trap 'rm -rf "$TMPDIR_S17"' EXIT
 
 # Spawn the DuckDB CLI running quack_oauth_device_login() in the background.
+# The secret name is test-specific: a persistent secret with a common name (e.g.
+# 'cli' in ~/.duckdb/stored_secrets) makes the lookup ambiguous and fails the test.
 # We capture stderr (the verification URI + user_code go there) and stdout
 # (the resulting access token comes back as a SELECT result).
 (
     "$DUCKDB" -unsigned -csv -noheader <<SQL >"$STDOUT_LOG" 2>"$STDERR_LOG" &
-LOAD quack_oauth;
-CREATE SECRET cli (
+$LOAD_STMT
+CREATE SECRET qo_device_e2e (
     TYPE quack_oauth,
     device_authorization_endpoint '$DEVICE_AUTH_URL',
     token_endpoint                '$TOKEN_URL',
     client_id                     '$DEVICE_CLIENT_ID'
 );
-SELECT length(quack_oauth_device_login('cli')) > 0 AS got_expires_at;
+SELECT length(quack_oauth_device_login('qo_device_e2e')) > 0 AS got_expires_at;
 SQL
     echo $! > "$TMPDIR_S17/duckdb.pid"
     wait

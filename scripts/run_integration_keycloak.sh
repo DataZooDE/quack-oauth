@@ -44,7 +44,11 @@ MACHINE_CLIENT_ID="quack-machine"
 MACHINE_CLIENT_SECRET="quack-machine-test-secret"
 USERNAME="alice"
 PASSWORD="secret"
-BASE_URL="http://localhost:8080"
+# Host port for Keycloak. Defaults to 8080; set KEYCLOAK_PORT when 8080 is taken
+# by something else on the machine (the container always listens on 8080).
+KEYCLOAK_PORT="${KEYCLOAK_PORT:-8080}"
+export KEYCLOAK_PORT
+BASE_URL="http://localhost:${KEYCLOAK_PORT}"
 
 if [[ ! -x "$UNITTEST" ]]; then
     echo "FAIL: $UNITTEST not found -- run 'make' first" >&2
@@ -213,6 +217,7 @@ bash "$PROJ_DIR/scripts/run_device_code_test.sh" \
     "$BASE_URL" \
     "$REALM" \
     "$PROJ_DIR/build/release/duckdb" \
-    "$PROJ_DIR/scripts/keycloak_device_consent.py"
+    "$PROJ_DIR/scripts/keycloak_device_consent.py" \
+    "$PROJ_DIR/build/release/extension/quack_oauth/quack_oauth.duckdb_extension"
 
 echo "=== PASS ==="

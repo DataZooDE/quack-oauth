@@ -186,6 +186,32 @@ SELECT action, array_to_string(objects, ',') FROM quack_oauth_inspect_sql('INSER
 ----
 Insert	main.t
 
+# DML and COPY targets must survive the 2.0 statement-node AST change.
+query II
+SELECT action, array_to_string(objects, ',') FROM quack_oauth_inspect_sql('UPDATE dst SET x = src.x FROM src WHERE dst.id = src.id');
+----
+Update	main.dst,main.src
+
+query II
+SELECT action, array_to_string(objects, ',') FROM quack_oauth_inspect_sql('DELETE FROM dst USING src WHERE dst.id = src.id');
+----
+Delete	main.dst,main.src
+
+query II
+SELECT action, array_to_string(objects, ',') FROM quack_oauth_inspect_sql('COPY dst FROM ''data.csv''');
+----
+CopyFrom	main.dst
+
+query II
+SELECT action, array_to_string(objects, ',') FROM quack_oauth_inspect_sql('COPY (SELECT x FROM src) TO ''data.csv''');
+----
+CopyTo	main.src
+
+query I
+SELECT action FROM quack_oauth_inspect_sql('PRAGMA version');
+----
+Pragma
+
 query I
 SELECT array_to_string(columns, ',') FROM quack_oauth_inspect_sql('SELECT * FROM trips');
 ----
@@ -215,3 +241,630 @@ statement error
 SELECT * FROM quack_oauth_inspect_sql(NULL);
 ----
 must not be NULL
+
+# Round 2: every executable body must either be classified as a write or
+# rejected. An unknown parser shape must never become an empty Scan.
+query I
+SELECT unsafe OR (action = 'Delete' AND list_contains(objects, 'main.secret')) FROM quack_oauth_inspect_sql('WITH x AS (DELETE FROM secret RETURNING *) SELECT * FROM x');
+----
+true
+
+query I
+SELECT unsafe OR (action = 'Update' AND list_contains(objects, 'main.secret')) FROM quack_oauth_inspect_sql('WITH x AS (UPDATE secret SET a=1 RETURNING *) SELECT * FROM x');
+----
+true
+
+query I
+SELECT unsafe OR (action = 'Insert' AND list_contains(objects, 'main.secret')) FROM quack_oauth_inspect_sql('WITH x AS (INSERT INTO secret VALUES (1) RETURNING *) SELECT * FROM x');
+----
+true
+
+query I
+SELECT unsafe OR action = 'CopyTo' FROM quack_oauth_inspect_sql('WITH x AS (COPY (SELECT * FROM secret) TO ''/tmp/quack-inspect-test.csv'') SELECT 1');
+----
+true
+
+query I
+SELECT unsafe OR (action <> 'Scan' AND list_contains(objects, 'main.dst') AND list_contains(objects, 'main.secret')) FROM quack_oauth_inspect_sql('MERGE INTO dst USING secret ON dst.id = secret.id WHEN MATCHED THEN UPDATE SET a = secret.a');
+----
+true
+
+query I
+SELECT unsafe OR list_contains(objects, 'main.secret') FROM quack_oauth_inspect_sql('UPDATE dst SET a=(SELECT max(a) FROM secret)');
+----
+true
+
+query I
+SELECT unsafe OR list_contains(objects, 'main.secret') FROM quack_oauth_inspect_sql('UPDATE dst SET a=1 WHERE id IN (SELECT id FROM secret)');
+----
+true
+
+query I
+SELECT unsafe OR list_contains(objects, 'main.secret') FROM quack_oauth_inspect_sql('DELETE FROM dst WHERE id IN (SELECT id FROM secret)');
+----
+true
+
+query I
+SELECT unsafe OR list_contains(objects, 'main.secret') FROM quack_oauth_inspect_sql('INSERT INTO dst VALUES ((SELECT max(a) FROM secret))');
+----
+true
+
+query I
+SELECT unsafe OR list_contains(objects, 'main.secret') FROM quack_oauth_inspect_sql('UPDATE dst SET a=1 RETURNING (SELECT max(a) FROM secret)');
+----
+true
+
+query I
+SELECT unsafe OR list_contains(objects, 'main.secret') FROM quack_oauth_inspect_sql('INSERT INTO dst VALUES (1) ON CONFLICT (id) DO UPDATE SET a=(SELECT max(a) FROM secret)');
+----
+true
+
+query I
+SELECT unsafe OR list_contains(objects, 'main.secret') FROM quack_oauth_inspect_sql('MERGE INTO dst USING src ON dst.id=src.id WHEN MATCHED THEN UPDATE SET a=(SELECT max(a) FROM secret)');
+----
+true
+
+query I
+SELECT unsafe OR list_contains(objects, 'main.secret') FROM quack_oauth_inspect_sql('WITH s AS (SELECT * FROM secret) UPDATE dst SET a=1 FROM s');
+----
+true
+
+query I
+SELECT unsafe OR list_contains(objects, 'main.secret') FROM quack_oauth_inspect_sql('WITH c AS (SELECT * FROM secret) SELECT * FROM c UNION ALL SELECT * FROM c');
+----
+true
+
+query I
+SELECT unsafe OR action = 'Delete' FROM quack_oauth_inspect_sql('SELECT 1; DELETE FROM secret;');
+----
+true
+
+query I
+SELECT unsafe OR action = 'Delete' FROM quack_oauth_inspect_sql('EXPLAIN ANALYZE DELETE FROM secret');
+----
+true
+
+# EXPLAIN must not launder statements its inner classification would reject: the
+# SET/PRAGMA/LOAD allowlists apply to the EXPLAINed statement too.
+query I
+SELECT unsafe FROM quack_oauth_inspect_sql('EXPLAIN SET quack_oauth_policy_default=''allow''');
+----
+true
+
+query I
+SELECT unsafe FROM quack_oauth_inspect_sql('EXPLAIN SET GLOBAL memory_limit=''1KB''');
+----
+true
+
+query I
+SELECT unsafe FROM quack_oauth_inspect_sql('EXPLAIN PRAGMA quack_oauth_x');
+----
+true
+
+query I
+SELECT unsafe FROM quack_oauth_inspect_sql('EXPLAIN LOAD httpfs');
+----
+true
+
+# A two-part name with a file suffix binds as a replacement-scan FILE READ when no such
+# table exists (DuckDB joins catalog.schema.table into the path), so it must not pass as
+# the grantable table main.csv. Likewise any part containing a path character.
+query I
+SELECT unsafe FROM quack_oauth_inspect_sql('SELECT * FROM main.csv');
+----
+true
+
+query I
+SELECT unsafe FROM quack_oauth_inspect_sql('SELECT * FROM main.parquet');
+----
+true
+
+query I
+SELECT unsafe FROM quack_oauth_inspect_sql('SELECT * FROM main.duckdb');
+----
+true
+
+query I
+SELECT unsafe FROM quack_oauth_inspect_sql('SELECT * FROM "s3://b/k".parquet');
+----
+true
+
+query I
+SELECT unsafe FROM quack_oauth_inspect_sql('SELECT * FROM "/etc/x".csv');
+----
+true
+
+query I
+SELECT unsafe FROM quack_oauth_inspect_sql('SELECT * FROM "..".csv');
+----
+true
+
+query I
+SELECT unsafe FROM quack_oauth_inspect_sql('DESCRIBE main.csv');
+----
+true
+
+# Control: an ordinary schema-qualified table stays grantable.
+query II
+SELECT unsafe, objects FROM quack_oauth_inspect_sql('SELECT * FROM main.orders');
+----
+false	[main.orders]
+
+# Control: EXPLAIN of a plain read stays a safe Scan.
+query II
+SELECT unsafe, action FROM quack_oauth_inspect_sql('EXPLAIN SELECT 42');
+----
+false	Scan
+
+query I
+SELECT unsafe OR list_contains(objects, 'main.secret') FROM quack_oauth_inspect_sql('SELECT * FROM (WITH secret AS (SELECT 1 AS a) SELECT * FROM secret) x, secret');
+----
+true
+
+query I
+SELECT unsafe FROM quack_oauth_inspect_sql('SELECT * FROM parser_extension_only ***');
+----
+true
+
+# Round 3: executable children and object identities must be visited or denied.
+# Every assertion permits a fail-closed parser rejection on older lines.
+query I
+SELECT unsafe OR list_contains(objects, 'main.secret') FROM quack_oauth_inspect_sql('WITH a AS (SELECT * FROM secret), secret AS (SELECT 1) SELECT * FROM a');
+----
+true
+
+query I
+SELECT unsafe OR list_contains(objects, 'main.secret') FROM quack_oauth_inspect_sql('WITH secret AS (SELECT * FROM secret) SELECT * FROM secret');
+----
+true
+
+query I
+SELECT unsafe OR list_contains(objects, 'main.secret') FROM quack_oauth_inspect_sql('SELECT 1 ORDER BY (SELECT count(*) FROM secret)');
+----
+true
+
+query I
+SELECT unsafe OR list_contains(objects, 'main.secret') FROM quack_oauth_inspect_sql('SELECT * FROM dst LIMIT (SELECT count(*) FROM secret)');
+----
+true
+
+query I
+SELECT unsafe OR list_contains(objects, 'main.secret') FROM quack_oauth_inspect_sql('SELECT DISTINCT ON ((SELECT max(a) FROM secret)) a FROM dst');
+----
+true
+
+query I
+SELECT unsafe OR list_contains(objects, 'main.secret') FROM quack_oauth_inspect_sql('CREATE TABLE pub AS SELECT * FROM secret');
+----
+true
+
+query I
+SELECT unsafe OR list_contains(objects, 'main.secret') FROM quack_oauth_inspect_sql('CREATE VIEW v AS SELECT * FROM secret');
+----
+true
+
+query I
+SELECT unsafe OR list_contains(objects, 'main.secret') FROM quack_oauth_inspect_sql('CREATE TYPE typ AS ENUM (SELECT a FROM secret)');
+----
+true
+
+query I
+SELECT unsafe OR list_contains(objects, 'main.secret') FROM quack_oauth_inspect_sql('CREATE MACRO leak() AS (SELECT max(a) FROM secret)');
+----
+true
+
+query I
+SELECT unsafe FROM quack_oauth_inspect_sql('SELECT * FROM query(''SELECT * FROM secret'')');
+----
+true
+
+query I
+SELECT unsafe FROM quack_oauth_inspect_sql('SELECT * FROM query_table(''secret'')');
+----
+true
+
+query I
+SELECT unsafe OR list_contains(objects, 'main.secret') FROM quack_oauth_inspect_sql('SELECT * FROM unnest((SELECT list(a) FROM secret))');
+----
+true
+
+query I
+SELECT unsafe OR list_contains(objects, 'fn:replacement_scan') FROM quack_oauth_inspect_sql('SELECT * FROM ''/etc/passwd''');
+----
+true
+
+query I
+SELECT unsafe OR list_contains(objects, 'fn:replacement_scan') FROM quack_oauth_inspect_sql('SELECT * FROM ''https://evil.invalid/x.parquet''');
+----
+true
+
+query I
+SELECT list_contains(objects, 'main.duckdb_private') FROM quack_oauth_inspect_sql('SELECT * FROM duckdb_private');
+----
+true
+
+query I
+SELECT unsafe OR action <> 'Update' FROM quack_oauth_inspect_sql('MERGE INTO dst USING secret ON dst.id=secret.id WHEN MATCHED THEN DELETE');
+----
+true
+
+query I
+SELECT unsafe OR action <> 'Update' FROM quack_oauth_inspect_sql('MERGE INTO dst USING secret ON dst.id=secret.id WHEN NOT MATCHED THEN INSERT (id) VALUES (secret.id)');
+----
+true
+
+query I
+SELECT unsafe OR list_contains(objects, 'main.secret') FROM quack_oauth_inspect_sql('SET VARIABLE v=(SELECT max(a) FROM secret)');
+----
+true
+
+query I
+SELECT unsafe OR list_contains(objects, 'other.main.secret') FROM quack_oauth_inspect_sql('SELECT * FROM other.main.secret');
+----
+true
+
+query I
+SELECT unsafe OR action <> 'Pragma' FROM quack_oauth_inspect_sql('LOAD httpfs');
+----
+true
+
+query I
+SELECT unsafe OR action <> 'Pragma' FROM quack_oauth_inspect_sql('INSTALL httpfs');
+----
+true
+
+query I
+SELECT unsafe OR action <> 'Pragma' FROM quack_oauth_inspect_sql('USE other');
+----
+true
+
+query I
+SELECT unsafe OR list_contains(objects, 'main.secret') FROM quack_oauth_inspect_sql('PIVOT dst ON id IN (SELECT id FROM secret) USING count(*)');
+----
+true
+
+query I
+SELECT unsafe OR list_contains(objects, 'main.secret') FROM quack_oauth_inspect_sql('PIVOT dst ON id USING sum((SELECT max(a) FROM secret))');
+----
+true
+
+query I
+SELECT unsafe OR list_contains(objects, 'fn:current_setting') FROM quack_oauth_inspect_sql('SELECT current_setting(''s3_secret_access_key'')');
+----
+true
+
+query I
+SELECT unsafe OR list_contains(objects, 'fn:getvariable') FROM quack_oauth_inspect_sql('SELECT getvariable(''v'')');
+----
+true
+
+# CREATE targets remain visible even without an AS query.
+query I
+SELECT list_contains(objects, 'main.pub') FROM quack_oauth_inspect_sql('CREATE TABLE pub(a INTEGER)');
+----
+true
+
+# Ordinary constant settings and update-only MERGE retain their action.
+query II
+SELECT unsafe, action FROM quack_oauth_inspect_sql('SET threads=4');
+----
+false	Pragma
+
+query II
+SELECT unsafe, action FROM quack_oauth_inspect_sql('MERGE INTO dst USING src ON dst.id=src.id WHEN MATCHED THEN UPDATE SET a=src.a');
+----
+false	Update
+
+# Round 4: every executable shape must report the protected object or fail closed.
+query I
+SELECT unsafe OR list_contains(objects, 'main.secret') FROM quack_oauth_inspect_sql('SUMMARIZE secret');
+----
+true
+
+query I
+SELECT unsafe OR list_contains(objects, 'main.secret') FROM quack_oauth_inspect_sql('SUMMARIZE SELECT * FROM secret');
+----
+true
+
+query I
+SELECT unsafe OR list_contains(objects, 'main.secret') FROM quack_oauth_inspect_sql('SELECT * FROM (SUMMARIZE secret)');
+----
+true
+
+query I
+SELECT unsafe OR list_contains(objects, 'main.secret') FROM quack_oauth_inspect_sql('DESCRIBE secret');
+----
+true
+
+query I
+SELECT unsafe OR list_contains(objects, 'main.secret') FROM quack_oauth_inspect_sql('SHOW secret');
+----
+true
+
+query I
+SELECT unsafe FROM quack_oauth_inspect_sql('DESCRIBE ''x.parquet''');
+----
+true
+
+query I
+SELECT unsafe FROM quack_oauth_inspect_sql('IMPORT DATABASE ''/x''');
+----
+true
+
+query I
+SELECT unsafe FROM quack_oauth_inspect_sql('PRAGMA import_database(''/x'')');
+----
+true
+
+query I
+SELECT unsafe FROM quack_oauth_inspect_sql('COPY FROM DATABASE a TO b');
+----
+true
+
+query I
+SELECT unsafe FROM quack_oauth_inspect_sql('PRAGMA copy_database(''a'', ''b'')');
+----
+true
+
+query I
+SELECT unsafe FROM quack_oauth_inspect_sql('PRAGMA storage_info(''secret'')');
+----
+true
+
+query I
+SELECT unsafe FROM quack_oauth_inspect_sql('PRAGMA table_info(''secret'')');
+----
+true
+
+query I
+SELECT unsafe FROM quack_oauth_inspect_sql('PRAGMA json_execute_serialized_sql(''{}'')');
+----
+true
+
+query I
+SELECT unsafe FROM quack_oauth_inspect_sql('PRAGMA enable_profiling');
+----
+true
+
+query I
+SELECT unsafe OR list_contains(objects, 'main.secret') FROM quack_oauth_inspect_sql('DROP TABLE secret');
+----
+true
+
+query I
+SELECT unsafe OR list_contains(objects, 'main.secret') FROM quack_oauth_inspect_sql('ALTER TABLE secret RENAME TO x');
+----
+true
+
+query I
+SELECT unsafe OR list_contains(objects, 'main.secret') FROM quack_oauth_inspect_sql('ALTER TABLE dst ALTER COLUMN a TYPE VARCHAR USING (SELECT pw FROM secret)');
+----
+true
+
+query I
+SELECT unsafe OR list_contains(objects, 'main.secret') FROM quack_oauth_inspect_sql('WITH RECURSIVE secret AS (SELECT a FROM secret UNION ALL SELECT a FROM secret) SELECT * FROM secret');
+----
+true
+
+query I
+SELECT list_contains(objects, 'main.secret') AND NOT list_contains(objects, 'main.r') AND NOT unsafe FROM quack_oauth_inspect_sql('WITH RECURSIVE r AS (SELECT * FROM secret UNION ALL SELECT * FROM r) SELECT * FROM r');
+----
+true
+
+query I
+SELECT unsafe FROM quack_oauth_inspect_sql('SET search_path=''other''');
+----
+true
+
+query I
+SELECT unsafe FROM quack_oauth_inspect_sql('RESET search_path');
+----
+true
+
+query I
+SELECT unsafe OR list_contains(objects, 'fn:duckdb_variables') FROM quack_oauth_inspect_sql('SELECT * FROM duckdb_variables()');
+----
+true
+
+query I
+SELECT unsafe OR list_contains(objects, 'fn:duckdb_logs') FROM quack_oauth_inspect_sql('SELECT * FROM duckdb_logs()');
+----
+true
+
+query I
+SELECT unsafe OR list_contains(objects, 'main.secret') FROM quack_oauth_inspect_sql('COPY (SELECT * FROM entitled) TO (SELECT path FROM secret)');
+----
+true
+
+query I
+SELECT unsafe OR list_contains(objects, 'main.secret') FROM quack_oauth_inspect_sql('SELECT * FROM entitled AT (TIMESTAMP => (SELECT ts FROM secret))');
+----
+true
+
+# Covered-shape regression checks.
+query I
+SELECT unsafe OR list_contains(objects, 'main.secret') FROM quack_oauth_inspect_sql('SELECT list_transform([1], x -> (SELECT max(a) FROM secret))');
+----
+true
+
+query I
+SELECT unsafe OR list_contains(objects, 'main.secret') FROM quack_oauth_inspect_sql('SELECT COLUMNS((SELECT a FROM secret)) FROM entitled');
+----
+true
+
+query I
+SELECT unsafe OR list_contains(objects, 'main.secret') FROM quack_oauth_inspect_sql('SELECT x[(SELECT max(a) FROM secret)] FROM entitled');
+----
+true
+
+query I
+SELECT unsafe OR list_contains(objects, 'main.secret') FROM quack_oauth_inspect_sql('SELECT CASE WHEN EXISTS (SELECT 1 FROM secret) THEN 1 ELSE 0 END FROM entitled');
+----
+true
+
+query I
+SELECT unsafe OR list_contains(objects, 'main.secret') FROM quack_oauth_inspect_sql('SELECT coalesce((SELECT max(a) FROM secret), 0) FROM entitled');
+----
+true
+
+query I
+SELECT unsafe OR list_contains(objects, 'main.secret') FROM quack_oauth_inspect_sql('SELECT * FROM entitled ASOF JOIN secret ON entitled.ts >= secret.ts');
+----
+true
+
+query I
+SELECT unsafe OR list_contains(objects, 'main.secret') FROM quack_oauth_inspect_sql('SELECT * FROM entitled POSITIONAL JOIN secret');
+----
+true
+
+query I
+SELECT unsafe OR list_contains(objects, 'main.secret') FROM quack_oauth_inspect_sql('SELECT * FROM entitled /* harmless */ JOIN secret ON true');
+----
+true
+
+# Round 5: audited allowlists and system-view resolution.
+query I
+SELECT unsafe FROM quack_oauth_inspect_sql('SET quack_oauth_policy_default=''allow''');
+----
+true
+
+query I
+SELECT unsafe FROM quack_oauth_inspect_sql('SET SESSION quack_oauth_policy_default=''allow''');
+----
+true
+
+query I
+SELECT unsafe FROM quack_oauth_inspect_sql('SET GLOBAL quack_oauth_policy_default=''allow''');
+----
+true
+
+query I
+SELECT unsafe FROM quack_oauth_inspect_sql('PRAGMA quack_oauth_policy_default=''allow''');
+----
+true
+
+query I
+SELECT unsafe FROM quack_oauth_inspect_sql('RESET quack_oauth_policy_default');
+----
+true
+
+query I
+SELECT unsafe FROM quack_oauth_inspect_sql('SET quack_oauth_server_secret_name=''x''');
+----
+true
+
+query I
+SELECT unsafe FROM quack_oauth_inspect_sql('SELECT * FROM pg_catalog.pg_settings');
+----
+true
+
+query I
+SELECT unsafe FROM quack_oauth_inspect_sql('SELECT * FROM pg_catalog.pg_prepared_statements');
+----
+true
+
+query I
+SELECT unsafe FROM quack_oauth_inspect_sql('SELECT * FROM pg_settings');
+----
+true
+
+query I
+SELECT unsafe FROM quack_oauth_inspect_sql('SELECT * FROM duckdb_logs');
+----
+true
+
+query I
+SELECT unsafe FROM quack_oauth_inspect_sql('SHOW VARIABLES');
+----
+true
+
+query I
+SELECT unsafe FROM quack_oauth_inspect_sql('DESCRIBE variables');
+----
+true
+
+query I
+SELECT unsafe OR list_contains(objects, 'main.__show_tables_x') FROM quack_oauth_inspect_sql('DESCRIBE __show_tables_x');
+----
+true
+
+query I
+SELECT unsafe FROM quack_oauth_inspect_sql('SET GLOBAL memory_limit=''1KB''');
+----
+true
+
+query I
+SELECT unsafe FROM quack_oauth_inspect_sql('SET GLOBAL threads=4');
+----
+true
+
+query I
+SELECT unsafe FROM quack_oauth_inspect_sql('SET threads=100000');
+----
+true
+
+query I
+SELECT unsafe FROM quack_oauth_inspect_sql('RESET threads');
+----
+true
+
+query I
+SELECT unsafe OR list_contains(objects, 'catalog:other') FROM quack_oauth_inspect_sql('DETACH other');
+----
+true
+
+query I
+SELECT unsafe OR list_contains(objects, 'schema:hidden') FROM quack_oauth_inspect_sql('CREATE SCHEMA hidden');
+----
+true
+
+query I
+SELECT unsafe FROM quack_oauth_inspect_sql('SELECT nextval(''s'')');
+----
+true
+
+query I
+SELECT unsafe FROM quack_oauth_inspect_sql('SELECT currval(''s'')');
+----
+true
+
+query I
+SELECT unsafe FROM quack_oauth_inspect_sql('CREATE FUNCTION f(x) AS x');
+----
+true
+
+query I
+SELECT unsafe FROM quack_oauth_inspect_sql('PRAGMA database_list');
+----
+true
+
+query I
+SELECT unsafe OR list_contains(objects, 'fn:duckdb_databases') FROM quack_oauth_inspect_sql('SELECT * FROM duckdb_databases()');
+----
+true
+
+# Safe controls must remain available to ordinary BI clients.
+query I
+SELECT NOT unsafe FROM quack_oauth_inspect_sql('SET threads=4');
+----
+true
+
+query I
+SELECT NOT unsafe AND len(objects)=0 FROM quack_oauth_inspect_sql('SHOW TABLES');
+----
+true
+
+query I
+SELECT NOT unsafe AND len(objects)=0 FROM quack_oauth_inspect_sql('SELECT * FROM information_schema.tables');
+----
+true
+
+query I
+SELECT NOT unsafe AND len(objects)=0 FROM quack_oauth_inspect_sql('SELECT * FROM duckdb_tables()');
+----
+true
+
+query I
+SELECT list_contains(objects, 'main.secret') AND NOT list_contains(objects, 'main.z') FROM quack_oauth_inspect_sql('WITH z AS (SELECT * FROM secret), secret AS (SELECT 1) SELECT * FROM z');
+----
+true

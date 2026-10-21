@@ -4,18 +4,10 @@
 #include <sstream>
 
 #include "duckdb/common/types/value.hpp"
-#include "duckdb/logging/logger.hpp"
+#include "duckdb_compat/logging.hpp"
 #include "duckdb/main/client_context.hpp"
 #include "duckdb/main/connection.hpp"
 #include "duckdb/main/prepared_statement.hpp"
-
-// DuckDB 1.4 spells this `DUCKDB_LOG_WARN`; 1.5+ renamed it to
-// `DUCKDB_LOG_WARNING`. Map the new spelling to the old one when only
-// the latter is available.
-#if !defined(DUCKDB_LOG_WARNING) && defined(DUCKDB_LOG_WARN)
-#define DUCKDB_LOG_WARNING DUCKDB_LOG_WARN
-#endif
-
 #include "quack_oauth_state.hpp"
 #include "secret_accessor.hpp"
 
@@ -71,12 +63,12 @@ static void InsertAuditRow(ClientContext &context, const string &table, const qu
 	}
 	auto result =
 	    stmt->Execute(Value::BIGINT(event.timestamp_unix_s), Value(quack_oauth::AuditEventTypeName(event.event_type)),
-	                  event.subject.empty() ? Value(LogicalType::VARCHAR) : Value(event.subject),
-	                  event.issuer.empty() ? Value(LogicalType::VARCHAR) : Value(event.issuer),
-	                  event.kid.empty() ? Value(LogicalType::VARCHAR) : Value(event.kid),
-	                  event.token_hash.empty() ? Value(LogicalType::VARCHAR) : Value(event.token_hash),
-	                  event.action.empty() ? Value(LogicalType::VARCHAR) : Value(event.action),
-	                  event.reason.empty() ? Value(LogicalType::VARCHAR) : Value(event.reason));
+		              event.subject.empty() ? Value(LogicalType::VARCHAR) : Value(event.subject),
+		              event.issuer.empty() ? Value(LogicalType::VARCHAR) : Value(event.issuer),
+		              event.kid.empty() ? Value(LogicalType::VARCHAR) : Value(event.kid),
+		              event.token_hash.empty() ? Value(LogicalType::VARCHAR) : Value(event.token_hash),
+		              event.action.empty() ? Value(LogicalType::VARCHAR) : Value(event.action),
+		              event.reason.empty() ? Value(LogicalType::VARCHAR) : Value(event.reason));
 	if (result->HasError()) {
 		DUCKDB_LOG_WARNING(context, "quack_oauth audit_table insert failed: " + result->GetError());
 	}

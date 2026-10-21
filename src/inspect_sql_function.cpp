@@ -16,6 +16,7 @@
 #ifndef __EMSCRIPTEN__
 #include "telemetry.hpp"
 #endif
+#include "duckdb_compat.hpp"
 
 namespace duckdb {
 
@@ -28,7 +29,7 @@ struct InspectSqlGlobalState : public GlobalTableFunctionState {
 };
 
 static unique_ptr<FunctionData> InspectSqlBind(ClientContext &, TableFunctionBindInput &input,
-                                               vector<LogicalType> &return_types, vector<string> &names) {
+                                               vector<LogicalType> &return_types, duckdb_compat::BindNames &names) {
 #ifndef __EMSCRIPTEN__
 	PostHogTelemetry::Instance().RecordFunctionCall("quack_oauth_inspect_sql");
 #endif
@@ -63,20 +64,20 @@ static void InspectSqlScan(ClientContext &, TableFunctionInput &input, DataChunk
 	auto &bind_data = input.bind_data->Cast<InspectSqlBindData>();
 	auto &state = input.global_state->Cast<InspectSqlGlobalState>();
 	if (state.done) {
-		output.SetCardinality(0);
+		duckdb_compat::SetChildCardinality(output, 0);
 		return;
 	}
 	const auto &req = bind_data.request;
-	output.SetValue(0, 0, Value(quack_oauth::ActionName(req.action)));
-	output.SetValue(1, 0, StringList(req.objects));
-	output.SetValue(2, 0, StringList(req.columns));
-	output.SetValue(3, 0, Value::BOOLEAN(req.unsafe));
+	output.data[0].SetValue(0, Value(quack_oauth::ActionName(req.action)));
+	output.data[1].SetValue(0, StringList(req.objects));
+	output.data[2].SetValue(0, StringList(req.columns));
+	output.data[3].SetValue(0, Value::BOOLEAN(req.unsafe));
 	if (req.error.empty()) {
-		output.SetValue(4, 0, Value(LogicalType::VARCHAR));
+		output.data[4].SetValue(0, Value(LogicalType::VARCHAR));
 	} else {
-		output.SetValue(4, 0, Value(req.error));
+		output.data[4].SetValue(0, Value(req.error));
 	}
-	output.SetCardinality(1);
+	duckdb_compat::SetChildCardinality(output, 1);
 	state.done = true;
 }
 
@@ -99,6 +100,7 @@ void RegisterQuackOauthInspectSql(ExtensionLoader &loader) {
 	desc.examples = {"SELECT * FROM quack_oauth_inspect_sql('SELECT a FROM t')"};
 	desc.categories = {"quack_oauth"};
 	info.descriptions.push_back(std::move(desc));
+	duckdb_compat::NameFunctionsFromDescriptions(info);
 	loader.RegisterFunction(std::move(info));
 }
 
