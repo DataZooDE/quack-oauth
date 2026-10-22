@@ -1,6 +1,6 @@
 # patch_bundled_fmt.cmake -- neutralize fmt 6.1.2's `#ifdef _SECURE_SCL` guard.
 #
-# DuckDB v1.5.3 (and the 1.4 LTS line) bundle fmt 6.1.2, whose `#ifdef
+# DuckDB v1.5.x bundles fmt 6.1.2, whose `#ifdef
 # _SECURE_SCL` branch in third_party/fmt/include/fmt/format.h uses
 # `stdext::checked_array_iterator`. MSVC 19.51's STL (the VS18 windows-latest
 # runner) removed that symbol, so the branch fails with
@@ -17,7 +17,8 @@
 # Usable two ways:
 #   * include() from extension_config.cmake (path auto-resolved), or
 #   * cmake -DQO_FMT_HEADER=<path> -P scripts/patch_bundled_fmt.cmake (tests).
-# The edit is idempotent: a no-op once the guard is already flipped.
+# The edit is idempotent: a no-op once the guard is already flipped, or when
+# the bundled fmt no longer has the guard.
 
 if(NOT DEFINED QO_FMT_HEADER)
   set(QO_FMT_HEADER "${CMAKE_CURRENT_LIST_DIR}/../duckdb/third_party/fmt/include/fmt/format.h")

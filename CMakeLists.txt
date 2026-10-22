@@ -180,10 +180,11 @@ if(Catch2_FOUND AND NOT EMSCRIPTEN)
     )
     # Match the static CRT (/MT) of the vcpkg deps (Catch2/OpenSSL ship from a
     # *-static-* triplet). DuckDB's stable build sets the MSVC runtime library
-    # globally and this naked add_executable inherits it; the 1.4 LTS build
-    # does not, so the target would default to /MD and fail to link Catch2
-    # with `LNK2038: RuntimeLibrary mismatch (MT_StaticRelease vs
-    # MD_DynamicRelease)`. Set it explicitly (MSVC-only; ignored elsewhere) --
+    # globally and this naked add_executable inherits it, but a build that
+    # does not would default the target to /MD and fail to link Catch2 with
+    # `LNK2038: RuntimeLibrary mismatch (MT_StaticRelease vs
+    # MD_DynamicRelease)` (seen on the former 1.4 line). Set it explicitly
+    # (MSVC-only; ignored elsewhere) so it never depends on DuckDB's global --
     # same naked-target gotcha as the cxx_std_17 feature above.
     if(MSVC)
       set_target_properties(quack_oauth_unit_tests PROPERTIES
