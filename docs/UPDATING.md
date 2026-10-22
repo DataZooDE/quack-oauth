@@ -1,16 +1,14 @@
 # Extension updating
 
-The CI builds against **two** DuckDB versions in parallel:
+The CI builds against **two** DuckDB lines in parallel:
 
-- **Stable** — the latest non-LTS release. The `duckdb/` and
-  `extension-ci-tools/` git submodules are pinned to this version.
-  Day-to-day development happens against this checkout.
-- **LTS** — the latest patch on the **1.4 LTS** line. Built only in
-  CI (the submodules are not multi-pinned); the LTS jobs in
-  `MainDistributionPipeline.yml` pass the LTS version as a workflow
-  input, and both the upstream `_extension_distribution.yml` and our
-  repo-local `_extension_deploy.yml` check the submodules out to that
-  version inline.
+- **Stable** — the latest v1.5.x release (currently v1.5.6). The
+  `duckdb/` and `extension-ci-tools/` git submodules are pinned to this
+  version. Day-to-day development happens against this checkout.
+- **Next** — DuckDB 2.0 (`duckdb-next-build`), pinned to a commit on the
+  `v2.0-cyanoptera` tooling branch. Built only in CI and not published.
+
+DuckDB 1.4.x (LTS) is no longer supported.
 
 ## Bumping stable (e.g. v1.5.3 → v1.5.4)
 
@@ -35,18 +33,6 @@ The CI builds against **two** DuckDB versions in parallel:
    - `duckdb_version`
    - `ci_tools_version`
    - the `name:` field (display only)
-
-## Bumping the LTS pin (e.g. v1.4.4 → v1.4.5)
-
-Submodules are not touched. In
-`.github/workflows/MainDistributionPipeline.yml`, in the
-`duckdb-lts-build` and `duckdb-lts-deploy` jobs, update all four
-`v1.4.x` occurrences (workflow ref, `duckdb_version`,
-`ci_tools_version`, `name:`).
-
-The repo-local `_extension_deploy.yml` checks out both submodules to
-the requested version inline, so the LTS deploy picks up the LTS
-architecture matrix without any further edits.
 
 # API changes
 DuckDB extensions built with this extension template are built against the internal C++ API of DuckDB. This API is not guaranteed to be stable.
