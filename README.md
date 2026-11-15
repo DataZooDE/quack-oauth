@@ -11,11 +11,13 @@ inside your server's DuckDB) to gate ATTACH / SELECT / COPY operations.
 
 [quack]: https://github.com/duckdb/duckdb-quack
 
-> **Status**: end-to-end green against live Keycloak — including
-> real-client → real-server traffic through the quack wire protocol.
-> JWKS, introspection, client_credentials, refresh, device_code,
-> default policy, SQL-table policy, audit. Recorded-replay coverage
-> for Microsoft Entra and Google.
+> **Security compatibility change:** session principals and the in-memory audit
+> ring are now connection-local. The legacy three-argument SQL authentication
+> callback fails closed. A native host integration is required for session
+> authentication and authorization; the previous quack callback wiring and
+> real-wire E2E success claims do not apply to this version. One-argument token
+> validation and client OAuth flows remain available.
+> See [session isolation and migration](docs/SESSION_ISOLATION.md).
 
 ## Quick install
 
@@ -46,11 +48,11 @@ anything past a single-tenant homelab you need real auth: signature
 verification against an IdP, claim-based decisions, audit. This
 extension is that layer.
 
-Concretely, after `LOAD quack_oauth` and a one-line callback swap:
+With a host implementing the native session contract:
 
 - Clients present a normal OAuth bearer JWT on `ATTACH` (`token` option).
 - The server validates it against your IdP every connect, caches the
-  Principal by `session_id`, and applies a policy on every request.
+  principal on the owning connection, and applies a policy on every request.
 - Policy rules live as **SQL rows** in your server's own DuckDB — no
   YAML, no parser, no restart. `INSERT INTO policies` and the next
   query sees the new rule.

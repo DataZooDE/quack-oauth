@@ -12,8 +12,6 @@
 #include "telemetry.hpp"
 #endif
 
-#include "quack_oauth_state.hpp"
-
 namespace duckdb {
 
 #ifndef __EMSCRIPTEN__
@@ -59,9 +57,6 @@ static void OnJwksMinRefreshSeconds(ClientContext &, SetScope scope, Value &para
 		    "QUACK_OAUTH_JWKS_MIN_REFRESH_S (restart with QUACK_OAUTH_JWKS_MIN_REFRESH_S=%d to lower it)",
 		    floor, val, val);
 	}
-	auto &state = GetQuackOauthState();
-	std::lock_guard<std::mutex> guard(state.mu);
-	state.jwks_cache.SetMinRefreshSeconds(val);
 }
 
 static void OnClockSkewSeconds(ClientContext &, SetScope scope, Value &parameter) {
@@ -100,14 +95,9 @@ static Value EnvIntDefault(const char *env_name, int32_t fallback) {
 	return Value::INTEGER(quack_oauth::EnvIntOrDefault(env_name, fallback));
 }
 
-// All quack_oauth_* settings are SetScope::GLOBAL. Reason: quack's auth
-// thread (`quack_server.cpp`) runs the configured authn/authz scalars on
-// fresh `ClientContext` objects per incoming wire request -- a SESSION
-// scope would mean those contexts see only the defaults, so e.g.
-// `quack_oauth_server_secret_name` would resolve to "" and check_token
-// would reject every connection. Quack's own settings
-// (`quack_authentication_function`, `quack_authorization_function`)
-// are GLOBAL for the same reason.
+// Server configuration is database-wide. Native hosts configure it before
+// accepting sessions; per-session principals and audit records are separate
+// ClientContext state and are never exposed through settings.
 void RegisterQuackOauthSettings(DBConfig &config) {
 	// R-S-1: master switch. Default false so LOAD is side-effect-free.
 	config.AddExtensionOption("quack_oauth_enabled",
@@ -137,9 +127,6 @@ void RegisterQuackOauthSettings(DBConfig &config) {
 		const int32_t startup_raw = quack_oauth::EnvIntOrDefault("QUACK_OAUTH_JWKS_MIN_REFRESH_S", 30);
 		const auto clamped_floor = std::clamp(startup_raw, 1, 3600);
 		g_startup_min_refresh_s.store(clamped_floor, std::memory_order_relaxed);
-		auto &state = GetQuackOauthState();
-		std::lock_guard<std::mutex> guard(state.mu);
-		state.jwks_cache.SetMinRefreshSeconds(clamped_floor);
 	});
 	const auto startup_floor = g_startup_min_refresh_s.load(std::memory_order_relaxed);
 	config.AddExtensionOption("quack_oauth_jwks_min_refresh_s",

@@ -17,6 +17,13 @@ namespace duckdb {
 // kid, JWKS fetch failure -- returns `false`. Configuration errors (missing
 // setting, missing SECRET, secret missing `jwks_uri`) raise an exception so
 // operators see them immediately.
+// Native host boundary; never register this as a SQL function. The host must
+// supply its own session ID, retain this context for the session's lifetime,
+// execute authorization and user queries on it, and close it on disconnect.
+// Uses the normal validator. A failed reauthentication revokes the old principal.
+// Legacy quack SQL callbacks do not implement this contract and fail closed.
+bool AuthenticateQuackOauthSession(ClientContext &context, const string &session_id, const string &token);
+
 void RegisterQuackOauthCheckToken(ExtensionLoader &loader);
 
 } // namespace duckdb

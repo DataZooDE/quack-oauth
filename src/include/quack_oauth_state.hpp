@@ -5,6 +5,9 @@
 #include <unordered_map>
 
 #include "duckdb/common/string.hpp"
+#include "duckdb/common/optional_idx.hpp"
+#include "duckdb/main/client_context_state.hpp"
+#include "duckdb/storage/object_cache.hpp"
 
 #include "audit.hpp"
 #include "decision_cache.hpp"
@@ -12,37 +15,41 @@
 
 namespace duckdb {
 
-// Per-process state holder. Lives for the duration of the host DuckDB
-// process. Architecture section 5.2 calls for per-process caches; this is
-// the minimum implementation -- multi-`DatabaseInstance` isolation is a
-// known gap.
-//
-// Single mutex protects everything. The hot path locks for the duration of
-// a single chunk's validate / authz calls; cache operations are O(1) under
-// the hood (unordered_map ops) so the lock is held briefly.
-//
-// `session_principals` is populated by the 3-arg form of
-// `quack_oauth_check_token` (the shape quack calls -- (session_id,
-// auth_string, token)). When a token successfully validates, we cache the
-// resulting Principal keyed by quack's session_id. The companion
-// `quack_oauth_check_authorization(session_id, query_string)` looks it up
-// to apply the policy.
+// Validation caches belong to a database. Principals and in-memory audit events
+// belong to one ClientContext, whose lifetime must match the host's session.
 struct SessionPrincipal {
 	quack_oauth::Principal principal;
 	int64_t updated_at_s = 0;
 };
 
-struct QuackOauthState {
+struct QuackOauthState : public ObjectCacheEntry {
 	quack_oauth::JwksCache jwks_cache;
 	quack_oauth::DecisionCache decision_cache;
-	std::unordered_map<string, SessionPrincipal> session_principals;
-	quack_oauth::AuditRing audit_ring;
 	std::unordered_map<string, int64_t> last_throttle_logged_s;
 	std::mutex mu;
 
 	QuackOauthState();
+	static string ObjectType() {
+		return "quack_oauth_state";
+	}
+	string GetObjectType() override {
+		return ObjectType();
+	}
+	// No eviction: callers retain references during validation. This method also
+	// compiles against older DuckDB releases without eviction accounting.
+	optional_idx GetEstimatedCacheMemory() const {
+		return optional_idx();
+	}
 };
 
-QuackOauthState &GetQuackOauthState();
+struct QuackOauthSessionState : public ClientContextState {
+	string session_id;
+	std::unordered_map<string, SessionPrincipal> session_principals;
+	quack_oauth::AuditRing audit_ring {64};
+	std::mutex mu;
+};
+
+QuackOauthState &GetQuackOauthState(ClientContext &context);
+QuackOauthSessionState &GetQuackOauthSessionState(ClientContext &context);
 
 } // namespace duckdb

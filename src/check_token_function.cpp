@@ -359,24 +359,6 @@ private:
 	std::unique_lock<std::mutex> &guard_;
 };
 
-static void StoreSessionPrincipal(QuackOauthState &shared_state, const string &sid,
-                                  const quack_oauth::Principal &principal, int64_t now_s) {
-	static constexpr std::size_t kMaxSessionPrincipals = 1000;
-	shared_state.session_principals[sid] = SessionPrincipal {principal, now_s};
-	while (shared_state.session_principals.size() > kMaxSessionPrincipals) {
-		auto victim = shared_state.session_principals.begin();
-		for (auto it = shared_state.session_principals.begin(); it != shared_state.session_principals.end(); ++it) {
-			const auto victim_exp = victim->second.principal.exp;
-			const auto it_exp = it->second.principal.exp;
-			if ((it_exp > 0 && victim_exp <= 0) || (it_exp > 0 && victim_exp > 0 && it_exp < victim_exp) ||
-			    (it_exp == victim_exp && it->second.updated_at_s < victim->second.updated_at_s)) {
-				victim = it;
-			}
-		}
-		shared_state.session_principals.erase(victim);
-	}
-}
-
 static void EmitAuditsAndScrub(ClientContext &context, string &token_str, const RowValidation &row, int64_t now_s,
                                std::unique_lock<std::mutex> &guard, const std::string &jwks_uri,
                                std::vector<ThrottledLogEvent> &throttled_events) {
@@ -508,7 +490,9 @@ static void RunValidationLoop(Vector &tokens, idx_t count, Vector &result, Clien
 			if (ok && row.have_principal && sid_format.validity.RowIsValid(sid_idx)) {
 				const auto sid = sid_data[sid_idx].GetString();
 				if (!sid.empty()) {
-					StoreSessionPrincipal(shared_state, sid, row.principal, now_s);
+					auto &session = GetQuackOauthSessionState(context);
+					std::lock_guard<std::mutex> session_guard(session.mu);
+					session.session_principals[sid] = SessionPrincipal {row.principal, now_s};
 				}
 			}
 
@@ -528,13 +512,8 @@ static void RunValidationLoop(Vector &tokens, idx_t count, Vector &result, Clien
 	LogThrottledEvents(context, shared_state, throttled_events, now_s);
 }
 
-// Shared validation entry point. Both the 1-arg form (direct CLI use) and
-// the 3-arg overload (the shape quack itself calls -- session_id, auth_string,
-// token -- per `quack/src/quack_extension.cpp` line 125) route here.
-//
-// When a session_id is known (3-arg overload) and validation succeeds, we
-// cache the extracted Principal in QuackOauthState::session_principals so
-// the companion authz scalar can look it up.
+// Shared validator for ordinary one-argument SQL checks and the native host API.
+// Only the native API supplies session_ids and can store a principal.
 static void ValidateChunk(Vector &tokens, idx_t count, Vector &result, ClientContext &context, Vector *session_ids) {
 	PostHogTelemetry::Instance().RecordFunctionCall("quack_oauth_check_token");
 	const auto cfg = LoadServerConfig(context);
@@ -546,7 +525,7 @@ static void ValidateChunk(Vector &tokens, idx_t count, Vector &result, ClientCon
 	opts.now_s =
 	    std::chrono::duration_cast<std::chrono::seconds>(std::chrono::system_clock::now().time_since_epoch()).count();
 
-	auto &shared_state = GetQuackOauthState();
+	auto &shared_state = GetQuackOauthState(context);
 	// R-N-7: wrap with one retry on transient failure (5xx / transport).
 	DuckdbHttpClient base_http;
 
@@ -671,23 +650,46 @@ static void CheckTokenScalarFun1(DataChunk &args, ExpressionState &state, Vector
 	ValidateChunk(args.data[0], args.size(), result, state.GetContext(), nullptr);
 }
 
-static void CheckTokenScalarFun3(DataChunk &args, ExpressionState &state, Vector &result) {
-	EnforcePlaintextGuard(state.GetContext());
-	// quack's calling convention (verified against duckdb-quack
-	// src/quack_server.cpp): SELECT <fn>(session_id, auth_string, token)
-	// where:
-	//   args[0] = session_id        -- server-generated, used as the
-	//                                  Principal-cache key for the authz
-	//                                  handoff.
-	//   args[1] = auth_string       -- the HTTP Authorization header (e.g.
-	//                                  'Bearer eyJ...') or token attach option
-	//                                  the client supplied. Optional 'Bearer '
-	//                                  prefix is stripped automatically.
-	//   args[2] = token             -- quack's internal PSK (from quack_serve's
-	//                                  token option). Ignored here because we
-	//                                  authenticate the client's bearer token,
-	//                                  not the server PSK.
-	ValidateChunk(args.data[1], args.size(), result, state.GetContext(), &args.data[0]);
+// The legacy SQL callback cannot prove that its session_id came from the host.
+// Keep its signature for compatibility, but fail closed before token validation.
+static void CheckTokenScalarFun3(DataChunk &args, ExpressionState &, Vector &result) {
+	for (idx_t i = 0; i < args.size(); ++i) {
+		result.SetValue(i, Value::BOOLEAN(false));
+	}
+}
+
+bool AuthenticateQuackOauthSession(ClientContext &context, const string &session_id, const string &token) {
+	bool accepted = false;
+	bool attempted = false;
+	try {
+		context.RunFunctionInTransaction([&]() {
+			auto &session = GetQuackOauthSessionState(context);
+			{
+				std::lock_guard<std::mutex> guard(session.mu);
+				if (session_id.empty() || (!session.session_id.empty() && session.session_id != session_id)) {
+					throw InvalidInputException("quack_oauth: a connection must belong to exactly one host session");
+				}
+				session.session_id = session_id;
+				attempted = true;
+				// Failed reauthentication must not leave the previous identity active.
+				session.session_principals.clear();
+			}
+			EnforcePlaintextGuard(context);
+			Vector tokens {Value(token)};
+			Vector sessions {Value(session_id)};
+			Vector result(LogicalType::BOOLEAN);
+			ValidateChunk(tokens, 1, result, context, &sessions);
+			accepted = result.GetValue(0).GetValue<bool>();
+		});
+	} catch (...) {
+		if (attempted) {
+			auto &session = GetQuackOauthSessionState(context);
+			std::lock_guard<std::mutex> guard(session.mu);
+			session.session_principals.clear();
+		}
+		throw;
+	}
+	return accepted;
 }
 
 void RegisterQuackOauthCheckToken(ExtensionLoader &loader) {
@@ -719,12 +721,9 @@ void RegisterQuackOauthCheckToken(ExtensionLoader &loader) {
 	info.descriptions.push_back(std::move(desc1));
 
 	FunctionDescription desc3;
-	desc3.description =
-	    "3-argument form matching quack's quack_check_token callback signature. "
-	    "Validates client token in auth_string (arg 2) after stripping optional Bearer prefix (ignoring quack's "
-	    "internal PSK in arg 3) AND caches the extracted Principal keyed by session_id (arg 1) so a subsequent "
-	    "quack_oauth_check_authorization() call can apply policies. Wired into quack via `SET "
-	    "quack_authentication_function = 'quack_oauth_check_token'`.";
+	desc3.description = "Legacy SQL callback: always returns false. SQL arguments cannot establish session "
+	                    "ownership. Hosts must use the native AuthenticateQuackOauthSession API on the "
+	                    "connection that owns the session.";
 	desc3.parameter_names = {"session_id", "auth_string", "token"};
 	desc3.parameter_types = {LogicalType::VARCHAR, LogicalType::VARCHAR, LogicalType::VARCHAR};
 

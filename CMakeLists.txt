@@ -23,6 +23,21 @@ if(EXISTS "${CMAKE_SOURCE_DIR}/src/include/duckdb/parser/query_node/update_query
     add_definitions(-DDUCKDB_COMPAT_DML_QUERY_NODES=1)
 endif()
 
+# Native host integration regressions. No SQL seeding backdoor is shipped in
+# either extension artifact. The Python harness supplies a loopback IdP.
+if(BUILD_UNITTESTS AND NOT EMSCRIPTEN)
+  add_executable(quack_oauth_security_tests EXCLUDE_FROM_ALL test/security/session_isolation.cpp)
+  target_include_directories(quack_oauth_security_tests PRIVATE src/include)
+  target_compile_features(quack_oauth_security_tests PRIVATE cxx_std_17)
+  target_link_libraries(quack_oauth_security_tests PRIVATE quack_oauth_extension duckdb)
+  set_target_properties(quack_oauth_security_tests PROPERTIES
+    RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/test")
+  if(MSVC)
+    set_target_properties(quack_oauth_security_tests PROPERTIES
+      MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
+  endif()
+endif()
+
 # DuckDB ships cpp-httplib (namespace `duckdb_httplib_openssl`) under its
 # third_party tree. Use it directly rather than adding a separate vcpkg dep,
 # matching `../erpl-web/CMakeLists.txt` precedent. Pure-logic targets

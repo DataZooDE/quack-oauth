@@ -482,6 +482,15 @@ for C++ API changes.
 
 ## Common pitfalls
 
+- **Session security tests use the native host API.** Do not restore SQL-based
+  principal seeding to make old integration tests pass. The three-argument SQL
+  callback intentionally fails closed; `make security_test` authenticates through
+  `AuthenticateQuackOauthSession` and keeps SQL mutation attempts separate. See
+  `docs/SESSION_ISOLATION.md` for the host contract and legacy quack limitation.
+  In native test queries, wrap string parameters in `Value(...)`: passing bare
+  `std::string` through the templated `Connection::Query` binds BLOB parameters
+  on the current DuckDB build and can cause misleading binder failures.
+
 - **`make` without `GEN=ninja`** uses the default generator (Make on
   Linux/macOS, MSBuild on Windows) and is much slower. Always export
   `GEN=ninja` locally — **except for the wasm targets.**

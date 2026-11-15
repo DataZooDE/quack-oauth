@@ -19,6 +19,12 @@ unit_test: release
 	fi
 	./build/release/test/quack_oauth_unit_tests --reporter console::out=-
 
+# Native session-isolation regressions (stdlib Python loopback IdP).
+.PHONY: security_test
+security_test: release
+	cmake --build build/release --target quack_oauth_security_tests -j 4
+	python3 -m unittest discover -s test/security -v
+
 # ---------------------------------------------------------------------------
 # Static-linkage smoke test. Assert the loadable extension only links against
 # the platform's standard libraries. See docs/IMPLEMENTATION.md section 6.

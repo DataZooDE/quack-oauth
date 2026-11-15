@@ -77,7 +77,7 @@ static unique_ptr<FunctionData> DiagnoseBind(ClientContext &context, TableFuncti
 	names = {"component", "status", "detail"};
 
 	auto data = make_uniq<DiagnoseBindData>();
-	auto &state = GetQuackOauthState();
+	auto &state = GetQuackOauthState(context);
 	std::unique_lock<std::mutex> guard(state.mu);
 
 	// 1. extension master switch + active SECRET
@@ -128,15 +128,22 @@ static unique_ptr<FunctionData> DiagnoseBind(ClientContext &context, TableFuncti
 
 	// 4. Session principals
 	{
-		const auto entries = state.session_principals.size();
+		auto &session = GetQuackOauthSessionState(context);
+		std::lock_guard<std::mutex> session_guard(session.mu);
+		const auto entries = session.session_principals.size();
 		std::ostringstream detail;
 		Append(detail, "sessions", std::to_string(entries));
 		data->rows.push_back({"session_principals", entries == 0 ? "empty" : "active", detail.str()});
 	}
 
 	// Snapshot audit ring before releasing state.mu (F-H)
-	const auto snap = state.audit_ring.Snapshot();
-	const auto ring_cap = state.audit_ring.capacity();
+	auto &session = GetQuackOauthSessionState(context);
+	std::vector<quack_oauth::AuditEvent> snap;
+	{
+		std::lock_guard<std::mutex> session_guard(session.mu);
+		snap = session.audit_ring.Snapshot();
+	}
+	const auto ring_cap = session.audit_ring.capacity();
 	guard.unlock();
 
 	// R-N-13 IdP reachability: live GET on jwks_uri (or introspection_endpoint
@@ -285,7 +292,7 @@ struct AuditLogGlobalState : public GlobalTableFunctionState {
 	idx_t cursor = 0;
 };
 
-static unique_ptr<FunctionData> AuditLogBind(ClientContext &, TableFunctionBindInput &,
+static unique_ptr<FunctionData> AuditLogBind(ClientContext &context, TableFunctionBindInput &,
                                              vector<LogicalType> &return_types, duckdb_compat::BindNames &names) {
 #ifndef __EMSCRIPTEN__
 	PostHogTelemetry::Instance().RecordFunctionCall("quack_oauth_audit_log");
@@ -295,7 +302,7 @@ static unique_ptr<FunctionData> AuditLogBind(ClientContext &, TableFunctionBindI
 	names = {"timestamp_unix_s", "event_type", "subject", "issuer", "kid", "token_hash", "action", "reason"};
 
 	auto data = make_uniq<AuditLogBindData>();
-	auto &state = GetQuackOauthState();
+	auto &state = GetQuackOauthSessionState(context);
 	std::lock_guard<std::mutex> guard(state.mu);
 	data->events = state.audit_ring.Snapshot();
 	return std::move(data);
@@ -333,11 +340,7 @@ static void AuditLogScan(ClientContext &, TableFunctionInput &input, DataChunk &
 
 // ---------------------------------------------------------------------------
 // quack_oauth_current_principal() -- per-session Principal cache as a table.
-// Mirrors R-S-6: "subject, issuer, scopes, and a JSON blob of claims, derived
-// from the most recently authenticated token on the current connection." We
-// don't have a way to identify "current connection" from a regular scalar
-// invocation (quack's session_id is server-side state), so the function
-// surfaces ALL cached principals as rows -- operators filter as they like.
+// Returns only the principal bound by the native host to this connection.
 // ---------------------------------------------------------------------------
 
 struct PrincipalRow {
@@ -356,8 +359,9 @@ struct CurrentPrincipalGlobalState : public GlobalTableFunctionState {
 	idx_t cursor = 0;
 };
 
-static unique_ptr<FunctionData> CurrentPrincipalBind(ClientContext &, TableFunctionBindInput &,
-                                                     vector<LogicalType> &return_types, duckdb_compat::BindNames &names) {
+static unique_ptr<FunctionData> CurrentPrincipalBind(ClientContext &context, TableFunctionBindInput &,
+                                                     vector<LogicalType> &return_types,
+                                                     duckdb_compat::BindNames &names) {
 #ifndef __EMSCRIPTEN__
 	PostHogTelemetry::Instance().RecordFunctionCall("quack_oauth_current_principal");
 #endif
@@ -366,7 +370,7 @@ static unique_ptr<FunctionData> CurrentPrincipalBind(ClientContext &, TableFunct
 	names = {"session_id", "subject", "issuer", "scopes", "exp"};
 
 	auto data = make_uniq<CurrentPrincipalBindData>();
-	auto &state = GetQuackOauthState();
+	auto &state = GetQuackOauthSessionState(context);
 	std::lock_guard<std::mutex> guard(state.mu);
 	data->rows.reserve(state.session_principals.size());
 	for (const auto &kv : state.session_principals) {
@@ -432,10 +436,10 @@ void RegisterQuackOauthDiagnose(ExtensionLoader &loader) {
 		                 DATAZOO_GUARD(QUACK_OAUTH_BANNER, CurrentPrincipalBind), CurrentPrincipalInit);
 		CreateTableFunctionInfo info(fn);
 		FunctionDescription desc;
-		desc.description = "Returns the per-session Principal cache as a typed table (R-S-6): "
-		                   "one row per active session_id with subject, issuer, scopes "
+		desc.description = "Returns the current connection's authenticated principal as a typed table: "
+		                   "at most one row for the bound session_id with subject, issuer, scopes "
 		                   "(VARCHAR[]), and exp (BIGINT unix seconds). Populated by the "
-		                   "3-arg form of quack_oauth_check_token. Useful for ops "
+		                   "native AuthenticateQuackOauthSession API. Useful for session "
 		                   "introspection -- e.g. `SELECT * FROM quack_oauth_current_principal() "
 		                   "WHERE exp < epoch(now())` shows stale entries that should be "
 		                   "expired.";
@@ -453,7 +457,7 @@ void RegisterQuackOauthDiagnose(ExtensionLoader &loader) {
 		                 DATAZOO_GUARD(QUACK_OAUTH_BANNER, AuditLogBind), AuditLogInit);
 		CreateTableFunctionInfo info(fn);
 		FunctionDescription desc;
-		desc.description = "Returns the in-memory audit ring (last N auth decisions) as a typed table. "
+		desc.description = "Returns this connection's in-memory audit ring (last N auth decisions) as a typed table. "
 		                   "Columns: timestamp_unix_s BIGINT, event_type VARCHAR, subject VARCHAR, "
 		                   "issuer VARCHAR, kid VARCHAR, token_hash VARCHAR, action VARCHAR, reason VARCHAR. "
 		                   "`token_hash` is the 8-hex-char SHA-256 prefix of the raw token; the raw token "

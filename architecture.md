@@ -76,7 +76,7 @@ native, one wasm). The IdP, Caddy, and quack itself are external.
 |---|---|
 | **Plug into quack's existing scalar-function callbacks** (`quack_check_token`, `quack_nop_authorization`) rather than fork quack. | Zero invasive changes; reversible by toggling `quack_oauth_enabled`. |
 | **Two-callback design**: `check_token` does signature/claims validation, `check_authorization` does policy evaluation with a cached principal. | Matches quack's existing surface; cleanly separates AuthN from AuthZ. |
-| **Per-process key cache** (`kid → JWK`) and **per-token decision cache** (`hash(token) → {principal, decision_ttl}`). | Sub-100µs hot path while remaining correct on key rotation and `exp`. |
+| **Per-database key cache** (`kid → JWK`) and **per-token decision cache** (`hash(token) → {principal, decision_ttl}`). | Sub-100µs hot path while remaining correct on key rotation and `exp`. |
 | **Token transport reuses quack's in-RPC `token` slot**; client reconnects when token nears expiry. | No quack wire changes (C-3). Cost: brief reconnect on rotation. |
 | **Wasm build strips client-side OAuth code via `#ifdef __EMSCRIPTEN__`**; the host page injects an already-obtained access token via SECRET. | Browser can't keep client secrets and can't run device_code; defers all flow handling to a JS OIDC library that already exists. |
 | **Single header-only JWT library** (`jwt-cpp`) over OpenSSL on native, mbedTLS on wasm. | Cuts JWT code to ~50 LOC of glue. OpenSSL is already in DuckDB's vcpkg orbit. |
@@ -300,7 +300,7 @@ appear in plaintext, even at TRACE.
 
 ### 8.4 Threading
 
-Per-process caches behind `std::mutex` (or `std::shared_mutex` for
+Per-database validation caches behind `std::mutex` (or `std::shared_mutex` for
 JWKS reads). DuckDB-Wasm builds use `-pthread=0` cooperative
 threading; no spawned threads in the extension. The token-source
 poll loop is implemented with cooperative time slicing on Wasm
@@ -421,3 +421,13 @@ See `requirements.md` §2. Additional terms used here:
   raw bearer token, valued by `{Principal, ttl}`.
 - **Renew skew**: client-side time window before `expires_at` at
   which the extension proactively refreshes / re-flows.
+
+### Session isolation amendment
+
+Validation caches are owned by the DatabaseInstance. Principals and the bounded
+in-memory audit ring are owned by ClientContext registered state and disappear
+when that context is destroyed. Native hosts bind one session to one context
+through `AuthenticateQuackOauthSession`; SQL cannot establish that binding.
+The three-argument SQL authentication callback fails closed. Earlier diagrams
+showing its session handoff describe the legacy integration, which is no longer
+supported. See [the migration contract](docs/SESSION_ISOLATION.md).

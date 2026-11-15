@@ -1,0 +1,44 @@
+# name: test/sql/oauth_session_isolation.test
+# description: Legacy SQL authentication fails closed; audit rings are connection-local.
+# group: [sql]
+
+require quack_oauth
+
+# No configured IdP is needed: the legacy callback must deny before validation.
+query I owner
+SELECT quack_oauth_check_token('sql-session', 'synthetic-token', '');
+----
+false
+
+# Vectorized calls must also deny every row.
+query I owner
+SELECT bool_or(quack_oauth_check_token('sql-session', 'synthetic-token', '')) FROM range(2049);
+----
+false
+
+query I owner
+SELECT count(*) FROM quack_oauth_current_principal();
+----
+0
+
+# Emit an actual authorization-denial event on owner, and prove it exists.
+query I owner
+SELECT quack_oauth_check_authorization('unknown-session', 'SELECT 1');
+----
+false
+
+query I owner
+SELECT count(*) FROM quack_oauth_audit_log() WHERE event_type = 'authz_deny';
+----
+1
+
+# Another SQL connection in the same database cannot observe that event.
+query I peer
+SELECT count(*) FROM quack_oauth_audit_log();
+----
+0
+
+query I peer
+SELECT count(*) FROM quack_oauth_current_principal();
+----
+0
