@@ -89,6 +89,9 @@ jobs:
     with:
       duckdb_version: v2.0.0
       ci_tools_version: v2.0-cyanoptera
+      # Smoke tests and deployment require the full supported artifact set,
+      # including macOS, which upstream's reduced PR matrix omits.
+      reduced_ci_mode: disabled
       extension_name: quack_oauth
       exclude_archs: 'windows_amd64_mingw;wasm_mvp;wasm_eh;wasm_threads'
 
