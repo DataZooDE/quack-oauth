@@ -18,9 +18,10 @@
 #     build, but no wasm job is emitted today.
 #
 # Build matrix:
-#   - duckdb-stable-* jobs build against the current stable DuckDB
+#   - duckdb-v1-* jobs retain the DuckDB 1.5 release line
 #     (v1.5.6), using v1.5-variegata build tooling.
-#   - duckdb-next-build builds and tests the 2.0 alpha, without publishing it.
+#   - duckdb-stable-* jobs build, smoke-test and publish the default
+#     stable v2.0.0 release, using v2.0-cyanoptera tooling.
 # Each release line publishes under its own /v<ver>/ path on S3 via
 # scripts/extension-upload.sh -- there are no naming collisions.
 #
@@ -44,7 +45,7 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  duckdb-stable-build:
+  duckdb-v1-build:
     name: Build extension binaries (v1.5.6)
     uses: duckdb/extension-ci-tools/.github/workflows/_extension_distribution.yml@v1.5-variegata
     with:
@@ -53,23 +54,24 @@ jobs:
       extension_name: quack_oauth
       exclude_archs: 'windows_amd64_mingw;wasm_mvp;wasm_eh;wasm_threads'
 
-  duckdb-stable-smoke-test:
+  duckdb-v1-smoke-test:
     name: Smoke test (v1.5.6)
-    needs: duckdb-stable-build
+    needs: duckdb-v1-build
     uses: ./.github/workflows/_extension_smoke_test.yml
     with:
       duckdb_version: v1.5.6
       extension_name: quack_oauth
       exclude_archs: 'windows_amd64_mingw;wasm_mvp;wasm_eh;wasm_threads'
 
-  duckdb-stable-deploy:
-    name: Deploy extension binaries (v1.5.5)
-    needs: [duckdb-stable-build, duckdb-stable-smoke-test]
+  duckdb-v1-deploy:
+    name: Deploy extension binaries (v1.5.6)
+    needs: [duckdb-v1-build, duckdb-v1-smoke-test]
     if: startsWith(github.ref, 'refs/tags/v') || github.ref == 'refs/heads/main'
     uses: ./.github/workflows/_extension_deploy.yml
     secrets: inherit
     with:
       duckdb_version: v1.5.6
+      ci_tools_version: v1.5-variegata
       extension_name: quack_oauth
       exclude_archs: 'windows_amd64_mingw;wasm_mvp;wasm_eh;wasm_threads'
       # Mirror erpl-web: push on tag-or-main. PRs and feature branches
@@ -81,12 +83,43 @@ jobs:
       # overwrites the release with that pre-tag build (hit duckdb-gdrive v2026.10.17).
       deploy_versioned: ${{ startsWith(github.ref, 'refs/tags/v') }}
 
-  duckdb-next-build:
-    name: Build extension binaries (v2.0 pre-release)
+  duckdb-stable-build:
+    name: Build extension binaries (v2.0.0)
     uses: duckdb/extension-ci-tools/.github/workflows/_extension_distribution.yml@v2.0-cyanoptera
     with:
-      duckdb_version: d54cbbe3df17e8e5ce68312f483b4155836112aa
+      duckdb_version: v2.0.0
       ci_tools_version: v2.0-cyanoptera
+      # Smoke tests and deployment require the full supported artifact set,
+      # including macOS, which upstream's reduced PR matrix omits.
+      reduced_ci_mode: disabled
       extension_name: quack_oauth
       exclude_archs: 'windows_amd64_mingw;wasm_mvp;wasm_eh;wasm_threads'
 
+  duckdb-stable-smoke-test:
+    name: Smoke test (v2.0.0)
+    needs: duckdb-stable-build
+    uses: ./.github/workflows/_extension_smoke_test.yml
+    with:
+      duckdb_version: v2.0.0
+      extension_name: quack_oauth
+      exclude_archs: 'windows_amd64_mingw;wasm_mvp;wasm_eh;wasm_threads'
+
+  duckdb-stable-deploy:
+    name: Deploy extension binaries (v2.0.0)
+    needs: [duckdb-stable-build, duckdb-stable-smoke-test]
+    if: startsWith(github.ref, 'refs/tags/v') || github.ref == 'refs/heads/main'
+    uses: ./.github/workflows/_extension_deploy.yml
+    secrets: inherit
+    with:
+      duckdb_version: v2.0.0
+      ci_tools_version: v2.0-cyanoptera
+      extension_name: quack_oauth
+      exclude_archs: 'windows_amd64_mingw;wasm_mvp;wasm_eh;wasm_threads'
+      # Mirror erpl-web: push on tag-or-main. PRs and feature branches
+      # build and verify but never publish.
+      deploy_latest: ${{ startsWith(github.ref, 'refs/tags/v') || github.ref == 'refs/heads/main' }}
+      # Versioned paths (<name>/vYYYY.MM.DD/...) come ONLY from the tag run. A main
+      # push of the same commit builds before the tag exists (stamp vX-N-gSHA), and its
+      # deploy resolves the tag at upload time: if it runs after the tag run it
+      # overwrites the release with that pre-tag build (hit duckdb-gdrive v2026.10.17).
+      deploy_versioned: ${{ startsWith(github.ref, 'refs/tags/v') }}

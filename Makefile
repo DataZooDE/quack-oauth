@@ -4,6 +4,10 @@ PROJ_DIR := $(dir $(abspath $(lastword $(MAKEFILE_LIST))))
 EXT_NAME=quack_oauth
 EXT_CONFIG=${PROJ_DIR}extension_config.cmake
 
+# DuckDB 2.0 requires an explicit version for release-stamped local artifacts.
+# Use the checked-out release tag; CI can still override this value.
+OVERRIDE_GIT_DESCRIBE ?= $(shell git -C $(PROJ_DIR)duckdb describe --tags --exact-match 2>/dev/null)
+
 # Include the Makefile from extension-ci-tools
 include extension-ci-tools/makefiles/duckdb_extension.Makefile
 
@@ -18,6 +22,12 @@ unit_test: release
 		exit 1; \
 	fi
 	./build/release/test/quack_oauth_unit_tests --reporter console::out=-
+
+# Native session-isolation regressions (stdlib Python loopback IdP).
+.PHONY: security_test
+security_test: release
+	cmake --build build/release --target quack_oauth_security_tests -j 4
+	python3 -m unittest discover -s test/security -v
 
 # ---------------------------------------------------------------------------
 # Static-linkage smoke test. Assert the loadable extension only links against

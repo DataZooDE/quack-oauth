@@ -36,8 +36,8 @@ saved an hour if this had been written down?"* If yes, write it.
 │   └── include/
 │       └── quack_oauth_extension.hpp
 ├── test/sql/                   # SQLLogicTest *.test files
-├── duckdb/                     # submodule, pinned to v1.5.3
-├── extension-ci-tools/         # submodule, pinned to v1.5.3
+├── duckdb/                     # submodule, pinned to v2.0.0
+├── extension-ci-tools/         # submodule, v2.0-cyanoptera tooling
 ├── requirements.md             # functional spec
 ├── architecture.md             # arc42 design doc
 └── docs/UPDATING.md            # how to bump the DuckDB target version
@@ -420,15 +420,16 @@ Explicit baselines (consistent with the references above):
 
 ## Submodules
 
-Both pinned to `v1.5.3` (current stable):
+The default local build targets stable DuckDB **v2.0.0**:
 
 ```
-duckdb              → tag      v1.5.3   (14eca11bd9…)
-extension-ci-tools  → branch   v1.5.3   (4b3b37b0c9…, tip of v1.5.3)
+duckdb              → tag      v2.0.0
+extension-ci-tools  → branch   v2.0-cyanoptera (pinned commit)
 ```
 
-CI **also** builds against DuckDB 2.0 (`duckdb-next-build`, pinned
-to a commit, not published). DuckDB 1.4.x (LTS) is no longer
+The gitlinks pin exact commits; `.gitmodules` names the matching upstream
+maintenance branches. CI builds, smoke-tests and publishes v2.0.0 as the
+stable line and retains v1.5.6 compatibility jobs. DuckDB 1.4.x is no longer
 supported.
 
 Bumping the DuckDB stable target is a coordinated change — both
@@ -450,6 +451,30 @@ for C++ API changes.
   feature.
 
 ## Common pitfalls
+
+- **DuckDB 2.0 local release builds:** the release tag alone no longer sets
+  the artifact version. Our Makefile passes the exact checked-out tag through
+  `OVERRIDE_GIT_DESCRIBE`; otherwise even a v2.0.0 checkout produces a dev-stamped
+  artifact. Native test hosts must explicitly call `LoadStaticExtension`, and
+  query helpers must consume results via `Fetch` (2.0 removed
+  `MaterializedQueryResult`). Official 2.0 CLI assets use
+  `duckdb-cli-*.tar.gz`; the 1.5 compatibility line still uses ZIP assets.
+
+- **DuckDB 2.0 header/vector compatibility:** include `client_context.hpp`
+  and `database.hpp` explicitly when accessing their members; transitive
+  includes from older releases are not reliable. The one-argument
+  `Vector(Value)` constructor is also gone in 2.0. For a single-row input,
+  construct a typed vector and populate row zero with `SetValue`, which
+  works across the supported release lines.
+
+- **Session security tests use the native host API.** Do not restore SQL-based
+  principal seeding to make old integration tests pass. The three-argument SQL
+  callback intentionally fails closed; `make security_test` authenticates through
+  `AuthenticateQuackOauthSession` and keeps SQL mutation attempts separate. See
+  `docs/SESSION_ISOLATION.md` for the host contract and legacy quack limitation.
+  In native test queries, wrap string parameters in `Value(...)`: passing bare
+  `std::string` through the templated `Connection::Query` binds BLOB parameters
+  on the current DuckDB build and can cause misleading binder failures.
 
 - **`make` without `GEN=ninja`** uses the default generator (Make on
   Linux/macOS, MSBuild on Windows) and is much slower. Always export

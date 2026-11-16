@@ -5,11 +5,9 @@
 require quack_oauth
 
 # R-N-13: diagnose() reports configuration + cache + recent-decision state.
-# The exact status / detail strings depend on session state -- the global
-# QuackOauthState is shared across SQL tests run in the same unittest
-# process, so we don't pin "empty" vs "active". We assert the row SET
-# (five components are always reported, in alphabetical order) and that
-# `detail` carries the documented key=value contract.
+# Database validation caches can be shared by connections; principal and audit
+# state belong to the current connection. Assert the component set and the
+# documented detail keys without requiring every component to be empty.
 
 query I
 SELECT component FROM quack_oauth_diagnose() ORDER BY component;
@@ -64,7 +62,7 @@ VARCHAR	VARCHAR	VARCHAR
 
 # quack_oauth_audit_log() is registered with the documented column shape.
 # We assert the schema via the catalog (no rows needed -- previous tests
-# in the same unittest process may have populated the in-memory ring).
+# on the same connection may have populated the in-memory ring).
 query I
 SELECT count(*) > 0 FROM duckdb_functions()
 WHERE function_name = 'quack_oauth_audit_log' AND function_type = 'table';

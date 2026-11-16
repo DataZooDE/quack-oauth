@@ -1,38 +1,27 @@
 # Extension updating
 
-The CI builds against **two** DuckDB lines in parallel:
+The default local build and stable CI release line use **DuckDB v2.0.0**.
+The `duckdb/` gitlink pins the release tag's commit; `extension-ci-tools/`
+pins a commit from the matching `v2.0-cyanoptera` tooling branch. CI builds,
+smoke-tests and publishes this line. Separate `duckdb-v1-*` jobs retain
+v1.5.6 compatibility and distribution. DuckDB 1.4.x is no longer supported.
 
-- **Stable** — the latest v1.5.x release (currently v1.5.6). The
-  `duckdb/` and `extension-ci-tools/` git submodules are pinned to this
-  version. Day-to-day development happens against this checkout.
-- **Next** — DuckDB 2.0 (`duckdb-next-build`), pinned to a commit on the
-  `v2.0-cyanoptera` tooling branch. Built only in CI and not published.
+## Bumping the default release
 
-DuckDB 1.4.x (LTS) is no longer supported.
-
-## Bumping stable (e.g. v1.5.3 → v1.5.4)
-
-1. **Bump submodules:**
-   - `./duckdb` → new tagged release
-   - `./extension-ci-tools` → the branch named after that release
-     (e.g. `v1.5.4`)
-
-   ```bash
-   # edit .gitmodules: change `branch = v1.5.x` for both submodules
-   git submodule sync
-   git -C duckdb fetch --tags origin && git -C duckdb checkout v<new>
-   git -C extension-ci-tools fetch origin v<new> && \
-     git -C extension-ci-tools checkout FETCH_HEAD
-   git add .gitmodules duckdb extension-ci-tools
-   ```
-
-2. **Bump versions in `.github/workflows/MainDistributionPipeline.yml`:**
-   In the `duckdb-stable-build` and `duckdb-stable-deploy` jobs,
-   update **all four** `v<old>` occurrences:
-   - the reusable workflow ref (`@v<new>`)
-   - `duckdb_version`
-   - `ci_tools_version`
-   - the `name:` field (display only)
+1. Update `duckdb/` to the new stable release tag and `extension-ci-tools/`
+   to a compatible tooling commit. The tooling branch need not have the
+   same name as the DuckDB release tag.
+2. Keep `.gitmodules` branch entries aligned with the corresponding
+   upstream maintenance branches, then commit both gitlinks. Normal
+   `git submodule update --init --recursive` uses the pinned commits.
+3. In `.github/workflows/MainDistributionPipeline.yml`, update the
+   `duckdb-stable-build`, `duckdb-stable-smoke-test`, and
+   `duckdb-stable-deploy` jobs together: `duckdb_version`, display names,
+   reusable build workflow ref and `ci_tools_version` (build and deploy).
+   Keep compatibility jobs on their own release line.
+4. Reconfigure and rebuild locally, run the SQL and security regressions,
+   and verify CI smoke-tests the loadable artifact in the official release
+   binary before publishing.
 
 # API changes
 DuckDB extensions built with this extension template are built against the internal C++ API of DuckDB. This API is not guaranteed to be stable.

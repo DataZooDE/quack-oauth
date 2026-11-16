@@ -1,5 +1,7 @@
 #include "quack_oauth_state.hpp"
 
+#include "duckdb/main/client_context.hpp"
+#include "duckdb/main/database.hpp"
 #include "env_overrides.hpp"
 
 namespace duckdb {
@@ -10,18 +12,24 @@ static constexpr int64_t kDefaultMinRefreshSeconds = 30;
 // hot-path cap; per-token TTL is also capped at `exp - now` inside Store.
 static constexpr std::size_t kDecisionCacheCapacity = 1000;
 static constexpr int64_t kDecisionCacheDefaultTtlSeconds = 30;
-// R-N-13 / diagnose() audit ring: last N decisions visible to operators.
-// 64 lets a brief flurry of denies stay observable without unbounded growth.
-static constexpr std::size_t kAuditRingCapacity = 64;
 
 QuackOauthState::QuackOauthState()
     : jwks_cache(quack_oauth::EnvIntOrDefault("QUACK_OAUTH_JWKS_MIN_REFRESH_S", kDefaultMinRefreshSeconds)),
-      decision_cache(kDecisionCacheCapacity, kDecisionCacheDefaultTtlSeconds), audit_ring(kAuditRingCapacity) {
+      decision_cache(kDecisionCacheCapacity, kDecisionCacheDefaultTtlSeconds) {
 }
 
-QuackOauthState &GetQuackOauthState() {
-	static QuackOauthState state;
-	return state;
+QuackOauthState &GetQuackOauthState(ClientContext &context) {
+	auto state = context.db->GetObjectCache().GetOrCreate<QuackOauthState>("quack_oauth_state");
+	Value refresh;
+	if (context.TryGetCurrentSetting("quack_oauth_jwks_min_refresh_s", refresh) && !refresh.IsNull()) {
+		std::lock_guard<std::mutex> guard(state->mu);
+		state->jwks_cache.SetMinRefreshSeconds(refresh.GetValue<int32_t>());
+	}
+	return *state;
+}
+
+QuackOauthSessionState &GetQuackOauthSessionState(ClientContext &context) {
+	return *context.registered_state->GetOrCreate<QuackOauthSessionState>("quack_oauth_session");
 }
 
 } // namespace duckdb

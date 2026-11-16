@@ -122,46 +122,16 @@ SELECT * FROM quack_oauth_diagnose();
 
 #### `quack_oauth_check_token(session_id VARCHAR, auth_string VARCHAR, token VARCHAR) → BOOLEAN`
 
-| Parameter      | Type    | Description |
-|----------------|---------|-------------|
-| `session_id`   | VARCHAR | quack's per-session id; used as the key for the principal cache. |
-| `auth_string`  | VARCHAR | The raw HTTP `Authorization` header value (e.g. `Bearer eyJ...`) containing the client's OAuth access token. A case-insensitive `Bearer` prefix followed by ASCII whitespace (`' '`, `'\t'`, `'\r'`, `'\n'`, `'\v'`, `'\f'`) is stripped automatically before validation. |
-| `token`        | VARCHAR | quack's pre-shared PSK token from `quack_serve` (`quack_token`). Ignored by `quack_oauth` (OAuth bearer token verification is performed exclusively against `auth_string`; parameter 3 exists solely for callback signature compatibility with quack). |
+This legacy SQL callback **fails closed**: it returns false without validating
+or caching a principal. Its arguments do not prove session ownership. NULL
+arguments may yield NULL under DuckDB's default null handling, also a denial.
 
-##### Bearer Prefix Normalization Rules
-
-The following table documents how `StripBearerPrefix` normalizes raw authentication strings across various client input shapes:
-
-| Input Authorization / Token String | Stripped Output | Notes |
-|:---|:---|:---|
-| `Bearer eyJhbGciOi...` | `eyJhbGciOi...` | Standard RFC 6750 header with single space |
-| `bearer   eyJhbGciOi...` | `eyJhbGciOi...` | Case-insensitive prefix and multiple space characters |
-| `Bearer\teyJhbGciOi...` | `eyJhbGciOi...` | Tab or whitespace separator (`\t`, `\r`, `\n`, `\v`, `\f`) |
-| `  eyJhbGciOi...  ` | `eyJhbGciOi...` | Leading and trailing whitespace trimmed |
-| `Bearer: eyJhbGciOi...` | `Bearer: eyJhbGciOi...` | Non-whitespace delimiter preserved; subsequent JWT parser rejects invalid character |
-| `BearerXYZ` | `BearerXYZ` | Prefix match requires whitespace boundary; non-token input fails validation |
-| `Bearer` | `""` | Bearer keyword alone normalizes to empty string |
-
-> [!CAUTION]
-> **Session ID security**: In quack deployments, `session_id` is a server-generated, cryptographically random handle created per connection. Untrusted SQL callers should not be permitted to supply arbitrary `session_id` values to this 3-argument function, as doing so could allow planting a principal under an existing victim's session identifier.
-
-Matches `quack`'s `quack_check_token(session_id, auth_string, token)`
-callback signature exactly. **Side effect**: on success, the extracted
-Principal (subject, scopes, audience, exp) is cached against
-`session_id` in process-local state so a later
-`quack_oauth_check_authorization()` call can apply the policy.
-
-
-Wired into quack after `LOAD`:
-
-```sql
-SET quack_authentication_function = 'quack_oauth_check_token';
-SET quack_authorization_function  = 'quack_oauth_check_authorization';
-```
-
-```sql
-SELECT quack_oauth_check_token('sess-42', 'Bearer eyJhbGciOi...', '');
-```
+Use the one-argument function for ordinary SQL token validation. It never creates
+or replaces a session principal. Native hosts must use
+`AuthenticateQuackOauthSession(ClientContext &, session_id, token)` on the
+connection that will own the session. See [the migration contract](docs/SESSION_ISOLATION.md).
+Existing quack SQL callback wiring cannot authenticate sessions with this version;
+it requires a native integration update.
 
 
 ---
@@ -172,7 +142,7 @@ SELECT quack_oauth_check_token('sess-42', 'Bearer eyJhbGciOi...', '');
 
 | Parameter      | Type    | Description |
 |----------------|---------|-------------|
-| `session_id`   | VARCHAR | Same key used by `quack_oauth_check_token`'s 3-arg form. |
+| `session_id`   | VARCHAR | Must match the session bound by the native host to the current connection. |
 | `query_string` | VARCHAR | The SQL about to be executed. Used to detect the action. |
 
 Two-stage authorization in two steps:
@@ -408,7 +378,9 @@ quack_oauth_audit_log() → TABLE(
 )
 ```
 
-Returns the in-memory audit ring (last 64 decisions) as a typed table.
+Returns the current connection's in-memory audit ring (last 64 decisions) as a typed table.
+It never enumerates another connection's events. Closing the connection destroys
+its ring. Persistent audit tables and database logs remain operator-managed sinks.
 Both `check_token` and `check_authorization` emit one event per row
 they evaluate. The raw bearer token is never exposed — `token_hash` is
 the first 8 hex characters of its SHA-256.

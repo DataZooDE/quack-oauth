@@ -21,8 +21,10 @@ from __future__ import annotations
 
 import os
 import platform
+import shutil
 import subprocess
 import sys
+import tarfile
 import tempfile
 import urllib.request
 import zipfile
@@ -48,30 +50,45 @@ ARCH_TO_CLI_ZIP: dict[str, str] = {
     "windows_amd64": "duckdb_cli-windows-amd64.zip",
 }
 
+ARCH_TO_CLI_TAR: dict[str, str] = {
+    "linux_amd64": "duckdb-cli-linux-amd64.tar.gz",
+    "linux_arm64": "duckdb-cli-linux-arm64.tar.gz",
+    "linux_amd64_musl": "duckdb-cli-linux-amd64-musl.tar.gz",
+    "osx_amd64": "duckdb-cli-osx-amd64.tar.gz",
+    "osx_arm64": "duckdb-cli-osx-arm64.tar.gz",
+    "windows_amd64": "duckdb-cli-windows-amd64.tar.gz",
+}
+
 
 def _download_duckdb_cli(version: str, arch: str, dest_dir: str) -> str:
-    zip_name = ARCH_TO_CLI_ZIP.get(arch)
-    if zip_name is None:
+    # DuckDB 2.0 renamed release assets and switched from ZIP to tar.gz.
+    use_tar = int(version.removeprefix("v").split(".")[0]) >= 2
+    assets = ARCH_TO_CLI_TAR if use_tar else ARCH_TO_CLI_ZIP
+    archive_name = assets.get(arch)
+    if archive_name is None:
         raise SystemExit(
-            f"Unsupported arch '{arch}'. Supported: {sorted(ARCH_TO_CLI_ZIP)}"
+            f"Unsupported arch '{arch}'. Supported: {sorted(assets)}"
         )
 
-    url = f"https://github.com/duckdb/duckdb/releases/download/{version}/{zip_name}"
-    zip_path = os.path.join(dest_dir, "duckdb_cli.zip")
+    url = f"https://github.com/duckdb/duckdb/releases/download/{version}/{archive_name}"
+    archive_path = os.path.join(dest_dir, archive_name)
 
     print(f"Downloading official DuckDB {version} CLI ({arch}):\n  {url}")
-    urllib.request.urlretrieve(url, zip_path)
-
-    with zipfile.ZipFile(zip_path, "r") as zf:
-        zf.extractall(dest_dir)
+    urllib.request.urlretrieve(url, archive_path)
 
     bin_name = "duckdb.exe" if platform.system() == "Windows" else "duckdb"
     binary = os.path.join(dest_dir, bin_name)
-    if not os.path.isfile(binary):
-        raise SystemExit(
-            f"DuckDB binary not found after extraction: {binary}\n"
-            f"Zip contents: {zipfile.ZipFile(zip_path).namelist()}"
-        )
+    if use_tar:
+        with tarfile.open(archive_path, "r:gz") as archive:
+            member = archive.getmember(bin_name)
+            if not member.isfile():
+                raise SystemExit(f"Expected a regular CLI binary: {bin_name}")
+            with archive.extractfile(member) as source, open(binary, "wb") as target:
+                shutil.copyfileobj(source, target)
+    else:
+        with zipfile.ZipFile(archive_path, "r") as archive:
+            with archive.open(bin_name) as source, open(binary, "wb") as target:
+                shutil.copyfileobj(source, target)
 
     if platform.system() != "Windows":
         os.chmod(binary, 0o755)

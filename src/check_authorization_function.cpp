@@ -67,7 +67,7 @@ static void CheckAuthorizationScalarFun(DataChunk &args, ExpressionState &state,
 	PostHogTelemetry::Instance().RecordFunctionCall("quack_oauth_check_authorization");
 #endif
 	auto &context = state.GetContext();
-	auto &shared_state = GetQuackOauthState();
+	auto &shared_state = GetQuackOauthSessionState(context);
 
 	// Resolve the policy once per chunk: same SECRET applies to every row.
 	// If policy_table is set but the query fails (table missing, wrong
@@ -153,7 +153,7 @@ static void CheckAuthorizationScalarFun(DataChunk &args, ExpressionState &state,
 			    return false;
 		    }
 		    const auto outcome = policy.has_value() ? quack_oauth::EvaluatePolicy(*policy, principal, request)
-		                                            : quack_oauth::EvaluateDefaultPolicy(principal, request.action);
+			                                        : quack_oauth::EvaluateDefaultPolicy(principal, request.action);
 		    const bool allow = outcome.decision == quack_oauth::Decision::Allow;
 		    e.event_type = allow ? quack_oauth::AuditEventType::AuthzAllow : quack_oauth::AuditEventType::AuthzDeny;
 		    e.reason = outcome.reason;
@@ -171,8 +171,8 @@ void RegisterQuackOauthCheckAuthorization(ExtensionLoader &loader) {
 	duckdb_compat::SetFallible(fn);
 	CreateScalarFunctionInfo info(std::move(fn));
 	FunctionDescription desc;
-	desc.description = "Authorize a query for a session whose Principal was previously cached by "
-	                   "quack_oauth_check_token(). Parses the SQL with DuckDB's parser, classifies the "
+	desc.description = "Authorize a query for the session bound to this connection by "
+	                   "the native host authentication API. Parses the SQL with DuckDB's parser, classifies the "
 	                   "action (Attach / Scan / Insert / Update / Delete / Ddl / Pragma / CopyTo / CopyFrom / "
 	                   "ServeAdmin) and enumerates the referenced objects + columns, then evaluates the "
 	                   "policy: either the SQL-native rules in the table named by `policy_table` on the "

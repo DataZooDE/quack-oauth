@@ -81,7 +81,7 @@ static bool IsDenialEvent(quack_oauth::AuditEventType t) {
 void EmitAuditEvent(ClientContext &context, const quack_oauth::AuditEvent &event) {
 	// Sink 1: in-memory ring.
 	{
-		auto &state = GetQuackOauthState();
+		auto &state = GetQuackOauthSessionState(context);
 		std::lock_guard<std::mutex> guard(state.mu);
 		state.audit_ring.Push(event);
 	}
