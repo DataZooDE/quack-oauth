@@ -482,6 +482,13 @@ for C++ API changes.
 
 ## Common pitfalls
 
+- **DuckDB 2.0 header/vector compatibility:** include `client_context.hpp`
+  and `database.hpp` explicitly when accessing their members; transitive
+  includes from older releases are not reliable. The one-argument
+  `Vector(Value)` constructor is also gone in 2.0. For a single-row input,
+  construct a typed vector and populate row zero with `SetValue`, which
+  works across the supported release lines.
+
 - **Session security tests use the native host API.** Do not restore SQL-based
   principal seeding to make old integration tests pass. The three-argument SQL
   callback intentionally fails closed; `make security_test` authenticates through

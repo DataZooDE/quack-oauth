@@ -675,8 +675,10 @@ bool AuthenticateQuackOauthSession(ClientContext &context, const string &session
 				session.session_principals.clear();
 			}
 			EnforcePlaintextGuard(context);
-			Vector tokens {Value(token)};
-			Vector sessions {Value(session_id)};
+			Vector tokens(LogicalType::VARCHAR);
+			tokens.SetValue(0, Value(token));
+			Vector sessions(LogicalType::VARCHAR);
+			sessions.SetValue(0, Value(session_id));
 			Vector result(LogicalType::BOOLEAN);
 			ValidateChunk(tokens, 1, result, context, &sessions);
 			accepted = result.GetValue(0).GetValue<bool>();

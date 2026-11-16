@@ -1,5 +1,7 @@
 #include "quack_oauth_state.hpp"
 
+#include "duckdb/main/client_context.hpp"
+#include "duckdb/main/database.hpp"
 #include "env_overrides.hpp"
 
 namespace duckdb {
