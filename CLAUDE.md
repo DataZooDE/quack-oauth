@@ -36,8 +36,8 @@ saved an hour if this had been written down?"* If yes, write it.
 │   └── include/
 │       └── quack_oauth_extension.hpp
 ├── test/sql/                   # SQLLogicTest *.test files
-├── duckdb/                     # submodule, pinned to v1.5.3
-├── extension-ci-tools/         # submodule, pinned to v1.5.3
+├── duckdb/                     # submodule, pinned to v2.0.0
+├── extension-ci-tools/         # submodule, v2.0-cyanoptera tooling
 ├── requirements.md             # functional spec
 ├── architecture.md             # arc42 design doc
 └── docs/UPDATING.md            # how to bump the DuckDB target version
@@ -420,15 +420,16 @@ Explicit baselines (consistent with the references above):
 
 ## Submodules
 
-Both pinned to `v1.5.3` (current stable):
+The default local build targets stable DuckDB **v2.0.0**:
 
 ```
-duckdb              → tag      v1.5.3   (14eca11bd9…)
-extension-ci-tools  → branch   v1.5.3   (4b3b37b0c9…, tip of v1.5.3)
+duckdb              → tag      v2.0.0
+extension-ci-tools  → branch   v2.0-cyanoptera (pinned commit)
 ```
 
-CI **also** builds against DuckDB 2.0 (`duckdb-next-build`, pinned
-to a commit, not published). DuckDB 1.4.x (LTS) is no longer
+The gitlinks pin exact commits; `.gitmodules` names the matching upstream
+maintenance branches. CI builds, smoke-tests and publishes v2.0.0 as the
+stable line and retains v1.5.6 compatibility jobs. DuckDB 1.4.x is no longer
 supported.
 
 Bumping the DuckDB stable target is a coordinated change — both
