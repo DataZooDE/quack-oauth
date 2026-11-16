@@ -22,38 +22,13 @@
 # extension_build_tools.cmake (DUCKDB_EXTENSION_CONFIGS) well before those
 # add_subdirectory() calls, so the FORCE lands in time.
 #
-# Applied unconditionally. Both the stable (v1.5.3) and the 1.4 LTS build now
-# run through the SAME v1.5.3 extension-ci-tools reusable workflow (see
-# .github/workflows/MainDistributionPipeline.yml) -- only the DuckDB *source*
-# version differs (LTS overrides duckdb_version=v1.4.4). That workflow forces
-# the Windows compiler to MSVC `cl`, so both lines build Windows with MSVC,
-# where C++17 is exactly what we want (fmt inline vars + the fmt _SECURE_SCL
-# patch below) and there is no MinGW `std::byte`/`byte` ambiguity. (An earlier
-# attempt built the LTS line with the @v1.4.4 workflow, which left the
-# compiler to autodetect; on the new windows-latest image that picked MinGW
-# g++, which both tripped the C++17 std::byte clash AND could not link the
-# MSVC-built vcpkg OpenSSL -- hence the move to the v1.5.3 harness.)
+# Applied unconditionally. Every release line (v1.5.6 and 2.0) builds through
+# its own extension-ci-tools reusable workflow (see
+# .github/workflows/MainDistributionPipeline.yml), which forces the Windows
+# compiler to MSVC `cl`, where C++17 is exactly what we want (fmt inline vars +
+# the fmt _SECURE_SCL patch below).
 set(CMAKE_CXX_STANDARD 17 CACHE STRING "C++ standard to enforce" FORCE)
 set(CMAKE_CXX_STANDARD_REQUIRED ON CACHE BOOL "" FORCE)
-
-# The 1.4 LTS build compiles DuckDB's `sqlite3_api_wrapper.cpp` (the stable
-# v1.5.3 build does not), which pulls in the Win-SDK headers. At C++17 on
-# MSVC, `std::byte` then clashes with the SDK's global `byte`
-# (`error C2872: 'byte': ambiguous symbol` in rpcndr.h/wtypes.h/objidlbase.h).
-# Disable std::byte for the LTS line -- DuckDB 1.4.x built fine before C++17
-# existed and our code doesn't use std::byte, so this is safe. Scoped to
-# v1.4.x via $ENV{DUCKDB_GIT_VERSION} (with a git-describe fallback) so the
-# green stable build is untouched.
-set(_qo_ddb_ver "$ENV{DUCKDB_GIT_VERSION}")
-if(NOT _qo_ddb_ver)
-  execute_process(
-    COMMAND git -C "${CMAKE_CURRENT_LIST_DIR}/duckdb" describe --tags
-    OUTPUT_VARIABLE _qo_ddb_ver OUTPUT_STRIP_TRAILING_WHITESPACE ERROR_QUIET)
-endif()
-if(_qo_ddb_ver MATCHES "^v?1\\.4\\.")
-  add_compile_definitions(_HAS_STD_BYTE=0)
-  message(STATUS "quack-oauth: DuckDB ${_qo_ddb_ver} (1.4 LTS) -- defining _HAS_STD_BYTE=0 (avoid MSVC std::byte vs Win-SDK byte clash)")
-endif()
 
 # Patch DuckDB's bundled fmt 6.1.2 so it compiles on MSVC 19.51 (the VS18
 # windows-latest runner), whose STL removed stdext::checked_array_iterator.

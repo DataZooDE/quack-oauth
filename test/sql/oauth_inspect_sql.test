@@ -146,15 +146,16 @@ SELECT array_to_string(objects, ',') FROM quack_oauth_inspect_sql('WITH c AS (SE
 ----
 fn:read_csv
 
-# A WITH clause must never swallow the rest of the statement. DuckDB 1.4.x
-# wraps it in a CTENode instead of a SelectNode cte_map, and before that
-# node type was handled the whole select half went unwalked on the LTS
-# line -- yielding zero objects, which is NOT fail-closed: a zero-object
-# request skips every rule carrying an object_pattern (policy.cpp), so an
-# object-scoped deny could be laundered through a CTE. Tables unrelated to
-# the CTE must still appear.
+# A WITH clause must never swallow the rest of the statement. A WITH can be
+# parsed into a CTENode instead of a SelectNode cte_map (the former DuckDB
+# 1.4.x shape), and before that node type was handled the whole select half
+# went unwalked -- yielding zero objects, which is NOT fail-closed: a
+# zero-object request skips every rule carrying an object_pattern
+# (policy.cpp), so an object-scoped deny could be laundered through a CTE.
+# Tables unrelated to the CTE must still appear.
 # Sorted: the walk order of a CTE body vs. the outer FROM differs between
-# the 1.4 and 1.5 parse shapes. The object SET is what the policy evaluates.
+# the CTENode and cte_map parse shapes. The object SET is what the policy
+# evaluates.
 query I
 SELECT array_to_string(list_sort(objects), ',') FROM quack_oauth_inspect_sql('WITH c AS (SELECT * FROM a) SELECT * FROM b');
 ----

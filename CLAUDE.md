@@ -203,8 +203,8 @@ Explicit baselines (consistent with the references above):
   `MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>"`. The vcpkg
   deps (Catch2/OpenSSL) come from a `*-static-*` triplet (`/MT`). DuckDB's
   stable build sets the runtime library globally and the naked target
-  inherits it, but the 1.4 LTS build does NOT, so the target defaults to
-  `/MD` and the link dies with `LNK2038: mismatch detected for
+  inherits it, but a build that does not (the former 1.4 LTS line) defaults
+  the target to `/MD` and the link dies with `LNK2038: mismatch detected for
   'RuntimeLibrary': value 'MT_StaticRelease' doesn't match 'MD_DynamicRelease'`.
   Set the property explicitly (live in our `CMakeLists.txt`).
 - **The cached `CMAKE_CXX_STANDARD=11` breaks the v1.5.3 build in two
@@ -223,7 +223,7 @@ Explicit baselines (consistent with the references above):
     2. **Windows/MSVC** (VS2026 runners): DuckDB's bundled `fmt` uses inline
        variables, rejected without `/std:c++17` (`error C7525`); at
        `CMAKE_CXX_STANDARD=11` CMake emits no `/std` flag on MSVC at all.
-  (v1.4.4 LTS Linux is unaffected — the header differs.) **Fix:**
+  **Fix:**
   `set(CMAKE_CXX_STANDARD 17 CACHE STRING "" FORCE)` at the top of
   `extension_config.cmake`. That file is `include()`d from
   extension-ci-tools' `extension_build_tools.cmake` (via
@@ -232,40 +232,13 @@ Explicit baselines (consistent with the references above):
   agrees on C++17 (no weak/strong split; MSVC gets `/std:c++17`). Our
   `CMakeLists.txt:13` set is too late (it runs at the extension subdir, after
   src/tools are configured) — the FORCE must be in `extension_config.cmake`.
-  The FORCE is **unconditional** — but that only works because both the
-  stable and the 1.4 LTS jobs now run through the **same v1.5.3
-  extension-ci-tools reusable workflow** (see `MainDistributionPipeline.yml`),
-  which pins the Windows compiler to MSVC `cl`. On MSVC, C++17 is exactly
-  what we want and there is no `std::byte` problem.
-- **Don't build the 1.4 LTS line with the `@v1.4.4` reusable workflow on the
-  current `windows-latest` image.** `@v1.4.4` leaves `CC`/`CXX` empty for the
-  `windows_amd64` arch (only `windows_amd64_mingw`/`_rtools` get gcc/g++),
-  relying on CMake autodetect. The old image autodetected MSVC; the new image
-  (VS18 + a `C:\mingw64` in PATH) autodetects **MinGW g++**, which breaks two
-  ways: (1) at C++17 `std::byte` collides with the Win-SDK global `byte`
-  typedef in `rpcndr.h` (`error: reference to 'byte' is ambiguous`); (2) even
-  past that, MinGW's `ld` cannot link the MSVC-built vcpkg OpenSSL
-  (`libssl.lib`/`libcrypto.lib`) — undefined `__chkstk`, `__security_cookie`,
-  `__GSHandlerCheck`, `__local_stdio_printf_options`, etc. The `'cl'` default
-  only landed in extension-ci-tools `v1.5.x`/`main`; there is no fixed
-  `v1.4.x` tag. **Fix:** build the LTS job with the `@v1.5.3` workflow +
-  `ci_tools_version: v1.5.3` while keeping `duckdb_version: v1.4.4`. Same
-  MSVC harness as stable; still verifies the 1.4 API because the DuckDB
-  headers/library compiled against are v1.4.4.
-- **The 1.4 LTS build also needs `_HAS_STD_BYTE=0` (MSVC).** Once the LTS job
-  builds with MSVC + C++17 (above), it compiles DuckDB's
-  `sqlite3_api_wrapper.cpp` — which the stable v1.5.3 build does *not* — and
-  that pulls in the Win-SDK headers where `std::byte` clashes with the SDK's
-  global `byte` (`error C2872: 'byte': ambiguous symbol`). `extension_config.cmake`
-  defines `_HAS_STD_BYTE=0` (disables `std::byte`) **for the v1.4.x line only**
-  (gated on `$ENV{DUCKDB_GIT_VERSION}`), leaving the stable build untouched.
-  Safe because DuckDB 1.4.x predates any std::byte use and our code uses none.
-  Note v1.4.4 and v1.5.3 bundle the *same* fmt 6.1.2, so both need the C++17
-  FORCE (fmt inline vars) and both get the `_SECURE_SCL` patch.
+  The FORCE is **unconditional** — every line builds through an
+  extension-ci-tools reusable workflow that pins the Windows compiler to
+  MSVC `cl`. On MSVC, C++17 is exactly what we want.
 - **The C++17 FORCE fixes the Windows *inline-variable* error (C7525) but
   uncovers a second MSVC failure on the newest runners.** `windows-latest`
   now ships MSVC 19.51 (VS18/"2026"), whose STL **removed**
-  `stdext::checked_array_iterator`. DuckDB v1.5.3 (and 1.4 LTS) bundle fmt
+  `stdext::checked_array_iterator`. DuckDB v1.5.x bundles fmt
   6.1.2, whose `#ifdef _SECURE_SCL` branch
   (`duckdb/third_party/fmt/include/fmt/format.h`) uses that symbol →
   `C2653: 'stdext' is not a class or namespace name`. `_SECURE_SCL` is
@@ -454,18 +427,14 @@ duckdb              → tag      v1.5.3   (14eca11bd9…)
 extension-ci-tools  → branch   v1.5.3   (4b3b37b0c9…, tip of v1.5.3)
 ```
 
-CI **also** builds against the 1.4 LTS line (currently `v1.4.4`)
-in a parallel job pair. The LTS jobs override the version via
-workflow inputs — submodules are not multi-pinned, so local dev
-defaults to stable. To build against LTS locally, check the
-submodules out to the LTS tag/branch and `make clean && GEN=ninja
-make`.
+CI **also** builds against DuckDB 2.0 (`duckdb-next-build`, pinned
+to a commit, not published). DuckDB 1.4.x (LTS) is no longer
+supported.
 
 Bumping the DuckDB stable target is a coordinated change — both
 submodules move together, plus the `duckdb_version` /
 `ci_tools_version` inputs in
-`.github/workflows/MainDistributionPipeline.yml`. Bumping the LTS
-pin is workflow-only. The procedure is in `docs/UPDATING.md`.
+`.github/workflows/MainDistributionPipeline.yml`. The procedure is in `docs/UPDATING.md`.
 
 When CI breaks after a bump, check DuckDB's release notes and the
 [core extension patches](https://github.com/duckdb/duckdb/commits/main/.github/patches/extensions)

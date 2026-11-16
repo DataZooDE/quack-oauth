@@ -431,14 +431,15 @@ void WalkQueryNode(const duckdb::QueryNode &qn, WalkCtx &ctx) {
 		break;
 	}
 	case duckdb::QueryNodeType::CTE_NODE: {
-		// DuckDB 1.4.x parses a WITH clause into a CTENode wrapping the rest
-		// of the query, rather than attaching it to a SelectNode's cte_map
-		// the way 1.5.x does. Without this case the whole select half went
-		// unwalked on the LTS line -- every statement containing a WITH
-		// collected zero objects, which is not a fail-closed state: a
-		// zero-object request skips every rule that carries an
-		// object_pattern (see policy.cpp), so an object-scoped deny could be
-		// laundered through a CTE. Handle both shapes on both versions.
+		// A WITH clause can arrive as a CTENode wrapping the rest of the
+		// query instead of being attached to a SelectNode's cte_map (the
+		// shape the former DuckDB 1.4.x line always produced). If this node
+		// type went unhandled, the whole select half would go unwalked --
+		// every statement containing a WITH would collect zero objects,
+		// which is not a fail-closed state: a zero-object request skips
+		// every rule that carries an object_pattern (see policy.cpp), so an
+		// object-scoped deny could be laundered through a CTE. Kept as
+		// defence in depth: handle both shapes.
 		const auto &cn = qn.Cast<duckdb::CTENode>();
 		const auto cte_name = LowerAscii(duckdb_compat::Str(cn.ctename));
 		if (cn.query) WalkQueryNode(*cn.query, ctx);
