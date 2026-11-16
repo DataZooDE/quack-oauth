@@ -452,6 +452,14 @@ for C++ API changes.
 
 ## Common pitfalls
 
+- **DuckDB 2.0 local release builds:** the release tag alone no longer sets
+  the artifact version. Our Makefile passes the exact checked-out tag through
+  `OVERRIDE_GIT_DESCRIBE`; otherwise even a v2.0.0 checkout produces a dev-stamped
+  artifact. Native test hosts must explicitly call `LoadStaticExtension`, and
+  query helpers must consume results via `Fetch` (2.0 removed
+  `MaterializedQueryResult`). Official 2.0 CLI assets use
+  `duckdb-cli-*.tar.gz`; the 1.5 compatibility line still uses ZIP assets.
+
 - **DuckDB 2.0 header/vector compatibility:** include `client_context.hpp`
   and `database.hpp` explicitly when accessing their members; transitive
   includes from older releases are not reliable. The one-argument

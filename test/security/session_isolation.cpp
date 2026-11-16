@@ -1,6 +1,8 @@
 // Native host integration tests. Authentication uses the production validator;
 // only the IdP is synthetic. No SQL-callable trusted-session hook is registered.
 #include "duckdb.hpp"
+#include "duckdb_compat.hpp"
+#include "quack_oauth_extension.hpp"
 #include "check_token_function.hpp"
 #include "quack_oauth_state.hpp"
 
@@ -16,40 +18,44 @@ static void Require(bool condition, const string &message) {
 }
 
 template <typename... Args>
-static unique_ptr<MaterializedQueryResult> Query(Connection &conn, const string &sql, Args... args) {
+static std::vector<std::vector<Value>> Query(Connection &conn, const string &sql, Args... args) {
 	unique_ptr<QueryResult> result = conn.Query(sql, Value(args)...);
 	if (result->HasError()) {
 		throw std::runtime_error(result->GetError());
 	}
-	Require(result->type == QueryResultType::MATERIALIZED_RESULT, "query must be materialized");
-	return unique_ptr<MaterializedQueryResult>(static_cast<MaterializedQueryResult *>(result.release()));
+	// Fetch drains deferred execution on 2.0 and materialized results on 1.5.
+	auto rows = duckdb_compat::FetchRows(*result);
+	if (result->HasError()) {
+		throw std::runtime_error(result->GetError());
+	}
+	return rows;
 }
 
 template <typename... Args>
 static bool Boolean(Connection &conn, const string &sql, Args... args) {
 	auto result = Query(conn, sql, args...);
-	Require(result->RowCount() == 1, "boolean query must return exactly one row");
-	const Value value = result->GetValue(0, 0);
+	Require(result.size() == 1, "boolean query must return exactly one row");
+	const Value value = result.at(0).at(0);
 	return !value.IsNull() && value.GetValue<bool>();
 }
 
 static idx_t PrincipalCount(Connection &conn, const string &sid) {
 	return Query(conn, "SELECT count(*) FROM quack_oauth_current_principal() WHERE session_id = ?", sid)
-	    ->GetValue(0, 0)
+	    .at(0).at(0)
 	    .GetValue<int64_t>();
 }
 
 static void RequirePrincipal(Connection &conn, const string &sid, const string &subject, const string &scope) {
 	auto result = Query(conn, "SELECT subject, scopes FROM quack_oauth_current_principal() WHERE session_id = ?", sid);
-	Require(result->RowCount() == 1, "expected exactly one seeded principal");
-	Require(result->GetValue(0, 0).GetValue<string>() == subject, "principal subject changed");
-	auto scopes = ListValue::GetChildren(result->GetValue(1, 0));
+	Require(result.size() == 1, "expected exactly one seeded principal");
+	Require(result.at(0).at(0).GetValue<string>() == subject, "principal subject changed");
+	auto scopes = ListValue::GetChildren(result.at(0).at(1));
 	Require(scopes.size() == 1 && scopes[0].GetValue<string>() == scope, "principal scopes changed");
 }
 
 static idx_t AuditCount(Connection &conn, const string &subject) {
 	return Query(conn, "SELECT count(*) FROM quack_oauth_audit_log() WHERE subject = ?", subject)
-	    ->GetValue(0, 0)
+	    .at(0).at(0)
 	    .GetValue<int64_t>();
 }
 
@@ -72,13 +78,15 @@ static void Run(const string &test, const string &endpoint, const string &owner_
                 const string &subject, const string &other_subject) {
 	auto db = make_uniq<DuckDB>(nullptr);
 	DuckDB other_db(nullptr);
+	db->LoadStaticExtension<QuackOauthExtension>();
+	other_db.LoadStaticExtension<QuackOauthExtension>();
 	auto owner = make_uniq<Connection>(*db);
 	auto peer = make_uniq<Connection>(*db);
 	Connection other(other_db);
 	Configure(*owner, endpoint);
 	Configure(other, endpoint);
 	Query(*owner, "CREATE TABLE isolation_marker AS SELECT 42 AS value");
-	Require(Query(*peer, "SELECT value FROM isolation_marker")->GetValue(0, 0).GetValue<int>() == 42,
+	Require(Query(*peer, "SELECT value FROM isolation_marker").at(0).at(0).GetValue<int>() == 42,
 	        "peer must share the owner's database");
 	const string sid = "owner-session";
 	Require(AuthenticateQuackOauthSession(*owner->context, sid, owner_token), "owner token must validate");
