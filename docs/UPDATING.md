@@ -1,6 +1,6 @@
 # Extension updating
 
-The default local build and stable CI release line use **DuckDB v2.0.0**.
+The default local build and stable CI release line use **DuckDB v2.0.1**.
 The `duckdb/` gitlink pins the release tag's commit; `extension-ci-tools/`
 pins a commit from the matching `v2.0-cyanoptera` tooling branch. CI builds,
 smoke-tests and publishes this line. Separate `duckdb-v1-*` jobs retain
