@@ -19,7 +19,7 @@ inside your server's DuckDB) to gate ATTACH / SELECT / COPY operations.
 > validation and client OAuth flows remain available.
 > See [session isolation and migration](docs/SESSION_ISOLATION.md).
 
-The default source build targets **DuckDB v2.0.0**. CI also checks v1.5.6 compatibility.
+The default source build targets **DuckDB v2.0.1**. CI also checks v1.5.6 compatibility.
 
 ## Quick install
 

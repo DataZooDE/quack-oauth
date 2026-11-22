@@ -36,7 +36,7 @@ saved an hour if this had been written down?"* If yes, write it.
 │   └── include/
 │       └── quack_oauth_extension.hpp
 ├── test/sql/                   # SQLLogicTest *.test files
-├── duckdb/                     # submodule, pinned to v2.0.0
+├── duckdb/                     # submodule, pinned to v2.0.1
 ├── extension-ci-tools/         # submodule, v2.0-cyanoptera tooling
 ├── requirements.md             # functional spec
 ├── architecture.md             # arc42 design doc
@@ -420,15 +420,15 @@ Explicit baselines (consistent with the references above):
 
 ## Submodules
 
-The default local build targets stable DuckDB **v2.0.0**:
+The default local build targets stable DuckDB **v2.0.1**:
 
 ```
-duckdb              → tag      v2.0.0
+duckdb              → tag      v2.0.1
 extension-ci-tools  → branch   v2.0-cyanoptera (pinned commit)
 ```
 
 The gitlinks pin exact commits; `.gitmodules` names the matching upstream
-maintenance branches. CI builds, smoke-tests and publishes v2.0.0 as the
+maintenance branches. CI builds, smoke-tests and publishes v2.0.1 as the
 stable line and retains v1.5.6 compatibility jobs. DuckDB 1.4.x is no longer
 supported.
 
@@ -454,7 +454,7 @@ for C++ API changes.
 
 - **DuckDB 2.0 local release builds:** the release tag alone no longer sets
   the artifact version. Our Makefile passes the exact checked-out tag through
-  `OVERRIDE_GIT_DESCRIBE`; otherwise even a v2.0.0 checkout produces a dev-stamped
+  `OVERRIDE_GIT_DESCRIBE`; otherwise even a v2.0.x release checkout produces a dev-stamped
   artifact. Native test hosts must explicitly call `LoadStaticExtension`, and
   query helpers must consume results via `Fetch` (2.0 removed
   `MaterializedQueryResult`). Official 2.0 CLI assets use
