@@ -38,9 +38,35 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON CACHE BOOL "" FORCE)
 include(${CMAKE_CURRENT_LIST_DIR}/scripts/patch_bundled_fmt.cmake)
 
 # Extension from this repo.
-duckdb_extension_load(quack_oauth
-    SOURCE_DIR ${CMAKE_CURRENT_LIST_DIR}
-)
+#
+# DuckDB v1.5.6 stamps the short commit SHA instead of the release tag: its duckdb_extension_generate_version
+# passes --match '${VERSIONING_TAG_MATCH}' with literal single quotes, so no tag ever matches. Pass the version
+# explicitly when HEAD is on a vX.Y.Z tag (2.0.x detects it correctly too; this keeps both lines identical).
+set(QUACK_OAUTH_EXT_VERSION "")
+find_package(Git QUIET)
+if(Git_FOUND)
+    execute_process(
+        COMMAND ${GIT_EXECUTABLE} describe --tags --always --match "v*.*.*"
+        WORKING_DIRECTORY ${CMAKE_CURRENT_LIST_DIR}
+        RESULT_VARIABLE QUACK_OAUTH_GIT_RESULT
+        OUTPUT_VARIABLE QUACK_OAUTH_GIT_DESCRIBE
+        OUTPUT_STRIP_TRAILING_WHITESPACE
+        ERROR_QUIET)
+    if(QUACK_OAUTH_GIT_RESULT EQUAL 0 AND QUACK_OAUTH_GIT_DESCRIBE MATCHES "^v[0-9]+\\.[0-9]+\\.[0-9]+(-[a-zA-Z0-9\\.]+)?$")
+        set(QUACK_OAUTH_EXT_VERSION "${QUACK_OAUTH_GIT_DESCRIBE}")
+    endif()
+endif()
+if(QUACK_OAUTH_EXT_VERSION STREQUAL "")
+    duckdb_extension_load(quack_oauth
+        SOURCE_DIR ${CMAKE_CURRENT_LIST_DIR}
+    )
+else()
+    message(STATUS "quack_oauth extension version ${QUACK_OAUTH_EXT_VERSION}")
+    duckdb_extension_load(quack_oauth
+        SOURCE_DIR ${CMAKE_CURRENT_LIST_DIR}
+        EXTENSION_VERSION ${QUACK_OAUTH_EXT_VERSION}
+    )
+endif()
 
 # Note: `duckdb-quack` is NOT pulled in here. Building it inline via
 # `duckdb_extension_load(quack GIT_URL ...)` fails because quack's
